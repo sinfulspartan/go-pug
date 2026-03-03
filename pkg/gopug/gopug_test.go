@@ -844,6 +844,103 @@ func TestEachStructSlice(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 — Mixins
+// ---------------------------------------------------------------------------
+
+func TestMixinBasicCall(t *testing.T) {
+	src := "mixin hello\n  p Hello!\n+hello"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>Hello!</p>")
+}
+
+func TestMixinWithOneParam(t *testing.T) {
+	src := "mixin greet(name)\n  p Hello #{name}!\n+greet(\"World\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>Hello World!</p>")
+}
+
+func TestMixinWithMultipleParams(t *testing.T) {
+	src := "mixin btn(text, cls)\n  button(class=cls)= text\n+btn(\"Click\", \"primary\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<button")
+	assertContains(t, out, "Click")
+	assertContains(t, out, "primary")
+}
+
+func TestMixinParamFromData(t *testing.T) {
+	src := "mixin greet(name)\n  p Hi #{name}\n+greet(username)"
+	out := renderTest(t, src, map[string]interface{}{"username": "Alice"})
+	assertContains(t, out, "Hi Alice")
+}
+
+func TestMixinMissingArgDefaultsEmpty(t *testing.T) {
+	src := "mixin greet(name)\n  p Hi #{name}!\n+greet"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>Hi !</p>")
+}
+
+func TestMixinBlockSlot(t *testing.T) {
+	src := "mixin card\n  div.card\n    block\n+card\n  p Inside the card"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<div")
+	assertContains(t, out, "card")
+	assertContains(t, out, "<p>Inside the card</p>")
+}
+
+func TestMixinBlockSlotEmpty(t *testing.T) {
+	// Block with no content from caller — nothing rendered in slot
+	src := "mixin wrap\n  div\n    block\n+wrap"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<div></div>")
+}
+
+func TestMixinCalledBeforeDeclaration(t *testing.T) {
+	// Mixins are collected in a first pass so call order doesn't matter
+	src := "+hello\nmixin hello\n  p Hello!"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>Hello!</p>")
+}
+
+func TestMixinCalledMultipleTimes(t *testing.T) {
+	src := "mixin item(val)\n  li= val\nul\n  +item(\"a\")\n  +item(\"b\")\n  +item(\"c\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<li>a</li>")
+	assertContains(t, out, "<li>b</li>")
+	assertContains(t, out, "<li>c</li>")
+}
+
+func TestMixinScopeIsolation(t *testing.T) {
+	// Variables defined inside a mixin should not leak to outer scope
+	src := "mixin inner(x)\n  p= x\n- x = \"outer\"\n+inner(\"inner\")\np= x"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>inner</p>")
+	assertContains(t, out, "<p>outer</p>")
+}
+
+func TestMixinRestParam(t *testing.T) {
+	src := "mixin list(...items)\n  ul\n    each item in items\n      li= item\n+list(\"x\", \"y\", \"z\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<li>x</li>")
+	assertContains(t, out, "<li>y</li>")
+	assertContains(t, out, "<li>z</li>")
+}
+
+func TestMixinNestedCall(t *testing.T) {
+	src := "mixin inner\n  span inner\nmixin outer\n  div\n    +inner\n+outer"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<div>")
+	assertContains(t, out, "<span>inner</span>")
+	assertContains(t, out, "</div>")
+}
+
+func TestMixinBlockWithParam(t *testing.T) {
+	src := "mixin section(title)\n  div\n    h2= title\n    block\n+section(\"News\")\n  p Article content"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<h2>News</h2>")
+	assertContains(t, out, "<p>Article content</p>")
+}
+
+// ---------------------------------------------------------------------------
 // Struct field lookup via reflect
 // ---------------------------------------------------------------------------
 

@@ -735,23 +735,52 @@ func (p *Parser) parseCase() (*CaseNode, error) {
 }
 
 // parseMixinDecl parses mixin declarations.
+//
+// The lexer emits TokenMixin whose Value is everything after the "mixin"
+// keyword on the same line, e.g. "button(text, cls)" or "tag(name, ...attrs)".
+// We split that into the mixin name and an optional parameter list.
 func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
-	name := p.cur.Value
+	raw := p.cur.Value // e.g. "button(text, cls)"
 	line := p.cur.Line
 	col := p.cur.Col
-	p.advance()
+
+	// Split name from optional parameter list.
+	mixinName := raw
+	paramStr := ""
+	if idx := strings.Index(raw, "("); idx >= 0 {
+		mixinName = strings.TrimSpace(raw[:idx])
+		// find matching closing paren
+		end := strings.LastIndex(raw, ")")
+		if end > idx {
+			paramStr = raw[idx+1 : end]
+		}
+	}
 
 	mixin := &MixinDeclNode{
-		Name:       name,
+		Name:       mixinName,
 		Parameters: make([]string, 0),
 		Body:       make([]Node, 0),
 		Line:       line,
 		Col:        col,
 	}
 
-	// TODO: Parse parameters from attributes
+	// Parse parameter list: "text, cls" or "name, ...attrs"
+	if paramStr != "" {
+		for _, p := range strings.Split(paramStr, ",") {
+			param := strings.TrimSpace(p)
+			if param == "" {
+				continue
+			}
+			if strings.HasPrefix(param, "...") {
+				mixin.RestParam = strings.TrimPrefix(param, "...")
+			} else {
+				mixin.Parameters = append(mixin.Parameters, param)
+			}
+		}
+	}
 
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.Depth // capture depth from the TokenMixin token
+	p.advance()
 	p.skipNewlines()
 
 	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
@@ -768,11 +797,17 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 	return mixin, nil
 }
 
-// parseMixinCall parses mixin calls.
+// parseMixinCall parses mixin calls (+name).
+//
+// The lexer emits TokenMixinCall whose Value is the mixin name, then calls
+// scanTagRest which emits AttrStart/AttrName/AttrValue/AttrEnd tokens for
+// any argument list written as (+name(arg1, arg2)).  We collect those as
+// positional argument strings.  Any indented children become the call's Block.
 func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
+	currentDepth := p.cur.Depth // capture depth from the TokenMixinCall token before advancing
 	p.advance()
 
 	call := &MixinCallNode{
@@ -784,23 +819,56 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 		Col:        col,
 	}
 
-	// TODO: Parse arguments and attributes
+	// Collect arguments emitted as attribute tokens by scanTagRest.
+	// Each argument appears as AttrName (the value expression) with no AttrEqual
+	// following it, OR as AttrName + AttrEqual + AttrValue for named attrs.
+	// We distinguish: if there is no AttrEqual it's a positional argument;
+	// if there is an AttrEqual it's a named HTML attribute for &attributes.
+	if p.cur.Type == TokenAttrStart {
+		p.advance() // consume (
+		for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
+			if p.cur.Type == TokenAttrComma {
+				p.advance()
+				continue
+			}
+			if p.cur.Type == TokenAttrName {
+				attrName := p.cur.Value
+				p.advance()
+				if p.cur.Type == TokenAttrEqual || p.cur.Type == TokenAttrEqualUnescape {
+					// named attribute — store for &attributes
+					unescaped := p.cur.Type == TokenAttrEqualUnescape
+					p.advance() // consume = or !=
+					val := ""
+					if p.cur.Type == TokenAttrValue {
+						val = p.cur.Value
+						p.advance()
+					}
+					call.Attributes[attrName] = &AttributeValue{Value: val, Unescaped: unescaped}
+				} else {
+					// positional argument — attrName is the expression
+					call.Arguments = append(call.Arguments, attrName)
+				}
+				continue
+			}
+			p.advance() // skip unexpected tokens inside ()
+		}
+		if p.cur.Type == TokenAttrEnd {
+			p.advance() // consume )
+		}
+	}
 
-	currentDepth := p.cur.Depth
 	p.skipNewlines()
 
-	// Mixin calls can have inline content
-	if p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-		for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-			node, err := p.parseNode(currentDepth + 1)
-			if err != nil {
-				return nil, err
-			}
-			if node != nil {
-				call.Block = append(call.Block, node)
-			}
-			p.skipNewlines()
+	// Collect indented block children
+	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+		node, err := p.parseNode(currentDepth + 1)
+		if err != nil {
+			return nil, err
 		}
+		if node != nil {
+			call.Block = append(call.Block, node)
+		}
+		p.skipNewlines()
 	}
 
 	return call, nil

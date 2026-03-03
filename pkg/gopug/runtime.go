@@ -19,6 +19,10 @@ type Runtime struct {
 	buf     *bytes.Buffer
 	scope   []map[string]interface{} // stack of scopes for loops, conditionals, etc.
 	doctype string
+	mixins  map[string]*MixinDeclNode // collected mixin declarations
+	// mixinBlock holds the block nodes passed by the current mixin call,
+	// so that "block" nodes inside a mixin body can render them.
+	mixinBlock []Node
 }
 
 // NewRuntime creates a new runtime for rendering.
@@ -30,18 +34,33 @@ func NewRuntime(ast *DocumentNode, data map[string]interface{}) *Runtime {
 		buf:     &bytes.Buffer{},
 		scope:   make([]map[string]interface{}, 1),
 		doctype: "html",
+		mixins:  make(map[string]*MixinDeclNode),
 	}
 }
 
 // Render renders the AST to a string.
 func (r *Runtime) Render() (string, error) {
 	r.scope[0] = r.data
+
+	// First pass: collect all mixin declarations so they are available
+	// regardless of declaration order relative to call sites.
+	r.collectMixins(r.ast.Children)
+
 	for _, node := range r.ast.Children {
 		if err := r.renderNode(node); err != nil {
 			return "", err
 		}
 	}
 	return r.buf.String(), nil
+}
+
+// collectMixins walks a node list and registers every MixinDeclNode found.
+func (r *Runtime) collectMixins(nodes []Node) {
+	for _, node := range nodes {
+		if m, ok := node.(*MixinDeclNode); ok {
+			r.mixins[m.Name] = m
+		}
+	}
 }
 
 // renderNode renders a single node.
@@ -80,11 +99,13 @@ func (r *Runtime) renderNode(node Node) error {
 	case *FilterNode:
 		return r.renderFilter(n)
 	case *MixinDeclNode:
-		// Mixins are collected at compile time, skip rendering
+		// Already collected in first pass — skip during render walk.
 		return nil
+	case *MixinCallNode:
+		return r.renderMixinCall(n)
 	case *BlockNode:
-		// Blocks are resolved at compile time, skip rendering
-		return nil
+		// Inside a mixin body "block" renders the caller's block content.
+		return r.renderMixinBlockSlot()
 	case *ExtendsNode:
 		// Extends is resolved at compile time, skip rendering
 		return nil
@@ -569,6 +590,88 @@ func (r *Runtime) renderBlockExpansion(exp *BlockExpansionNode) error {
 // renderTextRun renders a mixed sequence of text and interpolation nodes.
 func (r *Runtime) renderTextRun(run *TextRunNode) error {
 	for _, node := range run.Nodes {
+		if err := r.renderNode(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// renderMixinCall renders a mixin call by pushing a new scope containing the
+// named arguments, then walking the mixin's body nodes.
+func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
+	decl, ok := r.mixins[call.Name]
+	if !ok {
+		return fmt.Errorf("mixin %q is not defined", call.Name)
+	}
+
+	// Build the argument scope: map parameter names to evaluated call arguments.
+	scope := make(map[string]interface{})
+
+	for i, param := range decl.Parameters {
+		if i < len(call.Arguments) {
+			// Evaluate the argument expression in the current (caller) scope.
+			val, err := r.evaluateExpr(call.Arguments[i])
+			if err != nil {
+				return err
+			}
+			scope[param] = val
+		} else {
+			scope[param] = "" // missing arg defaults to empty string
+		}
+	}
+
+	// Handle rest parameter — collect remaining arguments as a slice.
+	if decl.RestParam != "" {
+		rest := make([]interface{}, 0)
+		for i := len(decl.Parameters); i < len(call.Arguments); i++ {
+			val, err := r.evaluateExpr(call.Arguments[i])
+			if err != nil {
+				return err
+			}
+			rest = append(rest, val)
+		}
+		scope[decl.RestParam] = rest
+	}
+
+	// Expose caller-supplied HTML attributes as the "attributes" variable.
+	// Each entry is the evaluated attribute value string.
+	if len(call.Attributes) > 0 {
+		attrMap := make(map[string]interface{})
+		for k, v := range call.Attributes {
+			evaluated, err := r.evaluateExpr(v.Value)
+			if err != nil {
+				evaluated = v.Value
+			}
+			attrMap[k] = evaluated
+		}
+		scope["attributes"] = attrMap
+	}
+
+	// Save the previous mixin block and install the call's block content.
+	prevBlock := r.mixinBlock
+	r.mixinBlock = call.Block
+
+	// Push scope and render the mixin body.
+	r.scope = append(r.scope, scope)
+	for _, node := range decl.Body {
+		if err := r.renderNode(node); err != nil {
+			r.scope = r.scope[:len(r.scope)-1]
+			r.mixinBlock = prevBlock
+			return err
+		}
+	}
+	r.scope = r.scope[:len(r.scope)-1]
+
+	// Restore the previous mixin block.
+	r.mixinBlock = prevBlock
+	return nil
+}
+
+// renderMixinBlockSlot renders the block content supplied by the mixin caller.
+// If no block was provided, nothing is rendered (empty slot).
+func (r *Runtime) renderMixinBlockSlot() error {
+	for _, node := range r.mixinBlock {
 		if err := r.renderNode(node); err != nil {
 			return err
 		}

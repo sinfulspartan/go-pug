@@ -542,11 +542,39 @@ func (l *Lexer) scanAttributes() error {
 			break
 		}
 
-		// Scan attribute name
-		name := l.scanIdentifier()
-		if name == "" {
-			return l.errorf("expected attribute name")
+		// Scan attribute name or positional expression.
+		// An attribute is either:
+		//   name          — boolean attribute or mixin positional arg (identifier only)
+		//   name=value    — standard HTML attribute
+		//   name!=value   — unescaped attribute
+		//   "expr"        — positional mixin argument (quoted string, starts non-alpha)
+		//   expr          — positional mixin argument (any expression, e.g. variable)
+		//
+		// Strategy: try to scan an identifier first.  If we get one AND the next
+		// non-space character is = or !=, treat it as a named attribute.  Otherwise
+		// treat whatever we scanned (identifier or raw expression) as a positional
+		// argument emitted as TokenAttrName with no following TokenAttrEqual.
+		var name string
+		if isAlpha(l.peek()) || l.peek() == '_' {
+			name = l.scanIdentifier()
 		}
+
+		if name == "" {
+			// Non-identifier start (quoted string, number, etc.) — scan as a
+			// raw expression value up to the next comma or closing paren.
+			name = l.scanAttributeValue()
+			if name == "" {
+				return l.errorf("expected attribute name")
+			}
+			l.addToken(TokenAttrName, name)
+			l.skipSpaces()
+			if l.peek() == ',' {
+				l.advance()
+				l.addToken(TokenAttrComma, ",")
+			}
+			continue
+		}
+
 		l.addToken(TokenAttrName, name)
 
 		l.skipSpaces()
@@ -555,7 +583,7 @@ func (l *Lexer) scanAttributes() error {
 		if l.peek() == '=' {
 			l.advance()
 			if l.peek() == '=' {
-				// Handle == as a comparison, not !=
+				// Handle == as a comparison, not an assignment
 				l.advance()
 				l.addToken(TokenAttrEqual, "==")
 			} else {
@@ -566,7 +594,11 @@ func (l *Lexer) scanAttributes() error {
 			l.advance()
 			l.addToken(TokenAttrEqualUnescape, "!=")
 		} else {
-			// Boolean attribute (no value)
+			// Boolean attribute or positional identifier argument — no value follows.
+			if l.peek() == ',' {
+				l.advance()
+				l.addToken(TokenAttrComma, ",")
+			}
 			continue
 		}
 
