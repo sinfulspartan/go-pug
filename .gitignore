@@ -1,0 +1,64 @@
+# Binaries for programs and plugins
+/bin/
+/build/
+/*_test
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Output of the go coverage tool
+coverage.out
+*.coverprofile
+
+# Go workspace files
+vendor/
+Godeps/
+pkg/mod/
+
+# Go modules (usually you commit go.sum; uncomment if you prefer to ignore)
+/go.sum
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+._*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build directories and generated files
+dist/
+out/
+*.out
+
+# Dependency directories (node, python, etc.) — if present in repo
+node_modules/
+venv/
+__pycache__/
+
+# Terraform/state (if mixed infra code)
+*.tfstate
+*.tfstate.backup
+
+# Misc
+.coverage
+.cache/
+history/
