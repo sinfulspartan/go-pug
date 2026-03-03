@@ -1,0 +1,11 @@
+mixin button(label, type="button")
+  button(type=type)= label
+
+mixin list(...items)
+  ul
+    each item in items
+      li= item
+
++button("Save")
++button("Delete", "submit")
++list("one", "two", "three")

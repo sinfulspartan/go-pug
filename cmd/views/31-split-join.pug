@@ -1,0 +1,7 @@
+- csv = "apple,banana,cherry,date"
+ul
+  each part in csv.split(",")
+    li= part
+
+- words = "one two three"
+p Joined: #{words.split(" ").join(" | ")}

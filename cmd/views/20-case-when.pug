@@ -1,0 +1,14 @@
+case role
+  when "admin"
+    p Admin panel.
+  when "editor"
+    p Editor dashboard.
+  default
+    p Guest view.
+
+case status
+  when "active"
+  when "enabled"
+    p On.
+  default
+    p Off.

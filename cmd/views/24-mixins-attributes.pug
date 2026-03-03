@@ -1,0 +1,5 @@
+mixin tag(name)
+  span&attributes(attributes)= name
+
++tag("Hello")(class="highlight", data-x="1")
++tag("World")(class="badge", data-x="2")

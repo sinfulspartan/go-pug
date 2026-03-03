@@ -1,0 +1,14 @@
+ul
+  each fruit, i in fruits
+    li #{i}: #{fruit}
+
+p Inline array:
+each color in ["red", "green", "blue"]
+  span(style="color:" + color + ";margin-right:6px") #{color}
+
+p Each with else (empty list):
+ul
+  each item in empty
+    li= item
+  else
+    li No items found.

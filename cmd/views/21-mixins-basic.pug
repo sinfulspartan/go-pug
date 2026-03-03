@@ -1,0 +1,10 @@
+mixin greeting(name)
+  p Hello, #{name}!
+
+mixin badge(text)
+  span.badge= text
+
++greeting("Alice")
++greeting("Bob")
++badge("New")
++badge("Featured")
