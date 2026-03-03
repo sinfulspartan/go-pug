@@ -13,7 +13,7 @@ import (
 	"github.com/sinfulspartan/go-pug/pkg/gopug"
 )
 
-//go:embed views/*.pug
+//go:embed views/*.pug views/*.css
 var viewsFS embed.FS
 
 // ---------------------------------------------------------------------------
@@ -245,139 +245,6 @@ func loadExamples() ([]example, error) {
 // Page rendering
 // ---------------------------------------------------------------------------
 
-const pageCSS = `
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #f4f5f7;
-  color: #1a1a2e;
-  padding: 2rem 1.5rem;
-}
-
-h1.site-title {
-  font-size: 2rem;
-  font-weight: 700;
-  margin-bottom: 0.25rem;
-}
-
-p.site-sub {
-  color: #666;
-  margin-bottom: 2.5rem;
-  font-size: 0.95rem;
-}
-
-.grid {
-  display: grid;
-  gap: 1.5rem;
-}
-
-.card {
-  background: #fff;
-  border: 1px solid #e2e4e9;
-  border-radius: 10px;
-  overflow: hidden;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-}
-
-.card-header {
-  padding: 0.65rem 1.1rem;
-  background: #f8f9fb;
-  border-bottom: 1px solid #e2e4e9;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.card-number {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.6rem;
-  height: 1.6rem;
-  border-radius: 50%;
-  background: #4f46e5;
-  color: #fff;
-  font-size: 0.7rem;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.card-title {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #333;
-}
-
-.card-filename {
-  margin-left: auto;
-  font-size: 0.72rem;
-  color: #999;
-  font-family: monospace;
-}
-
-.card-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-
-@media (max-width: 760px) {
-  .card-body { grid-template-columns: 1fr; }
-}
-
-.pane {
-  padding: 1rem 1.1rem;
-  min-width: 0;
-}
-
-.pane + .pane {
-  border-left: 1px solid #e2e4e9;
-}
-
-@media (max-width: 760px) {
-  .pane + .pane { border-left: none; border-top: 1px solid #e2e4e9; }
-}
-
-.pane-label {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #999;
-  margin-bottom: 0.5rem;
-}
-
-pre {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 0.78rem;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-all;
-  border-radius: 6px;
-  padding: 0.75rem;
-  overflow-x: auto;
-  background: #f6f8fa;
-  color: #24292f;
-}
-
-.output-pane pre {
-  background: #fdfaf3;
-  color: #2d2d2d;
-}
-
-.error-pane pre {
-  background: #fff5f5;
-  color: #c0392b;
-}
-
-footer {
-  margin-top: 3rem;
-  text-align: center;
-  font-size: 0.8rem;
-  color: #bbb;
-}
-`
-
 func writePage(w http.ResponseWriter, exs []example) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -387,7 +254,7 @@ func writePage(w http.ResponseWriter, exs []example) {
 	sb.WriteString(`<meta charset="UTF-8">`)
 	sb.WriteString(`<meta name="viewport" content="width=device-width, initial-scale=1">`)
 	sb.WriteString(`<title>Go-Pug Demo</title>`)
-	fmt.Fprintf(&sb, "<style>%s</style>", pageCSS)
+	sb.WriteString(`<link rel="stylesheet" href="/demo.css">`)
 	sb.WriteString(`</head><body>`)
 	sb.WriteString(`<h1 class="site-title">Go-Pug Demo</h1>`)
 	sb.WriteString(`<p class="site-sub">Every syntax feature — Pug source on the left, rendered HTML on the right.</p>`)
@@ -455,6 +322,16 @@ func main() {
 	}
 
 	log.Printf("Go-Pug demo server — %d examples loaded", len(exs))
+
+	http.HandleFunc("/demo.css", func(w http.ResponseWriter, r *http.Request) {
+		data, err := viewsFS.ReadFile("views/demo.css")
+		if err != nil {
+			http.Error(w, "stylesheet not found", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Write(data)
+	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writePage(w, exs)
