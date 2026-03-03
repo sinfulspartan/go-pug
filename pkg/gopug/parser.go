@@ -1278,6 +1278,15 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 		filter.Subfilter = strings.Join(subfilters, ":")
 	}
 
+	// Parse optional filter options from a TokenFilterOptions token.
+	// The token value contains the raw content inside the parentheses, e.g.
+	// for ":markdown(flavor="gfm" pretty=true)" the value is
+	// `flavor="gfm" pretty=true`.  We decode that into a map[string]string.
+	if p.cur.Type == TokenFilterOptions {
+		filter.Options = parseFilterOptions(p.cur.Value)
+		p.advance()
+	}
+
 	// Collect consecutive TokenText tokens emitted by the lexer for this
 	// filter (both inline single-token form and multi-line block form).
 	// We only consume tokens whose depth is greater than the filter header's
@@ -1292,6 +1301,77 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 
 	p.skipNewlines()
 	return filter, nil
+}
+
+// parseFilterOptions decodes a raw options string of the form
+//
+//	key=value key2="quoted value" flag
+//
+// into a map[string]string.  Values may be bare identifiers/numbers or
+// single/double-quoted strings.  A bare key without = is stored with value
+// "true" so it can be treated as a boolean flag.
+func parseFilterOptions(raw string) map[string]string {
+	opts := make(map[string]string)
+	s := strings.TrimSpace(raw)
+	for s != "" {
+		// Skip commas and whitespace between pairs.
+		s = strings.TrimLeft(s, " \t,")
+		if s == "" {
+			break
+		}
+
+		// Read the key (identifier).
+		end := 0
+		for end < len(s) && s[end] != '=' && s[end] != ' ' && s[end] != '\t' && s[end] != ',' {
+			end++
+		}
+		key := s[:end]
+		s = s[end:]
+
+		if key == "" {
+			break
+		}
+
+		s = strings.TrimLeft(s, " \t")
+		if !strings.HasPrefix(s, "=") {
+			// Boolean flag — no value.
+			opts[key] = "true"
+			continue
+		}
+		// Consume the '='.
+		s = s[1:]
+		s = strings.TrimLeft(s, " \t")
+
+		var value string
+		if len(s) > 0 && (s[0] == '"' || s[0] == '\'') {
+			// Quoted value.
+			quote := rune(s[0])
+			s = s[1:]
+			i := 0
+			for i < len(s) && rune(s[i]) != quote {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++ // skip escaped char
+				}
+				i++
+			}
+			value = s[:i]
+			if i < len(s) {
+				s = s[i+1:] // consume closing quote
+			} else {
+				s = ""
+			}
+		} else {
+			// Bare value: read until whitespace or comma.
+			end = 0
+			for end < len(s) && s[end] != ' ' && s[end] != '\t' && s[end] != ',' {
+				end++
+			}
+			value = s[:end]
+			s = s[end:]
+		}
+		opts[key] = value
+	}
+	return opts
 }
 
 // parseBlockText collects indented lines as block text.

@@ -8,6 +8,32 @@ import (
 	"sync"
 )
 
+// FilterFunc is the signature for a filter function that also receives the
+// key=value options parsed from the filter header, e.g.:
+//
+//	:markdown(flavor="gfm" pretty=true)
+//
+// The options map is never nil (it is an empty map when no options were given).
+// Use SimpleFilter to wrap a plain func(string)(string,error) so it satisfies
+// this interface automatically.
+type FilterFunc func(text string, options map[string]string) (string, error)
+
+// SimpleFilter adapts a plain func(string)(string,error) into a FilterFunc so
+// that existing filter implementations continue to work with the new API.
+//
+//	opts.Filters["upper"] = gopug.SimpleFilter(func(s string, _ map[string]string) (string, error) {
+//	    return strings.ToUpper(s), nil
+//	})
+//
+// Or more concisely, wrapping an old-style func:
+//
+//	opts.Filters["upper"] = gopug.SimpleFilter(myOldFilter)
+func SimpleFilter(fn func(string) (string, error)) FilterFunc {
+	return func(text string, _ map[string]string) (string, error) {
+		return fn(text)
+	}
+}
+
 // compiledCache caches the result of CompileFile keyed by absolute file path.
 // The cached entries are invalidated by ClearCache().
 var compiledCache sync.Map // map[string]*Template
@@ -29,10 +55,10 @@ type Template struct {
 
 // Options configures template compilation and rendering behavior.
 type Options struct {
-	Basedir string                                  // root directory for absolute paths
-	Pretty  bool                                    // pretty-print HTML output
-	Globals map[string]interface{}                  // data available to all renders
-	Filters map[string]func(string) (string, error) // custom filters
+	Basedir string                     // root directory for absolute paths
+	Pretty  bool                       // pretty-print HTML output
+	Globals map[string]interface{}     // data available to all renders
+	Filters map[string]FilterFunc      // custom filters (receive body text + parsed options)
 }
 
 // Render compiles a Pug template string and renders it with the given data.

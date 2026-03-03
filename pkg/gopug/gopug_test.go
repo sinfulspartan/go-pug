@@ -1339,17 +1339,17 @@ func TestExtendsCycleDetection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // uppercaseFilter is a simple test filter that uppercases its input.
-func uppercaseFilter(s string) (string, error) {
+func uppercaseFilter(s string, _ map[string]string) (string, error) {
 	return strings.ToUpper(s), nil
 }
 
 // wrapFilter wraps content in square brackets.
-func wrapFilter(s string) (string, error) {
+func wrapFilter(s string, _ map[string]string) (string, error) {
 	return "[" + s + "]", nil
 }
 
 // exclaim appends "!" to each line.
-func exclaimFilter(s string) (string, error) {
+func exclaimFilter(s string, _ map[string]string) (string, error) {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
 		if l != "" {
@@ -1361,7 +1361,7 @@ func exclaimFilter(s string) (string, error) {
 
 func filterOpts() *Options {
 	return &Options{
-		Filters: map[string]func(string) (string, error){
+		Filters: map[string]FilterFunc{
 			"uppercase": uppercaseFilter,
 			"wrap":      wrapFilter,
 			"exclaim":   exclaimFilter,
@@ -1467,7 +1467,7 @@ func TestFilterIncludeRawWithFilter(t *testing.T) {
 	src := "include :uppercase testdata/article.txt"
 	opts := &Options{
 		Basedir: ".",
-		Filters: map[string]func(string) (string, error){
+		Filters: map[string]FilterFunc{
 			"uppercase": uppercaseFilter,
 		},
 	}
@@ -2880,19 +2880,21 @@ func TestDoctypeCustom(t *testing.T) {
 
 // ── Filters — options & inline ────────────────────────────────────────────────
 
-// TestFilterWithOptions verifies that a custom filter registered via
-// Options.Filters is invoked and its output appears in the rendered HTML.
-// Note: go-pug's filter signature is func(string)(string,error); filter
-// options (parenthesised key=value pairs) are parsed by the lexer but the
-// engine passes only the body text to the function — options are not yet
-// forwarded to the Go function.
+// TestFilterWithOptions verifies that filter options (key=value pairs in
+// parentheses) are parsed and forwarded to the filter function.
 func TestFilterWithOptions(t *testing.T) {
-	prefixFilter := func(text string) (string, error) {
-		return ">> " + strings.TrimSpace(text), nil
+	var receivedOpts map[string]string
+	prefixFilter := func(text string, opts map[string]string) (string, error) {
+		receivedOpts = opts
+		prefix := opts["prefix"]
+		if prefix == "" {
+			prefix = ">>"
+		}
+		return prefix + " " + strings.TrimSpace(text), nil
 	}
-	src := "p\n  :prefix-filter\n    hello"
+	src := "p\n  :prefix-filter(prefix=\"--\")\n    hello"
 	opts := &Options{
-		Filters: map[string]func(string) (string, error){
+		Filters: map[string]FilterFunc{
 			"prefix-filter": prefixFilter,
 		},
 	}
@@ -2900,19 +2902,86 @@ func TestFilterWithOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	assertContains(t, out, ">> ")
-	assertContains(t, out, "hello")
+	assertContains(t, out, "-- hello")
+	if receivedOpts == nil {
+		t.Fatal("filter options map was nil; expected non-nil map")
+	}
+	if receivedOpts["prefix"] != "--" {
+		t.Errorf("expected opts[prefix]=--; got %q", receivedOpts["prefix"])
+	}
+}
+
+// TestFilterOptionsNoOptions verifies that a filter called without options
+// receives an empty (non-nil) map.
+func TestFilterOptionsNoOptions(t *testing.T) {
+	var receivedOpts map[string]string
+	spy := func(text string, opts map[string]string) (string, error) {
+		receivedOpts = opts
+		return text, nil
+	}
+	src := ":spy\n  body"
+	opts := &Options{Filters: map[string]FilterFunc{"spy": spy}}
+	_, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if receivedOpts == nil {
+		t.Fatal("expected non-nil options map for filter with no options")
+	}
+	if len(receivedOpts) != 0 {
+		t.Errorf("expected empty options map; got %v", receivedOpts)
+	}
+}
+
+// TestFilterOptionsBareFlag verifies that a bare flag (no =value) in filter
+// options is stored with value "true".
+func TestFilterOptionsBareFlag(t *testing.T) {
+	var receivedOpts map[string]string
+	spy := func(text string, opts map[string]string) (string, error) {
+		receivedOpts = opts
+		return text, nil
+	}
+	src := ":spy(pretty)\n  body"
+	opts := &Options{Filters: map[string]FilterFunc{"spy": spy}}
+	_, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if receivedOpts["pretty"] != "true" {
+		t.Errorf("expected opts[pretty]=true; got %q", receivedOpts["pretty"])
+	}
+}
+
+// TestFilterOptionsMultipleKeys verifies multiple key=val pairs are all forwarded.
+func TestFilterOptionsMultipleKeys(t *testing.T) {
+	var receivedOpts map[string]string
+	spy := func(text string, opts map[string]string) (string, error) {
+		receivedOpts = opts
+		return text, nil
+	}
+	src := ":spy(flavor=\"gfm\", pretty=true)\n  body"
+	opts := &Options{Filters: map[string]FilterFunc{"spy": spy}}
+	_, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if receivedOpts["flavor"] != "gfm" {
+		t.Errorf("expected opts[flavor]=gfm; got %q", receivedOpts["flavor"])
+	}
+	if receivedOpts["pretty"] != "true" {
+		t.Errorf("expected opts[pretty]=true; got %q", receivedOpts["pretty"])
+	}
 }
 
 // TestFilterInlineShortSyntax verifies the short inline filter syntax:
 // p\n  :filtername text  (filter applied to indented body text)
 func TestFilterInlineShortSyntax(t *testing.T) {
-	upper := func(text string) (string, error) {
+	upper := func(text string, _ map[string]string) (string, error) {
 		return strings.ToUpper(strings.TrimSpace(text)), nil
 	}
 	src := "p\n  :upper hello world"
 	opts := &Options{
-		Filters: map[string]func(string) (string, error){
+		Filters: map[string]FilterFunc{
 			"upper": upper,
 		},
 	}
@@ -2925,15 +2994,22 @@ func TestFilterInlineShortSyntax(t *testing.T) {
 
 // TestFilterAddStartEnd verifies the custom-filter example from the Pug docs:
 // a filter that wraps its body text with a header and footer line.
-// (The Pug docs show this driven by option flags; here we use the engine's
-// func(string)(string,error) signature and bake the behaviour in directly.)
+// Options-aware version: when option start= or end= are present, use them.
 func TestFilterAddStartEnd(t *testing.T) {
-	myFilter := func(text string) (string, error) {
-		return "Start\n" + strings.TrimRight(text, "\n") + "\nEnd", nil
+	myFilter := func(text string, opts map[string]string) (string, error) {
+		start := opts["start"]
+		if start == "" {
+			start = "Start"
+		}
+		end := opts["end"]
+		if end == "" {
+			end = "End"
+		}
+		return start + "\n" + strings.TrimRight(text, "\n") + "\n" + end, nil
 	}
 	src := "p\n  :my-filter\n    Filter\n    Body"
 	options := &Options{
-		Filters: map[string]func(string) (string, error){
+		Filters: map[string]FilterFunc{
 			"my-filter": myFilter,
 		},
 	}
@@ -2945,6 +3021,34 @@ func TestFilterAddStartEnd(t *testing.T) {
 	assertContains(t, out, "Filter")
 	assertContains(t, out, "Body")
 	assertContains(t, out, "End")
+}
+
+// TestFilterAddStartEndWithOptions verifies that named options override the defaults.
+func TestFilterAddStartEndWithOptions(t *testing.T) {
+	myFilter := func(text string, opts map[string]string) (string, error) {
+		start := opts["start"]
+		if start == "" {
+			start = "Start"
+		}
+		end := opts["end"]
+		if end == "" {
+			end = "End"
+		}
+		return start + "\n" + strings.TrimRight(text, "\n") + "\n" + end, nil
+	}
+	src := "p\n  :my-filter(start=\"BEGIN\", end=\"FINISH\")\n    Content"
+	options := &Options{
+		Filters: map[string]FilterFunc{
+			"my-filter": myFilter,
+		},
+	}
+	out, err := Render(src, nil, options)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "BEGIN")
+	assertContains(t, out, "Content")
+	assertContains(t, out, "FINISH")
 }
 
 // ── Code ──────────────────────────────────────────────────────────────────────

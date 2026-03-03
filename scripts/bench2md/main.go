@@ -1,5 +1,5 @@
 // bench2md converts the output of `go test -bench` (read from stdin) into a
-// Markdown report written to stdout.
+// human-readable report written to stdout or a file.
 //
 // Usage:
 //
@@ -7,11 +7,14 @@
 //
 // Optional flags:
 //
-//	-o <file>   write output to a file instead of stdout
+//	-o <file>        write output to a file instead of stdout
+//	-format <fmt>    output format: md (default), json, csv
 package main
 
 import (
 	"bufio"
+	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -30,11 +33,13 @@ import (
 
 // result holds the parsed data for a single benchmark line.
 type result struct {
-	name   string // stripped name, e.g. "CompileSmall"
-	iters  int64
-	ns     float64 // ns/op
-	bop    float64 // B/op  (-1 = not present)
-	aop    int64   // allocs/op  (-1 = not present)
+	name    string  // stripped name, e.g. "CompileSmall"
+	group   string  // section heading
+	iters   int64
+	ns      float64 // ns/op
+	bop     float64 // B/op  (-1 = not present)
+	aop     int64   // allocs/op  (-1 = not present)
+	hasMem  bool
 }
 
 // group is an ordered collection of results under a section heading.
@@ -51,6 +56,15 @@ type report struct {
 	pkg     string
 	elapsed string
 	groups  []group // in order of first appearance
+}
+
+// allResults returns every result across all groups in order.
+func (rep *report) allResults() []result {
+	var out []result
+	for _, g := range rep.groups {
+		out = append(out, g.rows...)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +115,8 @@ var benchLine = regexp.MustCompile(
 // elapsedLine matches the final "ok  pkg  1.234s" line.
 var elapsedLine = regexp.MustCompile(`\b(\d+\.\d+s)\s*$`)
 
-// stripSuffix removes the leading "Benchmark" prefix and trailing "-N" GOMAXPROCS
-// suffix from a raw benchmark name like "BenchmarkCompileSmall-16".
+// stripSuffix removes the leading "Benchmark" prefix and trailing "-N"
+// GOMAXPROCS suffix from a raw name like "BenchmarkCompileSmall-16".
 func stripSuffix(raw string) string {
 	s := strings.TrimPrefix(raw, "Benchmark")
 	if idx := strings.LastIndex(s, "-"); idx >= 0 {
@@ -157,12 +171,22 @@ func parse(r io.Reader) report {
 			ns, _ := strconv.ParseFloat(m[3], 64)
 			bop := -1.0
 			aop := int64(-1)
+			hasMem := false
 			if m[4] != "" {
 				bop, _ = strconv.ParseFloat(m[4], 64)
 				aop, _ = strconv.ParseInt(m[5], 10, 64)
+				hasMem = true
 			}
-			res := result{name: name, iters: iters, ns: ns, bop: bop, aop: aop}
 			h := groupFor(name)
+			res := result{
+				name:   name,
+				group:  h,
+				iters:  iters,
+				ns:     ns,
+				bop:    bop,
+				aop:    aop,
+				hasMem: hasMem,
+			}
 			groupMap[h].rows = append(groupMap[h].rows, res)
 		}
 	}
@@ -175,7 +199,7 @@ func parse(r io.Reader) report {
 }
 
 // ---------------------------------------------------------------------------
-// Formatting helpers
+// Formatting helpers (shared by md and csv)
 // ---------------------------------------------------------------------------
 
 // comma formats an integer with thousands separators: 1234567 -> "1,234,567".
@@ -220,7 +244,9 @@ func humanNS(ns float64) string {
 // humanBytes converts a byte count to a readable string.
 func humanBytes(b float64) string {
 	switch {
-	case b <= 0:
+	case b < 0:
+		return "-"
+	case b == 0:
 		return "0 B"
 	case b < 1024:
 		return fmt.Sprintf("%s B", comma(int64(math.Round(b))))
@@ -235,7 +261,7 @@ func humanBytes(b float64) string {
 // Markdown output
 // ---------------------------------------------------------------------------
 
-func render(w io.Writer, rep report, goVersion string) {
+func renderMarkdown(w io.Writer, rep report, goVersion string) {
 	date := time.Now().Format("2006-01-02")
 
 	// Header metadata table
@@ -272,7 +298,7 @@ func render(w io.Writer, rep report, goVersion string) {
 		// Determine whether any row has memory stats.
 		hasMem := false
 		for _, r := range g.rows {
-			if r.bop >= 0 {
+			if r.hasMem {
 				hasMem = true
 				break
 			}
@@ -318,16 +344,126 @@ func render(w io.Writer, rep report, goVersion string) {
 }
 
 // ---------------------------------------------------------------------------
+// CSV output
+// ---------------------------------------------------------------------------
+
+func renderCSV(w io.Writer, rep report, goVersion string) {
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	// Header row
+	cw.Write([]string{ //nolint:errcheck
+		"benchmark", "group", "iterations",
+		"ns_per_op", "bytes_per_op", "allocs_per_op",
+		"go_version", "goos", "goarch", "cpu", "package", "date",
+	})
+
+	date := time.Now().Format("2006-01-02")
+
+	for _, r := range rep.allResults() {
+		bop := ""
+		if r.hasMem {
+			bop = strconv.FormatFloat(r.bop, 'f', 2, 64)
+		}
+		aop := ""
+		if r.hasMem {
+			aop = strconv.FormatInt(r.aop, 10)
+		}
+		cw.Write([]string{ //nolint:errcheck
+			r.name,
+			r.group,
+			strconv.FormatInt(r.iters, 10),
+			strconv.FormatFloat(r.ns, 'f', 2, 64),
+			bop,
+			aop,
+			goVersion,
+			rep.goos,
+			rep.goarch,
+			rep.cpu,
+			rep.pkg,
+			date,
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JSON output
+// ---------------------------------------------------------------------------
+
+// jsonReport is the top-level JSON document structure.
+type jsonReport struct {
+	Date       string        `json:"date"`
+	GoVersion  string        `json:"go_version"`
+	GOOS       string        `json:"goos,omitempty"`
+	GOARCH     string        `json:"goarch,omitempty"`
+	CPU        string        `json:"cpu,omitempty"`
+	Package    string        `json:"package,omitempty"`
+	Elapsed    string        `json:"elapsed,omitempty"`
+	Benchmarks []jsonResult  `json:"benchmarks"`
+}
+
+// jsonResult represents one benchmark result entry.
+type jsonResult struct {
+	Name        string  `json:"name"`
+	Group       string  `json:"group"`
+	Iterations  int64   `json:"iterations"`
+	NsPerOp     float64 `json:"ns_per_op"`
+	BytesPerOp  float64 `json:"bytes_per_op,omitempty"`
+	AllocsPerOp int64   `json:"allocs_per_op,omitempty"`
+	HasMem      bool    `json:"has_mem"`
+}
+
+func renderJSON(w io.Writer, rep report, goVersion string) error {
+	doc := jsonReport{
+		Date:      time.Now().Format("2006-01-02"),
+		GoVersion: goVersion,
+		GOOS:      rep.goos,
+		GOARCH:    rep.goarch,
+		CPU:       rep.cpu,
+		Package:   rep.pkg,
+		Elapsed:   rep.elapsed,
+	}
+
+	for _, r := range rep.allResults() {
+		jr := jsonResult{
+			Name:       r.name,
+			Group:      r.group,
+			Iterations: r.iters,
+			NsPerOp:    r.ns,
+			HasMem:     r.hasMem,
+		}
+		if r.hasMem {
+			jr.BytesPerOp = r.bop
+			jr.AllocsPerOp = r.aop
+		}
+		doc.Benchmarks = append(doc.Benchmarks, jr)
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(doc)
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 func main() {
 	outFile := flag.String("o", "", "write output to `file` instead of stdout")
+	format := flag.String("format", "md", "output format: md, json, csv")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: go test -bench . -benchmem ./pkg/gopug | go run ./scripts/bench2md [-o file]")
+		fmt.Fprintln(os.Stderr, "Usage: go test -bench . -benchmem ./pkg/gopug | go run ./scripts/bench2md [-o file] [-format md|json|csv]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	switch *format {
+	case "md", "json", "csv":
+		// valid
+	default:
+		fmt.Fprintf(os.Stderr, "bench2md: unknown format %q (choose md, json, or csv)\n", *format)
+		os.Exit(1)
+	}
 
 	rep := parse(os.Stdin)
 
@@ -344,5 +480,15 @@ func main() {
 		out = f
 	}
 
-	render(out, rep, goVersion)
+	switch *format {
+	case "md":
+		renderMarkdown(out, rep, goVersion)
+	case "csv":
+		renderCSV(out, rep, goVersion)
+	case "json":
+		if err := renderJSON(out, rep, goVersion); err != nil {
+			fmt.Fprintf(os.Stderr, "bench2md: JSON encode error: %v\n", err)
+			os.Exit(1)
+		}
+	}
 }

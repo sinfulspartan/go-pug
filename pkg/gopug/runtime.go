@@ -1352,7 +1352,7 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 		if !ok {
 			return fmt.Errorf("include: filter %q is not registered; register it via Options.Filters", inc.Filter)
 		}
-		result, err := fn(string(raw))
+		result, err := fn(string(raw), make(map[string]string))
 		if err != nil {
 			return fmt.Errorf("include: filter %q error on %q: %w", inc.Filter, abs, err)
 		}
@@ -1494,6 +1494,13 @@ func (r *Runtime) renderMixinBlockSlot() error {
 func (r *Runtime) renderFilter(filter *FilterNode) error {
 	content := filter.Content
 
+	// Normalise the options map: always non-nil so filter functions don't
+	// need to guard against a nil map.
+	options := filter.Options
+	if options == nil {
+		options = make(map[string]string)
+	}
+
 	// Build the ordered list of filters to apply: innermost first.
 	// filter.Name is the outermost; filter.Subfilter is a colon-separated
 	// chain of inner filters (may be empty).
@@ -1512,12 +1519,20 @@ func (r *Runtime) renderFilter(filter *FilterNode) error {
 	chain = append(chain, filter.Name)
 
 	// Apply each filter in the chain.
-	for _, name := range chain {
+	// Options are only forwarded to the outermost (last) filter in the chain;
+	// inner (subfilter) steps receive an empty options map because the
+	// syntax only allows a single options block on the outermost name.
+	for i, name := range chain {
 		fn, ok := r.lookupFilter(name)
 		if !ok {
 			return fmt.Errorf("filter %q is not registered; register it via Options.Filters", name)
 		}
-		result, err := fn(content)
+		stepOpts := make(map[string]string)
+		if i == len(chain)-1 {
+			// Outermost filter receives the parsed options.
+			stepOpts = options
+		}
+		result, err := fn(content, stepOpts)
 		if err != nil {
 			return fmt.Errorf("filter %q error: %w", name, err)
 		}
@@ -1529,7 +1544,7 @@ func (r *Runtime) renderFilter(filter *FilterNode) error {
 }
 
 // lookupFilter finds a filter function by name. It checks Options.Filters.
-func (r *Runtime) lookupFilter(name string) (func(string) (string, error), bool) {
+func (r *Runtime) lookupFilter(name string) (FilterFunc, bool) {
 	if r.opts != nil && r.opts.Filters != nil {
 		if fn, ok := r.opts.Filters[name]; ok {
 			return fn, true

@@ -70,6 +70,7 @@ const (
 	// Filters
 	TokenFilter
 	TokenFilterColon
+	TokenFilterOptions // raw "(key=val, ...)" string captured after filter name
 
 	// Comments
 	TokenComment
@@ -154,6 +155,7 @@ func tokenTypeName(tt TokenType) string {
 		TokenInclude:               "Include",
 		TokenFilter:                "Filter",
 		TokenFilterColon:           "FilterColon",
+		TokenFilterOptions:         "FilterOptions",
 		TokenComment:               "Comment",
 		TokenCommentUnbuffered:     "CommentUnbuffered",
 		TokenDoctype:               "Doctype",

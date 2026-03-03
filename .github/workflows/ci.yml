@@ -1,0 +1,137 @@
+# ---------------------------------------------------------------------------
+# GitHub Actions CI — Go-Pug
+# ---------------------------------------------------------------------------
+# Jobs:
+#   test   — go vet + full test suite (matrix: ubuntu + windows)
+#   race   — test suite with -race detector (ubuntu only)
+#   bench  — run benchmarks and upload BENCHMARKS.md + benchmarks.json as artifacts
+# ---------------------------------------------------------------------------
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch: # allow manual runs from the GitHub UI
+
+permissions:
+  contents: read
+
+# Cancel in-progress runs for the same ref so stale jobs don't pile up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Test ──────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -count=1 -timeout 120s ./...
+
+  # ── Race detector ─────────────────────────────────────────────────────────
+  race:
+    name: Test (race detector)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests with race detector
+        run: go test -count=1 -race -timeout 120s ./...
+
+  # ── Benchmarks ────────────────────────────────────────────────────────────
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    # Only run on pushes to the default branches (not on every PR) to keep
+    # CI fast; remove the `if` below if you want bench results on PRs too.
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run benchmarks (Markdown report)
+        run: |
+          go test -count=1 -run='^$' -bench=. -benchtime=1s -benchmem \
+            ./pkg/gopug \
+          | go run ./scripts/bench2md -format md -o BENCHMARKS.md
+
+      - name: Run benchmarks (JSON report)
+        run: |
+          go test -count=1 -run='^$' -bench=. -benchtime=1s -benchmem \
+            ./pkg/gopug \
+          | go run ./scripts/bench2md -format json -o benchmarks.json
+
+      - name: Run benchmarks (CSV report)
+        run: |
+          go test -count=1 -run='^$' -bench=. -benchtime=1s -benchmem \
+            ./pkg/gopug \
+          | go run ./scripts/bench2md -format csv -o benchmarks.csv
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            BENCHMARKS.md
+            benchmarks.json
+            benchmarks.csv
+          retention-days: 90
+          if-no-files-found: error
+
+  # ── Build (smoke-test the CLI binary) ────────────────────────────────────
+  build:
+    name: Build CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        run: go build -v -o bin/go-pug ./cmd

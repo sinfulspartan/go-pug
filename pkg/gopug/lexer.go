@@ -532,10 +532,35 @@ func (l *Lexer) scanFilter() error {
 		}
 	}
 
-	// Capture any same-line inline content after the filter name(s).
+	// Check for optional filter options in parentheses:
+	//   :filtername(key=val, key2="val2") body…
+	// We capture the raw content inside the parens as a TokenFilterOptions
+	// token so the parser can decode the key=value pairs.
+	l.skipSpaces()
+	if l.peek() == '(' {
+		l.advance() // consume '('
+		raw := ""
+		depth := 1
+		for l.pos < len(l.input) && depth > 0 {
+			ch := l.peek()
+			if ch == '(' {
+				depth++
+			} else if ch == ')' {
+				depth--
+				if depth == 0 {
+					l.advance() // consume closing ')'
+					break
+				}
+			}
+			raw += string(l.advance())
+		}
+		l.addToken(TokenFilterOptions, strings.TrimSpace(raw))
+		l.skipSpaces()
+	}
+
+	// Capture any same-line inline content after the filter name(s) / options.
 	// e.g.  :uppercase Hello World
 	//               filter^  ^inline text
-	l.skipSpaces()
 	inline := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		inline += string(l.advance())

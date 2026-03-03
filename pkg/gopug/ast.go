@@ -267,6 +267,7 @@ type FilterNode struct {
 	Args      string
 	Content   string
 	Subfilter string
+	Options   map[string]string // parsed from (key=val, ...) after filter name
 	Line      int
 	Col       int
 }

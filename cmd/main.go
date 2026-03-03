@@ -110,11 +110,11 @@ p Inline:
   :wrap hello
 `
 	opts := &gopug.Options{
-		Filters: map[string]func(string) (string, error){
-			"uppercase": func(s string) (string, error) {
+		Filters: map[string]gopug.FilterFunc{
+			"uppercase": func(s string, _ map[string]string) (string, error) {
 				return strings.ToUpper(s), nil
 			},
-			"wrap": func(s string) (string, error) {
+			"wrap": func(s string, _ map[string]string) (string, error) {
 				return "[" + strings.TrimSpace(s) + "]", nil
 			},
 		},

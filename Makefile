@@ -50,6 +50,8 @@ COVER_HTML ?= coverage.html
 
 # -- Benchmark report tunables ------------------------------------------------
 BENCH_MD   ?= BENCHMARKS.md
+BENCH_JSON ?= benchmarks.json
+BENCH_CSV  ?= benchmarks.csv
 BENCH2MD   := ./scripts/bench2md
 
 # -- Tooling detection --------------------------------------------------------
@@ -61,7 +63,7 @@ GOLANGCI_LINT := $(shell which golangci-lint 2>/dev/null)
 # ---------------------------------------------------------------------------
 .PHONY: all help build run \
         test test-v test-race \
-        bench bench-short bench-cpu bench-mem bench-report \
+        bench bench-short bench-cpu bench-mem bench-report bench-json bench-csv \
         cover cover-html \
         fmt vet lint \
         tidy mod \
@@ -98,6 +100,8 @@ help:
 	@echo "    bench-cpu      Run benchmarks with CPU profiling  -> cpu.prof + $(BENCH_MD)"
 	@echo "    bench-mem      Run benchmarks with memory profiling -> mem.prof + $(BENCH_MD)"
 	@echo "    bench-report   Run benchmarks and write $(BENCH_MD) (requires Go)"
+	@echo "    bench-json     Run benchmarks and write benchmarks.json (machine-readable)"
+	@echo "    bench-csv      Run benchmarks and write benchmarks.csv (spreadsheet-friendly)"
 	@echo ""
 	@echo "  Coverage"
 	@echo "    cover          Generate coverage report (text + $(COVER_OUT))"
@@ -123,6 +127,8 @@ help:
 	@echo "    COVER_OUT=<file>     coverage profile output   (default: coverage.out)"
 	@echo "    COVER_HTML=<file>    coverage HTML output      (default: coverage.html)"
 	@echo "    BENCH_MD=<file>      benchmark report output   (default: BENCHMARKS.md)"
+	@echo "    BENCH_JSON=<file>    benchmark JSON output     (default: benchmarks.json)"
+	@echo "    BENCH_CSV=<file>     benchmark CSV output      (default: benchmarks.csv)"
 	@echo ""
 
 # ---------------------------------------------------------------------------
@@ -225,8 +231,30 @@ bench-report:
 	           -benchtime $(BENCHTIME) \
 	           -benchmem \
 	           $(PKG) \
-	| $(GO) run $(BENCH2MD) -o $(BENCH_MD)
+	| $(GO) run $(BENCH2MD) -format md -o $(BENCH_MD)
 	@echo "-> $(BENCH_MD) written"
+
+bench-json:
+	@echo "=> Benchmarks -> $(BENCH_JSON)  (JSON format)"
+	$(GO) test -count=$(BENCHCOUNT) \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime $(BENCHTIME) \
+	           -benchmem \
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -format json -o $(BENCH_JSON)
+	@echo "-> $(BENCH_JSON) written"
+
+bench-csv:
+	@echo "=> Benchmarks -> $(BENCH_CSV)  (CSV format)"
+	$(GO) test -count=$(BENCHCOUNT) \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime $(BENCHTIME) \
+	           -benchmem \
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -format csv -o $(BENCH_CSV)
+	@echo "-> $(BENCH_CSV) written"
 
 # ---------------------------------------------------------------------------
 # Coverage
@@ -287,5 +315,5 @@ mod:
 
 clean:
 	@echo "=> Cleaning build artifacts"
-	-rm -rf $(BIN_DIR) ; rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(_BENCH_TMP) $(TEST_BIN)
+	-rm -rf $(BIN_DIR) ; rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV) $(_BENCH_TMP) $(TEST_BIN)
 	@echo "-> Done"
