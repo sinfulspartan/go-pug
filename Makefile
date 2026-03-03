@@ -1,81 +1,277 @@
-# Makefile - common targets for the go-pug module
+# Makefile for github.com/sinfulspartan/go-pug
+#
+# Requires GNU Make.  On Windows, Git Bash must be installed so that
+# sh.exe is available at C:/Program Files/Git/usr/bin/sh.exe.
+# On Linux / macOS the system sh is used automatically.
 #
 # Usage:
-#   make            # runs 'all' (test then build)
-#   make build      # build the example binary into bin/
-#   make test       # run unit tests
-#   make fmt        # run gofmt and go fmt
-#   make vet        # run go vet
-#   make lint       # run golangci-lint if installed
-#   make install    # go install ./...
-#   make tidy       # go mod tidy
-#   make clean      # remove build artifacts
-#   make help       # show this help
-#
-# Note: This Makefile assumes a POSIX shell (sh). On Windows use an environment
-# that provides these utilities (Git Bash, WSL, etc.) or run commands manually.
+#   make              # default: vet + test + build
+#   make help         # list all targets
 
-MODULE := github.com/sinfulspartan/go-pug
-GO := go
-BIN_DIR := bin
-CMD := ./cmd/example
+# ---------------------------------------------------------------------------
+# Shell — must be set before any rules so every recipe runs under POSIX sh.
+# GNU Make uses SHELL + .SHELLFLAGS to invoke each recipe line.
+# ---------------------------------------------------------------------------
+ifeq ($(OS),Windows_NT)
+  SHELL     := C:/Program Files/Git/usr/bin/sh.exe
+else
+  SHELL     := /bin/sh
+endif
+.SHELLFLAGS := -c
 
-# Detect golangci-lint if available
-GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null || true)
+# ---------------------------------------------------------------------------
+# Variables
+# ---------------------------------------------------------------------------
+MODULE   := github.com/sinfulspartan/go-pug
+PKG      := ./pkg/gopug
+CMD      := ./cmd
+GO       := go
+BIN_DIR  := bin
+BINARY   := $(BIN_DIR)/go-pug
+
+# -- Test binary left behind by -cpuprofile / -memprofile ---------------------
+# go test writes a compiled test binary named after the package when profiling.
+# On Windows it gets a .exe suffix; on POSIX it has no suffix.
+ifeq ($(OS),Windows_NT)
+  TEST_BIN := gopug.test.exe
+else
+  TEST_BIN := gopug.test
+endif
+
+# -- Benchmark tunables -------------------------------------------------------
+# Override on the command line:  make bench BENCH=BenchmarkRender BENCHTIME=2s
+BENCH      ?= .
+BENCHTIME  ?= 1s
+BENCHCOUNT ?= 1
+
+# -- Coverage tunables --------------------------------------------------------
+COVER_OUT  ?= coverage.out
+COVER_HTML ?= coverage.html
+
+# -- Benchmark report tunables ------------------------------------------------
+BENCH_MD   ?= BENCHMARKS.md
+BENCH2MD   := ./scripts/bench2md
+
+# -- Tooling detection --------------------------------------------------------
+# which is available inside Git Bash sh on Windows and on all POSIX systems.
+GOLANGCI_LINT := $(shell which golangci-lint 2>/dev/null)
+
+# ---------------------------------------------------------------------------
+# Phony targets
+# ---------------------------------------------------------------------------
+.PHONY: all help build run \
+        test test-v test-race \
+        bench bench-short bench-cpu bench-mem bench-report \
+        cover cover-html \
+        fmt vet lint \
+        tidy mod \
+        clean
 
 .DEFAULT_GOAL := all
 
-.PHONY: all help build test fmt vet lint install tidy mod clean
+# ---------------------------------------------------------------------------
+# Default
+# ---------------------------------------------------------------------------
 
-all: test build
+all: vet test build
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
 
 help:
-	@echo "Makefile for $(MODULE)"
-	@echo
-	@echo "Available targets:"
-	@echo "  all      - run tests and build"
-	@echo "  build    - build example binary to $(BIN_DIR)/"
-	@echo "  test     - run go tests"
-	@echo "  fmt      - run gofmt and go fmt"
-	@echo "  vet      - run go vet"
-	@echo "  lint     - run golangci-lint (if installed)"
-	@echo "  install  - go install ./..."
-	@echo "  tidy     - go mod tidy"
-	@echo "  mod      - download modules (go mod download)"
-	@echo "  clean    - remove build artifacts"
-	@echo "  help     - show this message"
+	@echo ""
+	@echo "  go-pug -- Makefile targets"
+	@echo "  -----------------------------------------------------------------"
+	@echo "  Build"
+	@echo "    build          Build the CLI binary to $(BINARY)"
+	@echo "    run            Build and run the demo binary"
+	@echo ""
+	@echo "  Test"
+	@echo "    test           Run the full test suite"
+	@echo "    test-v         Run tests in verbose mode"
+	@echo "    test-race      Run tests with the race detector"
+	@echo ""
+	@echo "  Benchmarks"
+	@echo "    bench          Run all benchmarks  (BENCH=. BENCHTIME=1s) + $(BENCH_MD)"
+	@echo "    bench-short    Run benchmarks with -benchtime=100ms (quick check) + $(BENCH_MD)"
+	@echo "    bench-cpu      Run benchmarks with CPU profiling  -> cpu.prof + $(BENCH_MD)"
+	@echo "    bench-mem      Run benchmarks with memory profiling -> mem.prof + $(BENCH_MD)"
+	@echo "    bench-report   Run benchmarks and write $(BENCH_MD) (requires Go)"
+	@echo ""
+	@echo "  Coverage"
+	@echo "    cover          Generate coverage report (text + $(COVER_OUT))"
+	@echo "    cover-html     Open an HTML coverage report in your browser"
+	@echo ""
+	@echo "  Code quality"
+	@echo "    fmt            Format source files with gofmt -s"
+	@echo "    vet            Run go vet"
+	@echo "    lint           Run golangci-lint (if installed)"
+	@echo ""
+	@echo "  Dependencies"
+	@echo "    tidy           Run go mod tidy"
+	@echo "    mod            Run go mod download"
+	@echo ""
+	@echo "  Housekeeping"
+	@echo "    clean          Remove $(BIN_DIR)/, $(COVER_OUT), $(COVER_HTML), *.prof, $(BENCH_MD)"
+	@echo "    help           Show this message"
+	@echo ""
+	@echo "  Tunable variables (pass on the command line):"
+	@echo "    BENCH=<regex>        benchmark filter          (default: .)"
+	@echo "    BENCHTIME=<dur>      time per benchmark        (default: 1s)"
+	@echo "    BENCHCOUNT=<n>       repetitions per benchmark (default: 1)"
+	@echo "    COVER_OUT=<file>     coverage profile output   (default: coverage.out)"
+	@echo "    COVER_HTML=<file>    coverage HTML output      (default: coverage.html)"
+	@echo "    BENCH_MD=<file>      benchmark report output   (default: BENCHMARKS.md)"
+	@echo ""
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
 
 build:
-	@echo "=> Building example binary"
-	@mkdir -p $(BIN_DIR)
-	$(GO) build -v -o $(BIN_DIR)/example $(CMD)
-	@echo "-> built $(BIN_DIR)/example"
+	@echo "=> Building $(BINARY)"
+	@mkdir -p $(BIN_DIR) && $(GO) build -v -o $(BINARY) $(CMD)
+	@echo "-> $(BINARY) ready"
+	@echo ""
+
+run: build
+	@echo "=> Running demo"
+	$(BINARY)
+
+# ---------------------------------------------------------------------------
+# Test
+# ---------------------------------------------------------------------------
 
 test:
-	@echo "=> Running tests"
-	$(GO) test ./...
+	@echo "=> Running tests ($(PKG))"
+	$(GO) test -count=1 $(PKG)
+
+test-v:
+	@echo "=> Running tests -- verbose ($(PKG))"
+	$(GO) test -count=1 -v $(PKG)
+
+test-race:
+	@echo "=> Running tests with race detector ($(PKG))"
+	$(GO) test -count=1 -race $(PKG)
+
+# ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+
+# _BENCH_TMP is a scratch file used to capture raw benchmark output so it can
+# be both displayed to the terminal and fed to bench2md in a single run.
+# Using a temp file avoids process-substitution (bash-only) and keeps
+# recipes POSIX-sh compatible.
+_BENCH_TMP := bench_raw.txt
+
+bench:
+	@echo "=> Benchmarks  BENCH=$(BENCH)  BENCHTIME=$(BENCHTIME)  COUNT=$(BENCHCOUNT)"
+	$(GO) test -count=$(BENCHCOUNT) \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime $(BENCHTIME) \
+	           -benchmem \
+	           $(PKG) | tee $(_BENCH_TMP) ; \
+	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
+	rm -f $(_BENCH_TMP)
+	@echo "-> $(BENCH_MD) written"
+
+bench-short:
+	@echo "=> Benchmarks (short -- 100ms each)"
+	$(GO) test -count=1 \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime 100ms \
+	           -benchmem \
+	           $(PKG) | tee $(_BENCH_TMP) ; \
+	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
+	rm -f $(_BENCH_TMP)
+	@echo "-> $(BENCH_MD) written"
+
+bench-cpu:
+	@echo "=> Benchmarks with CPU profiling -> cpu.prof"
+	$(GO) test -count=1 \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime $(BENCHTIME) \
+	           -benchmem \
+	           -cpuprofile cpu.prof \
+	           $(PKG) | tee $(_BENCH_TMP) ; \
+	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
+	rm -f $(_BENCH_TMP) $(TEST_BIN)
+	@echo "-> cpu.prof written  (inspect with: go tool pprof cpu.prof)"
+	@echo "-> $(BENCH_MD) written"
+
+bench-mem:
+	@echo "=> Benchmarks with memory profiling -> mem.prof"
+	$(GO) test -count=1 \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime $(BENCHTIME) \
+	           -benchmem \
+	           -memprofile mem.prof \
+	           $(PKG) | tee $(_BENCH_TMP) ; \
+	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
+	rm -f $(_BENCH_TMP) $(TEST_BIN)
+	@echo "-> mem.prof written  (inspect with: go tool pprof mem.prof)"
+	@echo "-> $(BENCH_MD) written"
+
+bench-report:
+	@echo "=> Running benchmarks and writing $(BENCH_MD)"
+	$(GO) test -count=$(BENCHCOUNT) \
+	           -run "^$$" \
+	           -bench "$(BENCH)" \
+	           -benchtime $(BENCHTIME) \
+	           -benchmem \
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -o $(BENCH_MD)
+	@echo "-> $(BENCH_MD) written"
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+
+cover:
+	@echo "=> Generating coverage profile ($(COVER_OUT))"
+	$(GO) test -count=1 -coverprofile=$(COVER_OUT) -covermode=atomic $(PKG)
+	@echo ""
+	$(GO) tool cover -func=$(COVER_OUT)
+
+cover-html: cover
+	@echo "=> Generating HTML coverage report ($(COVER_HTML))"
+	$(GO) tool cover -html=$(COVER_OUT) -o $(COVER_HTML)
+	@echo "-> Opening $(COVER_HTML)"
+	@open "$(COVER_HTML)" 2>/dev/null \
+	  || xdg-open "$(COVER_HTML)" 2>/dev/null \
+	  || start "$(COVER_HTML)" 2>/dev/null \
+	  || echo "   Open $(COVER_HTML) in your browser"
+
+# ---------------------------------------------------------------------------
+# Code quality
+# ---------------------------------------------------------------------------
 
 fmt:
-	@echo "=> Formatting code"
+	@echo "=> Formatting source files"
 	$(GO) fmt ./...
-	# gofmt -s writes changes in-place; list files changed with -l
-	@gofmt -s -l -w .
+	gofmt -s -l -w .
 
 vet:
-	@echo "=> Running go vet"
+	@echo "=> go vet"
 	$(GO) vet ./...
 
 lint:
 ifneq ($(GOLANGCI_LINT),)
-	@echo "=> Running golangci-lint"
+	@echo "=> golangci-lint run"
 	$(GOLANGCI_LINT) run ./...
 else
-	@echo "=> golangci-lint not found; skipping lint. Install: https://golangci-lint.run/"
+	@echo "=> golangci-lint not found -- skipping"
+	@echo "   Install: https://golangci-lint.run/usage/install/"
 endif
 
-install:
-	@echo "=> go install ./..."
-	$(GO) install ./...
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
 
 tidy:
 	@echo "=> go mod tidy"
@@ -85,8 +281,11 @@ mod:
 	@echo "=> go mod download"
 	$(GO) mod download
 
+# ---------------------------------------------------------------------------
+# Housekeeping
+# ---------------------------------------------------------------------------
+
 clean:
-	@echo "=> Cleaning"
-	@rm -rf $(BIN_DIR)
-	@echo "Removed $(BIN_DIR) directory (if it existed)."
-	@echo "Done."
+	@echo "=> Cleaning build artifacts"
+	-rm -rf $(BIN_DIR) ; rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(_BENCH_TMP) $(TEST_BIN)
+	@echo "-> Done"
