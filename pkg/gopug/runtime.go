@@ -190,9 +190,13 @@ func (r *Runtime) renderComment(comment *CommentNode) error {
 func (r *Runtime) renderCode(code *CodeNode) error {
 	switch code.Type {
 	case CodeUnbuffered:
-		// Unbuffered code is executed but not output
-		_, err := r.evaluateExpr(code.Expression)
-		return err
+		// Unbuffered code is executed but not output.
+		// Supported forms:
+		//   var = expr      (assignment)
+		//   var++           (increment)
+		//   var--           (decrement)
+		// Anything else is evaluated and discarded.
+		return r.executeStatement(code.Expression)
 	case CodeBuffered:
 		// Buffered code is output (escaped)
 		val, err := r.evaluateExpr(code.Expression)
@@ -211,6 +215,115 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 		return nil
 	}
 	return nil
+}
+
+// executeStatement executes an unbuffered code statement, handling assignment
+// (var = expr), increment (var++), and decrement (var--).
+// For anything else the expression is evaluated and the result discarded.
+func (r *Runtime) executeStatement(stmt string) error {
+	stmt = strings.TrimSpace(stmt)
+
+	// var++ / var--
+	if strings.HasSuffix(stmt, "++") {
+		varName := strings.TrimSpace(stmt[:len(stmt)-2])
+		val, _ := r.lookup(varName)
+		n, ok := toFloat(val)
+		if !ok {
+			n = 0
+		}
+		r.setVar(varName, n+1)
+		return nil
+	}
+	if strings.HasSuffix(stmt, "--") {
+		varName := strings.TrimSpace(stmt[:len(stmt)-2])
+		val, _ := r.lookup(varName)
+		n, ok := toFloat(val)
+		if !ok {
+			n = 0
+		}
+		r.setVar(varName, n-1)
+		return nil
+	}
+
+	// var = expr  (simple assignment — not ==)
+	// Find the first = that is not preceded by !, <, >, = and not followed by =
+	if idx := findAssignOp(stmt); idx >= 0 {
+		varName := strings.TrimSpace(stmt[:idx])
+		rhsExpr := strings.TrimSpace(stmt[idx+1:])
+		val, err := r.evaluateExpr(rhsExpr)
+		if err != nil {
+			return err
+		}
+		r.setVar(varName, val)
+		return nil
+	}
+
+	// Fallback — evaluate and discard
+	_, err := r.evaluateExpr(stmt)
+	return err
+}
+
+// setVar writes a variable into the innermost scope.
+func (r *Runtime) setVar(name string, val interface{}) {
+	// Walk from innermost to outermost to update an existing binding
+	for i := len(r.scope) - 1; i >= 0; i-- {
+		if r.scope[i] == nil {
+			continue
+		}
+		if _, exists := r.scope[i][name]; exists {
+			r.scope[i][name] = val
+			return
+		}
+	}
+	// Not found in any scope — create in the innermost scope
+	top := len(r.scope) - 1
+	if r.scope[top] == nil {
+		r.scope[top] = make(map[string]interface{})
+	}
+	r.scope[top][name] = val
+}
+
+// findAssignOp finds the position of a simple = assignment operator that is
+// not part of ==, !=, <=, >=.  Returns -1 if not found.
+func findAssignOp(stmt string) int {
+	for i := 0; i < len(stmt); i++ {
+		if stmt[i] == '=' {
+			// Check character before
+			if i > 0 {
+				prev := stmt[i-1]
+				if prev == '!' || prev == '<' || prev == '>' || prev == '=' {
+					continue
+				}
+			}
+			// Check character after
+			if i+1 < len(stmt) && stmt[i+1] == '=' {
+				continue
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+// toFloat converts an interface{} value to float64.
+func toFloat(v interface{}) (float64, bool) {
+	if v == nil {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		return f, err == nil
+	}
+	return 0, false
 }
 
 // renderConditional renders if/else if/else blocks.
@@ -259,7 +372,38 @@ func (r *Runtime) renderEach(each *EachNode) error {
 		collVal = str
 	}
 
-	// Convert to slice/map
+	// Handle map iteration separately so we can expose both key and value.
+	if collVal != nil {
+		v := reflect.ValueOf(collVal)
+		if v.Kind() == reflect.Map {
+			if v.Len() == 0 {
+				for _, node := range each.ElseBody {
+					if err := r.renderNode(node); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			for _, mapKey := range v.MapKeys() {
+				scope := make(map[string]interface{})
+				scope[each.Item] = v.MapIndex(mapKey).Interface()
+				if each.Key != "" {
+					scope[each.Key] = fmt.Sprintf("%v", mapKey.Interface())
+				}
+				r.scope = append(r.scope, scope)
+				for _, node := range each.Body {
+					if err := r.renderNode(node); err != nil {
+						r.scope = r.scope[:len(r.scope)-1]
+						return err
+					}
+				}
+				r.scope = r.scope[:len(r.scope)-1]
+			}
+			return nil
+		}
+	}
+
+	// Convert to slice for arrays/slices and other values.
 	items := r.toSlice(collVal)
 
 	if len(items) == 0 {
@@ -340,7 +484,9 @@ func (r *Runtime) renderCase(c *CaseNode) error {
 		return err
 	}
 
-	// Check each when clause
+	// Check each when clause.
+	// Pug fall-through rule: an empty when (no body) falls through to the
+	// next when/default; a when WITH a body stops after rendering that body.
 	matched := false
 	for _, when := range c.Cases {
 		whenVal, err := r.evaluateExpr(when.Expression)
@@ -353,18 +499,29 @@ func (r *Runtime) renderCase(c *CaseNode) error {
 		}
 
 		if matched {
-			// Render when body
+			if len(when.Body) == 0 {
+				// Empty when — fall through to the next clause
+				continue
+			}
+			// Non-empty when — render and stop
 			for _, node := range when.Body {
 				if err := r.renderNode(node); err != nil {
 					return err
 				}
 			}
-			// No break in Pug case statements (fall-through by default)
+			return nil
 		}
 	}
 
-	// Render default if no match
-	if !matched && len(c.Default) > 0 {
+	// Render default if no when matched (or all matching whens were empty)
+	if matched {
+		// All matching whens had empty bodies and fell through to default
+		for _, node := range c.Default {
+			if err := r.renderNode(node); err != nil {
+				return err
+			}
+		}
+	} else if len(c.Default) > 0 {
 		for _, node := range c.Default {
 			if err := r.renderNode(node); err != nil {
 				return err
@@ -567,6 +724,12 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 	if val, ok := r.lookup(expr); ok {
 		if val == nil {
 			return "", nil
+		}
+		// Format float64 cleanly — strip trailing zeros so that a counter
+		// incremented via ++ renders as "1" not "1" (already fine) but also
+		// "1.5" not "1.500000".
+		if f, ok := val.(float64); ok {
+			return strconv.FormatFloat(f, 'f', -1, 64), nil
 		}
 		return fmt.Sprintf("%v", val), nil
 	}

@@ -645,6 +645,205 @@ func TestStringConcatInInterpolation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3 — case / when / default
+// ---------------------------------------------------------------------------
+
+func TestCaseBasic(t *testing.T) {
+	src := "case val\n  when 1\n    p One\n  when 2\n    p Two\n  default\n    p Other"
+	out := renderTest(t, src, map[string]interface{}{"val": "1"})
+	assertContains(t, out, "<p>One</p>")
+	if strings.Contains(out, "Two") || strings.Contains(out, "Other") {
+		t.Errorf("only matching when should render, got: %q", out)
+	}
+}
+
+func TestCaseDefault(t *testing.T) {
+	src := "case val\n  when 1\n    p One\n  when 2\n    p Two\n  default\n    p Other"
+	out := renderTest(t, src, map[string]interface{}{"val": "99"})
+	assertContains(t, out, "<p>Other</p>")
+	if strings.Contains(out, "One") || strings.Contains(out, "Two") {
+		t.Errorf("only default should render, got: %q", out)
+	}
+}
+
+func TestCaseSecondWhen(t *testing.T) {
+	src := "case val\n  when 1\n    p One\n  when 2\n    p Two\n  default\n    p Other"
+	out := renderTest(t, src, map[string]interface{}{"val": "2"})
+	assertContains(t, out, "<p>Two</p>")
+	if strings.Contains(out, "One") || strings.Contains(out, "Other") {
+		t.Errorf("only second when should render, got: %q", out)
+	}
+}
+
+func TestCaseFallThrough(t *testing.T) {
+	// Empty when falls through to next non-empty when
+	src := "case val\n  when 1\n  when 2\n    p OneOrTwo\n  default\n    p Other"
+	outOne := renderTest(t, src, map[string]interface{}{"val": "1"})
+	assertContains(t, outOne, "<p>OneOrTwo</p>")
+
+	outTwo := renderTest(t, src, map[string]interface{}{"val": "2"})
+	assertContains(t, outTwo, "<p>OneOrTwo</p>")
+}
+
+func TestCaseFallThroughToDefault(t *testing.T) {
+	// Empty when falls all the way through to default
+	src := "case val\n  when 1\n  default\n    p Caught"
+	out := renderTest(t, src, map[string]interface{}{"val": "1"})
+	assertContains(t, out, "<p>Caught</p>")
+}
+
+func TestCaseNoMatch(t *testing.T) {
+	// No default — nothing rendered
+	src := "case val\n  when 1\n    p One"
+	out := renderTest(t, src, map[string]interface{}{"val": "99"})
+	if strings.Contains(out, "One") {
+		t.Errorf("no when matched and no default, should be empty, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — while loop
+// ---------------------------------------------------------------------------
+
+func TestWhileLoop(t *testing.T) {
+	src := "- i = 0\nul\n  while i < 3\n    li= i\n    - i++"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<li>0</li>")
+	assertContains(t, out, "<li>1</li>")
+	assertContains(t, out, "<li>2</li>")
+	if strings.Contains(out, "<li>3</li>") {
+		t.Errorf("while loop should stop at i==3, got: %q", out)
+	}
+}
+
+func TestWhileLoopDecrement(t *testing.T) {
+	src := "- n = 3\nul\n  while n > 0\n    li= n\n    - n--"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<li>3</li>")
+	assertContains(t, out, "<li>2</li>")
+	assertContains(t, out, "<li>1</li>")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — variable assignment in unbuffered code
+// ---------------------------------------------------------------------------
+
+func TestVariableAssignment(t *testing.T) {
+	src := "- greeting = \"Hello World\"\np= greeting"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Hello World")
+}
+
+func TestVariableReassignment(t *testing.T) {
+	src := "- x = \"first\"\n- x = \"second\"\np= x"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "second")
+	if strings.Contains(out, "first") {
+		t.Errorf("x should be reassigned to 'second', got: %q", out)
+	}
+}
+
+func TestVariableIncrement(t *testing.T) {
+	src := "- count = 5\n- count++\np= count"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "6")
+}
+
+func TestVariableDecrement(t *testing.T) {
+	src := "- count = 10\n- count--\np= count"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "9")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — each over map
+// ---------------------------------------------------------------------------
+
+func TestEachOverMap(t *testing.T) {
+	src := "ul\n  each val, key in data\n    li #{key}: #{val}"
+	out := renderTest(t, src, map[string]interface{}{
+		"data": map[string]interface{}{"color": "red"},
+	})
+	assertContains(t, out, "color")
+	assertContains(t, out, "red")
+}
+
+func TestEachOverMapValuesOnly(t *testing.T) {
+	src := "ul\n  each val in data\n    li= val"
+	out := renderTest(t, src, map[string]interface{}{
+		"data": map[string]interface{}{"a": "apple"},
+	})
+	assertContains(t, out, "apple")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — deep if / else if / else chains
+// ---------------------------------------------------------------------------
+
+func TestDeepElseIfChain(t *testing.T) {
+	src := "if x == 1\n  p one\nelse if x == 2\n  p two\nelse if x == 3\n  p three\nelse\n  p other"
+
+	out1 := renderTest(t, src, map[string]interface{}{"x": "1"})
+	assertContains(t, out1, "<p>one</p>")
+
+	out2 := renderTest(t, src, map[string]interface{}{"x": "2"})
+	assertContains(t, out2, "<p>two</p>")
+
+	out3 := renderTest(t, src, map[string]interface{}{"x": "3"})
+	assertContains(t, out3, "<p>three</p>")
+
+	out4 := renderTest(t, src, map[string]interface{}{"x": "9"})
+	assertContains(t, out4, "<p>other</p>")
+}
+
+func TestNestedIf(t *testing.T) {
+	src := "if outer\n  if inner\n    p Both\n  else\n    p OuterOnly\nelse\n  p Neither"
+
+	outBoth := renderTest(t, src, map[string]interface{}{"outer": "true", "inner": "true"})
+	assertContains(t, outBoth, "<p>Both</p>")
+
+	outOuter := renderTest(t, src, map[string]interface{}{"outer": "true", "inner": "false"})
+	assertContains(t, outOuter, "<p>OuterOnly</p>")
+
+	outNeither := renderTest(t, src, map[string]interface{}{"outer": "false", "inner": "true"})
+	assertContains(t, outNeither, "<p>Neither</p>")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — unless with else
+// ---------------------------------------------------------------------------
+
+func TestUnlessWithElse(t *testing.T) {
+	src := "unless hidden\n  p Shown\nelse\n  p Hidden"
+
+	outShown := renderTest(t, src, map[string]interface{}{"hidden": "false"})
+	assertContains(t, outShown, "<p>Shown</p>")
+
+	outHidden := renderTest(t, src, map[string]interface{}{"hidden": "true"})
+	assertContains(t, outHidden, "<p>Hidden</p>")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — each with struct slice and dot-notation in body
+// ---------------------------------------------------------------------------
+
+func TestEachStructSlice(t *testing.T) {
+	type Item struct {
+		Name  string
+		Price int
+	}
+	src := "ul\n  each item in items\n    li= item.Name"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{
+			Item{Name: "Apple", Price: 1},
+			Item{Name: "Banana", Price: 2},
+		},
+	})
+	assertContains(t, out, "<li>Apple</li>")
+	assertContains(t, out, "<li>Banana</li>")
+}
+
+// ---------------------------------------------------------------------------
 // Struct field lookup via reflect
 // ---------------------------------------------------------------------------
 

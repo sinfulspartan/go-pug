@@ -430,24 +430,43 @@ func (p *Parser) parseLiteralHTML() (*LiteralHTMLNode, error) {
 }
 
 // parseConditional parses if/else if/else blocks.
+//
+// The lexer folds "else if <cond>" onto a single TokenElse whose Value starts
+// with "if ".  A bare "else" has Value "else" (or empty).  We build a proper
+// linked chain: each else-if is the *sole* element of its parent's Alternate
+// slice, so the runtime can walk the chain with a simple for loop.
 func (p *Parser) parseConditional() (*ConditionalNode, error) {
+	return p.parseConditionalWithCond(p.cur.Value, p.cur.Depth, p.cur.Line, p.cur.Col, false)
+}
+
+// parseConditionalWithCond does the actual work. condition/depth/line/col are
+// passed explicitly so that else-if nodes can be constructed without injecting
+// a synthetic token (which would cause p.advance() to skip a real body token).
+// p.cur must already point at the FIRST body token (or the next else/EOF) when
+// called for an else-if; for the root if it points at the TokenIf itself, so
+// we advance past it first.
+func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, col int, isElseIf bool) (*ConditionalNode, error) {
 	cond := &ConditionalNode{
-		Condition:  p.cur.Value,
+		Condition:  condition,
 		Consequent: make([]Node, 0),
 		Alternate:  make([]Node, 0),
+		IsElseIf:   isElseIf,
 		IsUnless:   false,
-		Line:       p.cur.Line,
-		Col:        p.cur.Col,
+		Line:       line,
+		Col:        col,
 	}
 
-	currentDepth := p.cur.Depth
-	p.advance()
-	p.skipNewlines()
+	if !isElseIf {
+		// Root if — p.cur is the TokenIf; advance past it to the first body token.
+		p.advance()
+		p.skipNewlines()
+	}
+	// For else-if, p.cur already points at the first body token (caller
+	// consumed the TokenElse and called skipNewlines).
 
-	// Parse consequent
+	// Parse consequent body
 	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-		if p.cur.Type == TokenElse {
-			// else or else if
+		if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
 			break
 		}
 		node, err := p.parseNode(currentDepth + 1)
@@ -460,92 +479,24 @@ func (p *Parser) parseConditional() (*ConditionalNode, error) {
 		p.skipNewlines()
 	}
 
-	// Parse else/else if.
-	// The lexer emits "else if <cond>" as a single TokenElse whose Value starts with "if ".
-	// A bare "else" is emitted as TokenElse with Value "else" (or empty).
-	for p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	// Parse else / else-if tail.
+	// There is at most one TokenElse at this depth; we handle it and stop.
+	if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
 		elseToken := p.cur
-		p.advance() // consume the TokenElse token
+		p.advance() // consume TokenElse
 		p.skipNewlines()
 
-		// Detect "else if …" — the lexer folds "else if <cond>" into one token
-		// whose Value is "if <cond>".
 		if strings.HasPrefix(elseToken.Value, "if ") {
-			elseIfCond := strings.TrimPrefix(elseToken.Value, "if ")
-			elseCond := &ConditionalNode{
-				Condition:  strings.TrimSpace(elseIfCond),
-				Consequent: make([]Node, 0),
-				Alternate:  make([]Node, 0),
-				IsElseIf:   true,
-				Line:       elseToken.Line,
-				Col:        elseToken.Col,
+			// else if — p.cur now points at the first body token of the else-if.
+			// Build the child node without consuming any extra tokens.
+			elseIfCond := strings.TrimSpace(strings.TrimPrefix(elseToken.Value, "if "))
+			child, err := p.parseConditionalWithCond(elseIfCond, currentDepth, elseToken.Line, elseToken.Col, true)
+			if err != nil {
+				return nil, err
 			}
-
-			// Parse the else-if consequent body
-			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-				if p.cur.Type == TokenElse {
-					break
-				}
-				node, err := p.parseNode(currentDepth + 1)
-				if err != nil {
-					return nil, err
-				}
-				if node != nil {
-					elseCond.Consequent = append(elseCond.Consequent, node)
-				}
-				p.skipNewlines()
-			}
-
-			// Recursively collect any further else-if / else chains into this node
-			for p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
-				innerElse := p.cur
-				p.advance()
-				p.skipNewlines()
-
-				if strings.HasPrefix(innerElse.Value, "if ") {
-					innerCond := strings.TrimSpace(strings.TrimPrefix(innerElse.Value, "if "))
-					innerNode := &ConditionalNode{
-						Condition:  innerCond,
-						Consequent: make([]Node, 0),
-						Alternate:  make([]Node, 0),
-						IsElseIf:   true,
-						Line:       innerElse.Line,
-						Col:        innerElse.Col,
-					}
-					for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-						if p.cur.Type == TokenElse {
-							break
-						}
-						node, err := p.parseNode(currentDepth + 1)
-						if err != nil {
-							return nil, err
-						}
-						if node != nil {
-							innerNode.Consequent = append(innerNode.Consequent, node)
-						}
-						p.skipNewlines()
-					}
-					elseCond.Alternate = append(elseCond.Alternate, innerNode)
-					elseCond = innerNode
-				} else {
-					// bare else — collect its body into the current innermost else-if
-					for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-						node, err := p.parseNode(currentDepth + 1)
-						if err != nil {
-							return nil, err
-						}
-						if node != nil {
-							elseCond.Alternate = append(elseCond.Alternate, node)
-						}
-						p.skipNewlines()
-					}
-					break
-				}
-			}
-
-			cond.Alternate = append(cond.Alternate, elseCond)
+			cond.Alternate = append(cond.Alternate, child)
 		} else {
-			// bare else — collect body directly into cond.Alternate
+			// bare else — collect body nodes directly into cond.Alternate
 			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
 				node, err := p.parseNode(currentDepth + 1)
 				if err != nil {
@@ -556,18 +507,18 @@ func (p *Parser) parseConditional() (*ConditionalNode, error) {
 				}
 				p.skipNewlines()
 			}
-			break
 		}
 	}
 
 	return cond, nil
 }
 
-// parseUnless parses unless blocks.
+// parseUnless parses unless blocks, including an optional else clause.
 func (p *Parser) parseUnless() (*ConditionalNode, error) {
 	cond := &ConditionalNode{
 		Condition:  p.cur.Value,
 		Consequent: make([]Node, 0),
+		Alternate:  make([]Node, 0),
 		IsUnless:   true,
 		Line:       p.cur.Line,
 		Col:        p.cur.Col,
@@ -577,7 +528,11 @@ func (p *Parser) parseUnless() (*ConditionalNode, error) {
 	p.advance()
 	p.skipNewlines()
 
+	// Parse consequent body
 	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+		if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+			break
+		}
 		node, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
@@ -586,6 +541,22 @@ func (p *Parser) parseUnless() (*ConditionalNode, error) {
 			cond.Consequent = append(cond.Consequent, node)
 		}
 		p.skipNewlines()
+	}
+
+	// Optional else clause
+	if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+		p.advance() // consume TokenElse
+		p.skipNewlines()
+		for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+			node, err := p.parseNode(currentDepth + 1)
+			if err != nil {
+				return nil, err
+			}
+			if node != nil {
+				cond.Alternate = append(cond.Alternate, node)
+			}
+			p.skipNewlines()
+		}
 	}
 
 	return cond, nil
