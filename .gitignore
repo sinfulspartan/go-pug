@@ -9,6 +9,8 @@
 *.dylib
 *.test
 
+.agent
+
 # Output of the go coverage tool
 coverage.out
 *.coverprofile
