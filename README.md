@@ -856,6 +856,28 @@ opts.Filters["bold"] = func(s string, _ map[string]string) (string, error) {
 
 ## Contributing
 
+### Reporting a Bug
+
+The easiest way to report a bug is with a screenshot from the demo server:
+
+1. Create `cmd/views/test.pug` containing the minimal Pug snippet that demonstrates the problem.
+2. Run the demo server:
+   ```
+   make run
+   ```
+   or
+   ```
+   go run ./cmd
+   ```
+3. Open `http://localhost:8080` in your browser.
+4. Take a screenshot of the `test` card — it shows the Pug source, the raw HTML output, and a live preview side-by-side.
+5. Open an issue and attach the screenshot along with a description of what you expected vs. what you got.
+6. Delete `test.pug` once the issue is filed.
+
+No entry in `cmd/main.go` is needed — the server picks up `test.pug` automatically and uses `"test"` as the card title.
+
+### Contributing Code
+
 1. Open an issue before starting significant work.
 2. Add tests — see `pkg/gopug/gopug_test.go` for patterns.
 3. Run `make test` and `make vet` before opening a PR; all tests must pass.
