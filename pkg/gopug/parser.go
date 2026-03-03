@@ -78,6 +78,10 @@ func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 		return p.parsePipedText()
 	case TokenText:
 		return p.parseTextNode()
+	case TokenInterpolation:
+		return p.parseInterpolationNode(false)
+	case TokenInterpolationUnescape:
+		return p.parseInterpolationNode(true)
 	case TokenHTMLLiteral:
 		return p.parseLiteralHTML()
 	case TokenTag, TokenClass, TokenID:
@@ -188,11 +192,18 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 	}
 
-	// Inline text
-	if p.cur.Type == TokenText && p.cur.Depth == currentDepth {
-		tag.Children = append(tag.Children, &TextNode{Content: p.cur.Value, Line: p.cur.Line, Col: p.cur.Col})
-		p.advance()
+	// Inline text — may be followed by interpolation tokens on the same line,
+	// producing a mixed run: p Hello #{name} world
+	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.Depth == currentDepth {
+		line := p.cur.Line
+		col := p.cur.Col
+		nodes := p.collectTextRun(currentDepth)
 		p.skipNewlines()
+		if len(nodes) == 1 {
+			tag.Children = append(tag.Children, nodes[0])
+		} else if len(nodes) > 1 {
+			tag.Children = append(tag.Children, &TextRunNode{Nodes: nodes, Line: line, Col: col})
+		}
 		return tag, nil
 	}
 
@@ -323,13 +334,79 @@ func (p *Parser) parseUnescapedCode() (*CodeNode, error) {
 }
 
 // parsePipedText parses piped text (|).
-func (p *Parser) parsePipedText() (*PipeNode, error) {
-	content := p.cur.Value
+// The lexer may have split the line into a run of TokenText /
+// TokenInterpolation / TokenInterpolationUnescape tokens at the same depth.
+// If there is only a single plain-text token we return a PipeNode for
+// back-compat; otherwise we wrap everything in a MixedTextNode via the
+// tag-children path — but since PipeNode is only used at top/child level and
+// the runtime just escapes its Content, we promote the whole run into the
+// parent as individual nodes by returning a synthetic wrapper.
+// Simplest correct approach: collect all same-depth text/interp tokens and
+// return them wrapped in a DocumentNode (the caller appends its Children).
+// Actually the cleanest approach that requires no new node type: collect the
+// run and return a *TextRunNode.  We already have InterpolationNode; we just
+// need to return multiple nodes.  Since parseNode returns a single Node we use
+// a lightweight *textRunNode that the runtime knows how to render.
+func (p *Parser) parsePipedText() (Node, error) {
 	line := p.cur.Line
 	col := p.cur.Col
+	depth := p.cur.Depth
+
+	nodes := p.collectTextRun(depth)
+	p.skipNewlines()
+
+	if len(nodes) == 1 {
+		if pipe, ok := nodes[0].(*PipeNode); ok {
+			return pipe, nil
+		}
+	}
+
+	return &TextRunNode{Nodes: nodes, Line: line, Col: col}, nil
+}
+
+// collectTextRun collects a consecutive run of TokenPipe, TokenText,
+// TokenInterpolation, and TokenInterpolationUnescape tokens at the given depth,
+// returning them as a slice of Nodes (PipeNode, TextNode, InterpolationNode).
+func (p *Parser) collectTextRun(depth int) []Node {
+	var nodes []Node
+	for {
+		if p.cur.Depth != depth {
+			break
+		}
+		switch p.cur.Type {
+		case TokenPipe:
+			if p.cur.Value != "" {
+				nodes = append(nodes, &PipeNode{Content: p.cur.Value, Line: p.cur.Line, Col: p.cur.Col})
+			}
+			p.advance()
+		case TokenText:
+			nodes = append(nodes, &TextNode{Content: p.cur.Value, Line: p.cur.Line, Col: p.cur.Col})
+			p.advance()
+		case TokenInterpolation:
+			nodes = append(nodes, &InterpolationNode{Expression: p.cur.Value, Unescaped: false, Line: p.cur.Line, Col: p.cur.Col})
+			p.advance()
+		case TokenInterpolationUnescape:
+			nodes = append(nodes, &InterpolationNode{Expression: p.cur.Value, Unescaped: true, Line: p.cur.Line, Col: p.cur.Col})
+			p.advance()
+		default:
+			goto done
+		}
+	}
+done:
+	return nodes
+}
+
+// parseInterpolationNode parses a standalone interpolation token.
+func (p *Parser) parseInterpolationNode(unescaped bool) (*InterpolationNode, error) {
+	node := &InterpolationNode{
+		Expression: p.cur.Value,
+		Unescaped:  unescaped,
+		Line:       p.cur.Line,
+		Col:        p.cur.Col,
+	}
 	p.advance()
 	p.skipNewlines()
-	return &PipeNode{Content: content, Line: line, Col: col}, nil
+	return node, nil
 }
 
 // parseTextNode parses a bare text token as a TextNode.

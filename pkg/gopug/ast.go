@@ -334,3 +334,18 @@ func (n *BlockExpansionNode) node() {}
 func (n *BlockExpansionNode) String() string {
 	return fmt.Sprintf("BlockExpansionNode{Parent: %s}", n.Parent.Name)
 }
+
+// TextRunNode holds a mixed sequence of TextNode, PipeNode, and
+// InterpolationNode values produced when a single line contains both plain
+// text and #{...} / !{...} interpolations.  The runtime renders each child
+// node in order.
+type TextRunNode struct {
+	Nodes []Node
+	Line  int
+	Col   int
+}
+
+func (n *TextRunNode) node() {}
+func (n *TextRunNode) String() string {
+	return fmt.Sprintf("TextRunNode{Nodes: %d}", len(n.Nodes))
+}

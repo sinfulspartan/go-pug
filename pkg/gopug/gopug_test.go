@@ -484,6 +484,167 @@ func TestEachOverStringSlice(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 — Interpolation in text nodes
+// ---------------------------------------------------------------------------
+
+func TestInterpolationInTagText(t *testing.T) {
+	out := renderTest(t, "p Hello #{name}!", map[string]interface{}{"name": "World"})
+	assertContains(t, out, "Hello World!")
+}
+
+func TestInterpolationEscapesHTML(t *testing.T) {
+	out := renderTest(t, "p #{val}", map[string]interface{}{"val": "<b>bold</b>"})
+	assertContains(t, out, "&lt;b&gt;")
+	if strings.Contains(out, "<b>") {
+		t.Errorf("interpolation should HTML-escape by default, got: %q", out)
+	}
+}
+
+func TestUnescapedInterpolation(t *testing.T) {
+	out := renderTest(t, "p !{val}", map[string]interface{}{"val": "<b>bold</b>"})
+	assertContains(t, out, "<b>bold</b>")
+}
+
+func TestInterpolationInPipeText(t *testing.T) {
+	src := "p\n  | Hello #{name}!"
+	out := renderTest(t, src, map[string]interface{}{"name": "Pug"})
+	assertContains(t, out, "Hello Pug!")
+}
+
+func TestMultipleInterpolationsOnOneLine(t *testing.T) {
+	out := renderTest(t, "p #{first} #{last}", map[string]interface{}{
+		"first": "John",
+		"last":  "Doe",
+	})
+	assertContains(t, out, "John")
+	assertContains(t, out, "Doe")
+}
+
+func TestInterpolationWithDotNotation(t *testing.T) {
+	out := renderTest(t, "p Hello #{user.name}!", map[string]interface{}{
+		"user": map[string]interface{}{"name": "Alice"},
+	})
+	assertContains(t, out, "Hello Alice!")
+}
+
+func TestInterpolationStringLiteral(t *testing.T) {
+	out := renderTest(t, `p #{"hello world"}`, nil)
+	assertContains(t, out, "hello world")
+}
+
+func TestInterpolationMixedWithPlainText(t *testing.T) {
+	out := renderTest(t, "p before #{val} after", map[string]interface{}{"val": "MID"})
+	assertContains(t, out, "before MID after")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Ternary expressions
+// ---------------------------------------------------------------------------
+
+func TestTernaryTrue(t *testing.T) {
+	out := renderTest(t, "p= flag ? \"yes\" : \"no\"", map[string]interface{}{"flag": "true"})
+	assertContains(t, out, "yes")
+}
+
+func TestTernaryFalse(t *testing.T) {
+	out := renderTest(t, "p= flag ? \"yes\" : \"no\"", map[string]interface{}{"flag": "false"})
+	assertContains(t, out, "no")
+}
+
+func TestTernaryInInterpolation(t *testing.T) {
+	out := renderTest(t, "p Result: #{ok ? \"pass\" : \"fail\"}", map[string]interface{}{"ok": "true"})
+	assertContains(t, out, "Result: pass")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Array index access
+// ---------------------------------------------------------------------------
+
+func TestArrayIndexAccess(t *testing.T) {
+	out := renderTest(t, "p= items[0]", map[string]interface{}{
+		"items": []interface{}{"alpha", "beta", "gamma"},
+	})
+	assertContains(t, out, "alpha")
+}
+
+func TestArrayIndexAccessSecond(t *testing.T) {
+	out := renderTest(t, "p= items[1]", map[string]interface{}{
+		"items": []interface{}{"alpha", "beta", "gamma"},
+	})
+	assertContains(t, out, "beta")
+}
+
+func TestArrayIndexInInterpolation(t *testing.T) {
+	out := renderTest(t, "p First: #{items[0]}", map[string]interface{}{
+		"items": []interface{}{"one", "two"},
+	})
+	assertContains(t, out, "First: one")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Comparison and logical operators in expressions
+// ---------------------------------------------------------------------------
+
+func TestComparisonEqualTrue(t *testing.T) {
+	out := renderTest(t, "if x == 42\n  p yes", map[string]interface{}{"x": "42"})
+	assertContains(t, out, "yes")
+}
+
+func TestComparisonEqualFalse(t *testing.T) {
+	out := renderTest(t, "if x == 42\n  p yes\nelse\n  p no", map[string]interface{}{"x": "99"})
+	assertContains(t, out, "no")
+}
+
+func TestComparisonNotEqual(t *testing.T) {
+	out := renderTest(t, "if x != 0\n  p nonzero", map[string]interface{}{"x": "5"})
+	assertContains(t, out, "nonzero")
+}
+
+func TestComparisonLessThan(t *testing.T) {
+	out := renderTest(t, "if x < 10\n  p small", map[string]interface{}{"x": "3"})
+	assertContains(t, out, "small")
+}
+
+func TestComparisonGreaterThan(t *testing.T) {
+	out := renderTest(t, "if x > 10\n  p big", map[string]interface{}{"x": "99"})
+	assertContains(t, out, "big")
+}
+
+func TestLogicalAnd(t *testing.T) {
+	out := renderTest(t, "if a && b\n  p both", map[string]interface{}{"a": "true", "b": "true"})
+	assertContains(t, out, "both")
+}
+
+func TestLogicalAndFalse(t *testing.T) {
+	out := renderTest(t, "if a && b\n  p both\nelse\n  p nope", map[string]interface{}{"a": "true", "b": "false"})
+	assertContains(t, out, "nope")
+}
+
+func TestLogicalOr(t *testing.T) {
+	out := renderTest(t, "if a || b\n  p either", map[string]interface{}{"a": "false", "b": "true"})
+	assertContains(t, out, "either")
+}
+
+func TestLogicalNot(t *testing.T) {
+	out := renderTest(t, "if !hidden\n  p visible", map[string]interface{}{"hidden": "false"})
+	assertContains(t, out, "visible")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — String concatenation in expressions
+// ---------------------------------------------------------------------------
+
+func TestStringConcatInBufferedCode(t *testing.T) {
+	out := renderTest(t, `p= "Hello " + name`, map[string]interface{}{"name": "World"})
+	assertContains(t, out, "Hello World")
+}
+
+func TestStringConcatInInterpolation(t *testing.T) {
+	out := renderTest(t, `p #{"Hi " + name}`, map[string]interface{}{"name": "Pug"})
+	assertContains(t, out, "Hi Pug")
+}
+
+// ---------------------------------------------------------------------------
 // Struct field lookup via reflect
 // ---------------------------------------------------------------------------
 

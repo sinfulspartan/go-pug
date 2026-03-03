@@ -5,6 +5,102 @@ import (
 	"strings"
 )
 
+// emitTextWithInterpolations splits a raw text string on #{...} and !{...}
+// interpolation markers and emits the appropriate tokens (TokenText,
+// TokenInterpolation, TokenInterpolationUnescape).  Plain text segments are
+// emitted as TokenText; interpolated expressions are emitted as
+// TokenInterpolation (escaped) or TokenInterpolationUnescape (!{}).
+func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
+	savedDepth := l.depth
+	l.depth = depth
+
+	for len(text) > 0 {
+		// Find the earliest interpolation marker
+		hashIdx := strings.Index(text, "#{")
+		bangIdx := strings.Index(text, "!{")
+
+		// Determine which comes first (ignore -1 as "not found")
+		first := -1
+		isUnescaped := false
+		markerLen := 2
+
+		if hashIdx >= 0 && (bangIdx < 0 || hashIdx <= bangIdx) {
+			first = hashIdx
+			isUnescaped = false
+		} else if bangIdx >= 0 {
+			first = bangIdx
+			isUnescaped = true
+		}
+
+		if first < 0 {
+			// No more interpolations — emit remaining text as-is
+			if text != "" {
+				l.addToken(TokenText, text)
+			}
+			break
+		}
+
+		// Emit any plain text before the marker
+		if first > 0 {
+			l.addToken(TokenText, text[:first])
+		}
+
+		// Skip past the marker (#{ or !{)
+		rest := text[first+markerLen:]
+
+		// Scan balanced braces to find the closing }
+		expr, remaining, ok := scanBalancedBraces(rest)
+		if !ok {
+			// Malformed interpolation — treat the rest as plain text
+			l.addToken(TokenText, text[first:])
+			break
+		}
+
+		if isUnescaped {
+			l.addToken(TokenInterpolationUnescape, expr)
+		} else {
+			l.addToken(TokenInterpolation, expr)
+		}
+
+		text = remaining
+	}
+
+	l.depth = savedDepth
+}
+
+// scanBalancedBraces reads characters from s up to (but not including) the
+// matching closing brace, handling nested braces and quoted strings.
+// Returns (expr, remaining, ok).  remaining starts after the closing }.
+func scanBalancedBraces(s string) (string, string, bool) {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i += 2
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+		} else if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+		} else if !inDouble && !inSingle {
+			if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				if depth == 0 {
+					return s[:i], s[i+1:], true
+				}
+				depth--
+			}
+		}
+		i++
+	}
+	return "", "", false
+}
+
 // Lexer tokenizes Pug source code.
 type Lexer struct {
 	input  string
@@ -191,7 +287,8 @@ func (l *Lexer) scanPipedText() error {
 		text += string(l.advance())
 	}
 
-	l.addToken(TokenPipe, text)
+	// Split on #{} / !{} interpolations
+	l.emitTextWithInterpolations(text, l.depth)
 	l.skipToNewline()
 	return nil
 }
@@ -348,6 +445,20 @@ func (l *Lexer) scanTagRest() error {
 			}
 
 		case '#':
+			// Distinguish #id shorthand from #{expr} tag-body interpolation.
+			// If the character after # is '{', it is an inline interpolation that
+			// belongs to the text content — collect the rest of the line as text
+			// and let emitTextWithInterpolations handle it.
+			if l.pos+1 < len(l.input) && l.input[l.pos+1] == '{' {
+				// Collect from the current position to end of line as text
+				text := ""
+				for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+					text += string(l.advance())
+				}
+				l.emitTextWithInterpolations(text, l.depth)
+				l.skipToNewline()
+				return nil
+			}
 			// ID shorthand
 			l.advance()
 			idName := l.scanIdentifier()
@@ -405,7 +516,8 @@ func (l *Lexer) scanTagRest() error {
 				text += string(l.advance())
 			}
 			if text != "" {
-				l.addToken(TokenText, text)
+				// Split on #{} / !{} interpolations
+				l.emitTextWithInterpolations(text, l.depth)
 			}
 			l.skipToNewline()
 			return nil

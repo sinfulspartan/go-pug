@@ -75,6 +75,8 @@ func (r *Runtime) renderNode(node Node) error {
 		return r.renderLiteralHTML(n)
 	case *BlockExpansionNode:
 		return r.renderBlockExpansion(n)
+	case *TextRunNode:
+		return r.renderTextRun(n)
 	case *FilterNode:
 		return r.renderFilter(n)
 	case *MixinDeclNode:
@@ -407,6 +409,16 @@ func (r *Runtime) renderBlockExpansion(exp *BlockExpansionNode) error {
 	return r.renderNode(exp.Child)
 }
 
+// renderTextRun renders a mixed sequence of text and interpolation nodes.
+func (r *Runtime) renderTextRun(run *TextRunNode) error {
+	for _, node := range run.Nodes {
+		if err := r.renderNode(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // renderFilter renders filter blocks (placeholder for now).
 func (r *Runtime) renderFilter(filter *FilterNode) error {
 	// Filters are typically applied at compile time.
@@ -421,6 +433,23 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 
 	if expr == "" {
 		return "", nil
+	}
+
+	// Ternary: cond ? a : b  (lowest precedence of all)
+	if idx := findTernary(expr); idx >= 0 {
+		cond, err := r.evaluateExpr(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rest := expr[idx+1:] // everything after ?
+		colonIdx := findBinaryOp(rest, ":")
+		if colonIdx < 0 {
+			return "", fmt.Errorf("malformed ternary expression: %s", expr)
+		}
+		if r.isTruthy(cond) {
+			return r.evaluateExpr(rest[:colonIdx])
+		}
+		return r.evaluateExpr(rest[colonIdx+1:])
 	}
 
 	// Logical OR: a || b  (lowest precedence, evaluated left-to-right)
@@ -515,6 +544,25 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return left + right, nil
 	}
 
+	// Array/map index access: expr[key]
+	if idx := findIndexOp(expr); idx >= 0 {
+		objExpr := expr[:idx]
+		keyExpr := expr[idx+1 : len(expr)-1] // strip [ and ]
+		obj, ok := r.lookup(strings.TrimSpace(objExpr))
+		if !ok {
+			return "", nil
+		}
+		key, err := r.evaluateExpr(keyExpr)
+		if err != nil {
+			return "", err
+		}
+		result := r.indexValue(obj, key)
+		if result == nil {
+			return "", nil
+		}
+		return fmt.Sprintf("%v", result), nil
+	}
+
 	// Variable lookup (with dot notation support)
 	if val, ok := r.lookup(expr); ok {
 		if val == nil {
@@ -525,6 +573,92 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 
 	// Unrecognised expression — return empty rather than error for now
 	return "", nil
+}
+
+// findTernary locates the top-level ? operator for ternary expressions.
+// Returns the index of ? or -1 if not found.
+func findTernary(expr string) int {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '(' || ch == '[' || ch == '{' {
+			depth++
+		} else if ch == ')' || ch == ']' || ch == '}' {
+			depth--
+		} else if ch == '?' && depth == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// findIndexOp finds a top-level [...] index operation at the end of an
+// expression, e.g. "arr[0]" or "obj["key"]".
+// Returns the position of the opening [ or -1 if not found.
+func findIndexOp(expr string) int {
+	if len(expr) == 0 || expr[len(expr)-1] != ']' {
+		return -1
+	}
+	// Walk backwards to find the matching [
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := len(expr) - 1; i >= 0; i-- {
+		ch := expr[i]
+		if ch == ']' && !inDouble && !inSingle {
+			depth++
+		} else if ch == '[' && !inDouble && !inSingle {
+			depth--
+			if depth == 0 {
+				if i == 0 {
+					return -1 // bare [key] with no object
+				}
+				return i
+			}
+		} else if ch == '"' {
+			inDouble = !inDouble
+		} else if ch == '\'' {
+			inSingle = !inSingle
+		}
+	}
+	return -1
+}
+
+// indexValue retrieves element at string key/index from a slice or map.
+func (r *Runtime) indexValue(obj interface{}, key string) interface{} {
+	v := reflect.ValueOf(obj)
+	switch v.Kind() {
+	case reflect.Slice, reflect.Array:
+		// key should be a numeric index
+		i, err := strconv.Atoi(strings.TrimSpace(key))
+		if err != nil || i < 0 || i >= v.Len() {
+			return nil
+		}
+		return v.Index(i).Interface()
+	case reflect.Map:
+		val := v.MapIndex(reflect.ValueOf(key))
+		if val.IsValid() {
+			return val.Interface()
+		}
+	}
+	return nil
 }
 
 // findBinaryOp finds the position of a binary operator in an expression,
