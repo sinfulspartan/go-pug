@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+
 	"strings"
 
 	"github.com/sinfulspartan/go-pug/pkg/gopug"
@@ -15,6 +16,16 @@ import (
 
 //go:embed views/*.pug views/*.css
 var viewsFS embed.FS
+
+func loadPreviewStyles() string {
+	data, err := viewsFS.ReadFile("views/preview.css")
+	if err != nil {
+		return ""
+	}
+	return "<style>\n" + string(data) + "\n</style>\n"
+}
+
+
 
 type example struct {
 	filename string
@@ -55,7 +66,14 @@ var filterOpts = &gopug.Options{
 			if close == "" {
 				close = "]"
 			}
-			return open + strings.TrimSpace(s) + close, nil
+			// Wrap each line individually so multi-line output produces
+			// "[LINE1]\n[LINE2]" rather than "[LINE1\nLINE2]" — the latter
+			// causes renderFilter to insert <br> inside the brackets.
+			lines := strings.Split(strings.TrimSpace(s), "\n")
+			for i, l := range lines {
+				lines[i] = open + strings.TrimSpace(l) + close
+			}
+			return strings.Join(lines, "\n"), nil
 		},
 	},
 }
@@ -224,7 +242,7 @@ func loadExamples() ([]example, error) {
 	return examples, nil
 }
 
-func writePage(w http.ResponseWriter, exs []example) {
+func writePage(w http.ResponseWriter, exs []example, previewStyles string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	var sb strings.Builder
@@ -266,11 +284,16 @@ func writePage(w http.ResponseWriter, exs []example) {
 			sb.WriteString(`</pre>`)
 			sb.WriteString(`</div>`)
 		} else {
+			trimmed := strings.TrimSpace(rendered)
 			sb.WriteString(`<div class="pane output-pane">`)
-			sb.WriteString(`<div class="pane-label">Rendered HTML</div>`)
+			sb.WriteString(`<div class="pane-label">HTML source</div>`)
 			sb.WriteString(`<pre>`)
-			sb.WriteString(html.EscapeString(strings.TrimSpace(rendered)))
+			sb.WriteString(html.EscapeString(trimmed))
 			sb.WriteString(`</pre>`)
+			sb.WriteString(`<div class="pane-label preview-label">Preview</div>`)
+			sb.WriteString(`<iframe class="preview-frame" srcdoc="`)
+			sb.WriteString(html.EscapeString(previewStyles + trimmed))
+			sb.WriteString(`" loading="lazy" onload="(function(f){var resize=function(){var d=f.contentDocument;var h=Math.max(d.body.scrollHeight,d.documentElement.scrollHeight);f.style.height=h+32+'px';};resize();requestAnimationFrame(resize);})(this)"></iframe>`)
 			sb.WriteString(`</div>`)
 		}
 
@@ -293,6 +316,8 @@ func main() {
 
 	log.Printf("Go-Pug demo server — %d examples loaded", len(exs))
 
+	previewStyles := loadPreviewStyles()
+
 	http.HandleFunc("/demo.css", func(w http.ResponseWriter, r *http.Request) {
 		data, err := viewsFS.ReadFile("views/demo.css")
 		if err != nil {
@@ -304,7 +329,7 @@ func main() {
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writePage(w, exs)
+		writePage(w, exs, previewStyles)
 	})
 
 	addr := ":8080"

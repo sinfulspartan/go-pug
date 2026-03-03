@@ -298,16 +298,26 @@ func TestDoctype11(t *testing.T) {
 
 func TestBlockExpansion(t *testing.T) {
 	out := renderTest(t, "a: img", nil)
-	assertContains(t, out, "<a>")
-	assertContains(t, out, "<img>")
-	assertContains(t, out, "</a>")
+	// img must be nested inside <a>…</a>, not a sibling
+	assertContains(t, out, "<a><img></a>")
 }
 
 func TestBlockExpansionWithText(t *testing.T) {
 	out := renderTest(t, "ul: li Item", nil)
-	assertContains(t, out, "<ul>")
-	assertContains(t, out, "<li>Item</li>")
-	assertContains(t, out, "</ul>")
+	// li must be nested inside <ul>…</ul>
+	assertContains(t, out, "<ul><li>Item</li></ul>")
+}
+
+// TestBlockExpansionLiAnchor is a regression test for li: a(href=…) — the
+// anchor must be nested inside the li, not emitted as a sibling.
+func TestBlockExpansionLiAnchor(t *testing.T) {
+	src := "ul\n  li: a(href=\"/\") Home\n  li: a(href=\"/about\") About"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `<li><a href="/">Home</a></li>`)
+	assertContains(t, out, `<li><a href="/about">About</a></li>`)
+	if strings.Contains(out, "<li></li>") {
+		t.Errorf("li must not be empty — anchor should be nested inside it, got: %q", out)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1343,9 +1353,16 @@ func uppercaseFilter(s string, _ map[string]string) (string, error) {
 	return strings.ToUpper(s), nil
 }
 
-// wrapFilter wraps content in square brackets.
+// wrapFilter wraps each line of content in square brackets.
+// Wrapping per-line (rather than the whole string) ensures that when
+// renderFilter later replaces interior \n with <br>, the brackets appear
+// around each line rather than around the <br> tag itself.
 func wrapFilter(s string, _ map[string]string) (string, error) {
-	return "[" + s + "]", nil
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i, l := range lines {
+		lines[i] = "[" + strings.TrimSpace(l) + "]"
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // exclaim appends "!" to each line.
@@ -1381,16 +1398,59 @@ func TestFilterBlockBasic(t *testing.T) {
 }
 
 // TestFilterBlockMultiLine verifies that a block filter receives all indented
-// lines joined by newlines.
+// lines joined by newlines and that the output lines are separated by <br>.
 func TestFilterBlockMultiLine(t *testing.T) {
 	src := ":exclaim\n  line one\n  line two\n  line three"
 	out, err := Render(src, nil, filterOpts())
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
+	// Multi-line filter output uses <br> separators, not <pre> wrapping.
+	assertContains(t, out, "<br>")
 	assertContains(t, out, "line one!")
 	assertContains(t, out, "line two!")
 	assertContains(t, out, "line three!")
+	if strings.Contains(out, "<pre>") {
+		t.Errorf("multi-line filter output must not be wrapped in <pre>, got: %q", out)
+	}
+}
+
+// TestFilterBlockMultiLineNewlinesPreserved verifies that multi-line filter
+// output uses <br> separators so visual line breaks are preserved without
+// forcing monospace <pre> formatting.
+func TestFilterBlockMultiLineNewlinesPreserved(t *testing.T) {
+	src := ":uppercase\n  hello from a filter block\n  this line too"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "HELLO FROM A FILTER BLOCK")
+	assertContains(t, out, "<br>")
+	assertContains(t, out, "THIS LINE TOO")
+	if strings.Contains(out, "<pre>") {
+		t.Errorf("multi-line filter output must not be wrapped in <pre>, got: %q", out)
+	}
+	// Lines must be separated by <br> in the output.
+	if !strings.Contains(out, "HELLO FROM A FILTER BLOCK<br>THIS LINE TOO") {
+		t.Errorf("lines should be separated by <br>, got: %q", out)
+	}
+}
+
+// TestFilterBlockSingleLineNoWrap verifies that single-line filter output is
+// emitted as plain text — no <pre> and no <br>.
+func TestFilterBlockSingleLineNoWrap(t *testing.T) {
+	src := ":uppercase\n  hello world"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertEqual(t, out, "HELLO WORLD")
+	if strings.Contains(out, "<pre>") {
+		t.Errorf("single-line filter output should not be wrapped in <pre>, got: %q", out)
+	}
+	if strings.Contains(out, "<br>") {
+		t.Errorf("single-line filter output should not contain <br>, got: %q", out)
+	}
 }
 
 // TestFilterInline verifies that a filter with same-line inline content works.
@@ -1547,6 +1607,52 @@ func TestTagInterpolationMixedWithExprInterp(t *testing.T) {
 	out := renderTest(t, src, map[string]interface{}{"name": "Alice"})
 	assertContains(t, out, "Hello Alice")
 	assertContains(t, out, `<a href="/">home</a>`)
+}
+
+// TestTagInterpolationInlineTextNested verifies that #[tag] in direct inline
+// tag text (p Click #[a...] text) keeps the interpolated tag inside the parent
+// and preserves surrounding text — regression for sibling-emission bug.
+func TestTagInterpolationInlineTextNested(t *testing.T) {
+	out := renderTest(t, `p Click #[a(href="/login") here] to sign in.`, nil)
+	// The anchor must be inside <p>, not a sibling of it.
+	assertContains(t, out, `<p>Click <a href="/login">here</a> to sign in.</p>`)
+	if strings.Contains(out, "</p><a") {
+		t.Errorf("anchor must not be emitted as a sibling of <p>, got: %q", out)
+	}
+}
+
+// TestTagInterpolationMultipleInline verifies that multiple #[tag] markers on
+// a single inline text line all render inside the parent tag.
+func TestTagInterpolationMultipleInline(t *testing.T) {
+	out := renderTest(t, `p Use #[strong bold] and #[em italic] inline.`, nil)
+	assertContains(t, out, "<p>Use <strong>bold</strong> and <em>italic</em> inline.</p>")
+	if strings.Contains(out, "</p><strong") || strings.Contains(out, "</p><em") {
+		t.Errorf("interpolated tags must stay inside <p>, got: %q", out)
+	}
+}
+
+// TestTagInterpolationWithTrailingText verifies that text after a #[tag]
+// marker is preserved inside the parent tag.
+func TestTagInterpolationWithTrailingText(t *testing.T) {
+	out := renderTest(t, `p Version #[code 1.0.0] is available.`, nil)
+	assertContains(t, out, "<p>Version <code>1.0.0</code> is available.</p>")
+}
+
+// TestTagInterpolationNested verifies that a #[tag] inside another #[tag]
+// renders correctly with the inner tag as a child of the outer tag.
+func TestTagInterpolationNested(t *testing.T) {
+	out := renderTest(t, `p Nested: #[span.badge #[strong ★] Featured]`, nil)
+	assertContains(t, out, `<span class="badge"><strong>★</strong> Featured</span>`)
+	if strings.Contains(out, "<span></span>") {
+		t.Errorf("outer span must not be empty — inner content should be nested inside it, got: %q", out)
+	}
+}
+
+// TestTagInterpolationAnchorWithAttribute mirrors the 16-unless.pug usage:
+// p Please #[a(href="/login") sign in].
+func TestTagInterpolationAnchorWithAttribute(t *testing.T) {
+	out := renderTest(t, `p Please #[a(href="/login") sign in].`, nil)
+	assertContains(t, out, `<p>Please <a href="/login">sign in</a>.</p>`)
 }
 
 // ---------------------------------------------------------------------------
@@ -2258,6 +2364,86 @@ func TestExprAddIntegers(t *testing.T) {
 	assertContains(t, out, "7")
 }
 
+// TestExprMultiply verifies that * evaluates as numeric multiplication.
+func TestExprMultiply(t *testing.T) {
+	out := renderTest(t, "p= 6 * 7", nil)
+	assertEqual(t, out, "<p>42</p>")
+}
+
+// TestExprMultiplyVariables verifies multiplication with runtime variables.
+func TestExprMultiplyVariables(t *testing.T) {
+	src := "- x = 3\n- y = 4\np= x * y"
+	out := renderTest(t, src, nil)
+	assertEqual(t, out, "<p>12</p>")
+}
+
+// TestExprSubtract verifies that - evaluates as numeric subtraction.
+func TestExprSubtract(t *testing.T) {
+	out := renderTest(t, "p= 10 - 3", nil)
+	assertEqual(t, out, "<p>7</p>")
+}
+
+// TestExprSubtractVariables verifies subtraction with runtime variables.
+func TestExprSubtractVariables(t *testing.T) {
+	src := "- x = 10\n- y = 4\np= x - y"
+	out := renderTest(t, src, nil)
+	assertEqual(t, out, "<p>6</p>")
+}
+
+// TestExprDivide verifies that / evaluates as numeric division.
+func TestExprDivide(t *testing.T) {
+	out := renderTest(t, "p= 20 / 4", nil)
+	assertEqual(t, out, "<p>5</p>")
+}
+
+// TestExprDivideFloat verifies that fractional division results are preserved.
+func TestExprDivideFloat(t *testing.T) {
+	out := renderTest(t, "p= 7 / 2", nil)
+	assertEqual(t, out, "<p>3.5</p>")
+}
+
+// TestExprModulo verifies that % evaluates as integer modulo.
+func TestExprModulo(t *testing.T) {
+	out := renderTest(t, "p= 10 % 3", nil)
+	assertEqual(t, out, "<p>1</p>")
+}
+
+// TestExprModuloEven verifies modulo returns 0 for even divisibility.
+func TestExprModuloEven(t *testing.T) {
+	out := renderTest(t, "p= 9 % 3", nil)
+	assertEqual(t, out, "<p>0</p>")
+}
+
+// TestExprArithmeticPrecedence verifies that * binds tighter than +.
+func TestExprArithmeticPrecedence(t *testing.T) {
+	// 2 + 3 * 4 should be 14, not 20
+	out := renderTest(t, "p= 2 + 3 * 4", nil)
+	assertEqual(t, out, "<p>14</p>")
+}
+
+// TestExprArithmeticChained verifies left-to-right evaluation of same-precedence ops.
+func TestExprArithmeticChained(t *testing.T) {
+	// 10 - 3 - 2 should be 5 (left-assoc), not 9
+	out := renderTest(t, "p= 10 - 3 - 2", nil)
+	assertEqual(t, out, "<p>5</p>")
+}
+
+// TestExprMixedArithmetic verifies a compound arithmetic expression from code.pug.
+func TestExprMixedArithmetic(t *testing.T) {
+	src := "- x = 10\n- y = 32\np Sum: #{x + y}"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Sum: 42")
+}
+
+// TestExprMultiplyLiteral verifies the exact 6*7=42 case from 12-code.pug.
+func TestExprMultiplyLiteral(t *testing.T) {
+	out := renderTest(t, "p= 6 * 7", nil)
+	if strings.Contains(out, "6") && strings.Contains(out, "7") && !strings.Contains(out, "42") {
+		t.Errorf("6 * 7 should evaluate to 42, got: %q", out)
+	}
+	assertEqual(t, out, "<p>42</p>")
+}
+
 // TestExprNestedTernary verifies deeply nested ternary expressions.
 func TestExprNestedTernary(t *testing.T) {
 	src := "p= a == \"1\" ? \"one\" : a == \"2\" ? \"two\" : \"other\""
@@ -2327,6 +2513,52 @@ func TestMethodChainTrimThenUpper(t *testing.T) {
 	src := "p= val.trim().toUpperCase()"
 	out := renderTest(t, src, map[string]interface{}{"val": "  hello  "})
 	assertEqual(t, out, "<p>HELLO</p>")
+}
+
+// TestMethodSplitJoinChain verifies that .split(sep).join(sep2) correctly
+// splits the string and rejoins with the new separator — the primary regression
+// for the bug where .join() silently returned the original string unchanged
+// when its receiver was a chained expression rather than a plain variable.
+func TestMethodSplitJoinChain(t *testing.T) {
+	src := `p #{words.split(" ").join(" | ")}`
+	out := renderTest(t, src, map[string]interface{}{"words": "one two three"})
+	assertEqual(t, out, "<p>one | two | three</p>")
+}
+
+// TestMethodSplitJoinChainDifferentSep verifies split/join with different
+// separators: split on comma, join with " - ".
+func TestMethodSplitJoinChainDifferentSep(t *testing.T) {
+	src := `p #{csv.split(",").join(" - ")}`
+	out := renderTest(t, src, map[string]interface{}{"csv": "a,b,c"})
+	assertEqual(t, out, "<p>a - b - c</p>")
+}
+
+// TestMethodSplitJoinBufferedCode verifies the chain works in buffered code
+// output (p= expr) as well as in interpolation.
+func TestMethodSplitJoinBufferedCode(t *testing.T) {
+	src := `p= words.split(" ").join("-")`
+	out := renderTest(t, src, map[string]interface{}{"words": "foo bar baz"})
+	assertEqual(t, out, "<p>foo-bar-baz</p>")
+}
+
+// TestMethodJoinOnSliceVariable verifies that .join still works when called
+// directly on a Go slice variable (no chained split preceding it).
+func TestMethodJoinOnSliceVariable(t *testing.T) {
+	src := `p= parts.join(" / ")`
+	out := renderTest(t, src, map[string]interface{}{
+		"parts": []string{"x", "y", "z"},
+	})
+	assertEqual(t, out, "<p>x / y / z</p>")
+}
+
+// TestMethodSplitInEachAndJoinInP verifies that .split used as an each
+// collection still works after the join fix (regression guard).
+func TestMethodSplitInEachStillWorks(t *testing.T) {
+	src := "each part in csv.split(\",\")\n  p= part"
+	out := renderTest(t, src, map[string]interface{}{"csv": "p,q,r"})
+	assertContains(t, out, "<p>p</p>")
+	assertContains(t, out, "<p>q</p>")
+	assertContains(t, out, "<p>r</p>")
 }
 
 // ── HTML escaping ─────────────────────────────────────────────────────────────
@@ -3051,6 +3283,197 @@ func TestFilterAddStartEndWithOptions(t *testing.T) {
 	assertContains(t, out, "FINISH")
 }
 
+// ── Filter output rendering regressions ───────────────────────────────────────
+
+// TestFilterMultiLineExactBrStructure verifies the exact <br>-separated output
+// structure for a three-line filter block.
+func TestFilterMultiLineExactBrStructure(t *testing.T) {
+	src := ":exclaim\n  alpha\n  beta\n  gamma"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	// Exact expected output: each line separated by <br>, no wrapping tag.
+	want := "alpha!<br>beta!<br>gamma!"
+	if out != want {
+		t.Errorf("expected %q, got %q", want, out)
+	}
+}
+
+// TestFilterTrailingNewlineNoSpuriousBr verifies that a filter whose output
+// ends with a trailing newline does NOT produce a spurious trailing <br>.
+func TestFilterTrailingNewlineNoSpuriousBr(t *testing.T) {
+	// This filter appends a trailing newline — a common text-processing artifact.
+	trailingNewline := func(s string, _ map[string]string) (string, error) {
+		return strings.ToUpper(strings.TrimSpace(s)) + "\n", nil
+	}
+	src := ":tnl\n  hello\n  world"
+	opts := &Options{Filters: map[string]FilterFunc{"tnl": trailingNewline}}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	// Must be "HELLO<br>WORLD" — no trailing <br> after the last line.
+	want := "HELLO<br>WORLD"
+	if out != want {
+		t.Errorf("expected %q, got %q", out, want)
+	}
+	if strings.HasSuffix(out, "<br>") {
+		t.Errorf("trailing newline in filter output must not produce a trailing <br>, got: %q", out)
+	}
+}
+
+// TestFilterHTMLOutputPassthrough verifies that a filter returning multi-line
+// HTML (e.g. a Markdown filter) has its output written raw — angle brackets
+// must NOT be HTML-escaped to &lt;/&gt;.
+func TestFilterHTMLOutputPassthrough(t *testing.T) {
+	// Simulates a minimal markdown-like filter that wraps lines in <p> tags.
+	markdownish := func(s string, _ map[string]string) (string, error) {
+		lines := strings.Split(strings.TrimSpace(s), "\n")
+		var parts []string
+		for _, l := range lines {
+			parts = append(parts, "<p>"+strings.TrimSpace(l)+"</p>")
+		}
+		return strings.Join(parts, "\n"), nil
+	}
+	src := ":md\n  hello\n  world"
+	opts := &Options{Filters: map[string]FilterFunc{"md": markdownish}}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	// The raw <p> tags must survive — must not be entity-escaped.
+	want := "<p>hello</p><br><p>world</p>"
+	if out != want {
+		t.Errorf("expected %q, got %q", want, out)
+	}
+	if strings.Contains(out, "&lt;") || strings.Contains(out, "&gt;") {
+		t.Errorf("HTML-producing filter output must not be entity-escaped, got: %q", out)
+	}
+}
+
+// TestFilterCRLFNormalised verifies that filter body text collected from a
+// CRLF source file does not contain stray \r characters by the time the
+// filter function receives it.
+func TestFilterCRLFNormalised(t *testing.T) {
+	var received string
+	spy := func(s string, _ map[string]string) (string, error) {
+		received = s
+		return s, nil
+	}
+	// Simulate CRLF line endings (as on Windows).
+	src := ":spy\r\n  line one\r\n  line two\r\n"
+	opts := &Options{Filters: map[string]FilterFunc{"spy": spy}}
+	_, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if strings.Contains(received, "\r") {
+		t.Errorf("filter content must not contain \\r; got: %q", received)
+	}
+	// The two lines must be joined with a plain \n.
+	if received != "line one\nline two" {
+		t.Errorf("expected %q, got %q", "line one\nline two", received)
+	}
+}
+
+// TestFilterMultiLineInsideTag verifies that a multi-line filter nested inside
+// a block-level tag emits <br>-separated output as the tag's content.
+func TestFilterMultiLineInsideTag(t *testing.T) {
+	upper := func(s string, _ map[string]string) (string, error) {
+		lines := strings.Split(strings.TrimSpace(s), "\n")
+		for i, l := range lines {
+			lines[i] = strings.ToUpper(l)
+		}
+		return strings.Join(lines, "\n"), nil
+	}
+	src := "div\n  :upper\n    line one\n    line two"
+	opts := &Options{Filters: map[string]FilterFunc{"upper": upper}}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	want := "<div>LINE ONE<br>LINE TWO</div>"
+	if out != want {
+		t.Errorf("expected %q, got %q", want, out)
+	}
+}
+
+// TestFilterChainedMultiLine verifies that chained filters (:outer:inner)
+// work correctly when the final output is multi-line, producing <br> separators.
+func TestFilterChainedMultiLine(t *testing.T) {
+	// :wrap:uppercase over two lines →
+	//   uppercase("line one\nline two") = "LINE ONE\nLINE TWO"
+	//   wrap("LINE ONE\nLINE TWO")      = "[LINE ONE]\n[LINE TWO]"
+	// wrapFilter wraps each line individually, so the <br> emitted by
+	// renderFilter sits between the bracket-wrapped lines, not inside them.
+	src := ":wrap:uppercase\n  line one\n  line two"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	// Each line is individually bracketed.
+	assertContains(t, out, "[LINE ONE]")
+	assertContains(t, out, "[LINE TWO]")
+	// The <br> sits between the two bracketed lines, not inside them.
+	want := "[LINE ONE]<br>[LINE TWO]"
+	if out != want {
+		t.Errorf("expected %q, got %q", want, out)
+	}
+	if strings.Contains(out, "<pre>") {
+		t.Errorf("chained multi-line filter output must not be wrapped in <pre>, got: %q", out)
+	}
+}
+
+// TestFilterSingleLineHTMLPassthrough verifies that single-line filter output
+// that contains HTML is written raw (not entity-escaped).
+func TestFilterSingleLineHTMLPassthrough(t *testing.T) {
+	bold := func(s string, _ map[string]string) (string, error) {
+		return "<strong>" + strings.TrimSpace(s) + "</strong>", nil
+	}
+	src := ":bold\n  hello"
+	opts := &Options{Filters: map[string]FilterFunc{"bold": bold}}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	want := "<strong>hello</strong>"
+	if out != want {
+		t.Errorf("expected %q, got %q", want, out)
+	}
+}
+
+// TestFilterOptionsForwardedToOutermostOnly verifies that filter options are
+// only forwarded to the outermost filter in a chain, not to inner subfilters.
+func TestFilterOptionsForwardedToOutermostOnly(t *testing.T) {
+	var innerOpts, outerOpts map[string]string
+	inner := func(s string, opts map[string]string) (string, error) {
+		innerOpts = opts
+		return strings.ToUpper(s), nil
+	}
+	outer := func(s string, opts map[string]string) (string, error) {
+		outerOpts = opts
+		suffix := opts["suffix"]
+		if suffix == "" {
+			suffix = "."
+		}
+		return s + suffix, nil
+	}
+	src := ":outer(suffix=\"!!\"):inner\n  hello"
+	opts := &Options{Filters: map[string]FilterFunc{"inner": inner, "outer": outer}}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "HELLO!!")
+	if len(innerOpts) != 0 {
+		t.Errorf("inner filter must not receive options; got: %v", innerOpts)
+	}
+	if outerOpts["suffix"] != "!!" {
+		t.Errorf("outer filter must receive suffix=!!; got: %v", outerOpts)
+	}
+}
+
 // ── Code ──────────────────────────────────────────────────────────────────────
 
 // TestUnbufferedCodeBlock verifies that a block of unbuffered code (indented
@@ -3207,4 +3630,226 @@ func TestExtendsDefaultFootBlockKept(t *testing.T) {
 	if strings.Contains(out, "default content") {
 		t.Errorf("overridden block should not show default content, got: %q", out)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 / text escaping correctness
+// ---------------------------------------------------------------------------
+
+// TestAttributeMultiByteUTF8 verifies that multi-byte UTF-8 characters in
+// attribute values are preserved verbatim and not corrupted by byte-level
+// string conversion in the lexer.
+func TestAttributeMultiByteUTF8(t *testing.T) {
+	// U+2026 HORIZONTAL ELLIPSIS — 3-byte UTF-8 sequence: E2 80 A6
+	out := renderTest(t, `input(placeholder="Search…")`, nil)
+	if !strings.Contains(out, "Search…") {
+		t.Errorf("multi-byte UTF-8 ellipsis should be preserved in attribute value, got: %q", out)
+	}
+	if strings.Contains(out, "Searchâ") {
+		t.Errorf("multi-byte UTF-8 ellipsis must not be corrupted (got 'â' garbage), got: %q", out)
+	}
+}
+
+// TestAttributeMultiByteUTF8Emoji verifies that emoji (4-byte UTF-8) in
+// attribute values survive the lexer without corruption.
+func TestAttributeMultiByteUTF8Emoji(t *testing.T) {
+	// U+1F600 GRINNING FACE — 4-byte UTF-8 sequence: F0 9F 98 80
+	out := renderTest(t, `button(title="Hello 😀")`, nil)
+	if !strings.Contains(out, "Hello 😀") {
+		t.Errorf("4-byte UTF-8 emoji should be preserved in attribute value, got: %q", out)
+	}
+}
+
+// TestTextContentMultiByteUTF8 verifies that multi-byte UTF-8 characters in
+// plain text content are preserved verbatim.
+func TestTextContentMultiByteUTF8(t *testing.T) {
+	out := renderTest(t, "p Héllo wörld", nil)
+	if !strings.Contains(out, "Héllo wörld") {
+		t.Errorf("multi-byte UTF-8 characters in text content should be preserved, got: %q", out)
+	}
+}
+
+// TestPipeTextMultiByteUTF8 verifies that multi-byte UTF-8 characters in
+// piped text are preserved verbatim.
+func TestPipeTextMultiByteUTF8(t *testing.T) {
+	out := renderTest(t, "p\n  | Héllo wörld", nil)
+	if !strings.Contains(out, "Héllo wörld") {
+		t.Errorf("multi-byte UTF-8 characters in pipe text should be preserved, got: %q", out)
+	}
+}
+
+// TestTextApostropheNotOverEscaped verifies that apostrophes in plain text
+// content are emitted as literal ' characters and not escaped to &#39;.
+// Apostrophes only need escaping inside attribute values, not in text nodes.
+func TestTextApostropheNotOverEscaped(t *testing.T) {
+	out := renderTest(t, "button Can't click me", nil)
+	if strings.Contains(out, "&#39;") {
+		t.Errorf("apostrophe in text content should not be escaped to &#39;, got: %q", out)
+	}
+	if !strings.Contains(out, "Can't") {
+		t.Errorf("apostrophe in text content should be preserved as literal ', got: %q", out)
+	}
+}
+
+// TestPipeTextApostropheNotOverEscaped verifies the same for piped text.
+func TestPipeTextApostropheNotOverEscaped(t *testing.T) {
+	out := renderTest(t, "p\n  | It's alive", nil)
+	if strings.Contains(out, "&#39;") {
+		t.Errorf("apostrophe in pipe text should not be escaped to &#39;, got: %q", out)
+	}
+	if !strings.Contains(out, "It's") {
+		t.Errorf("apostrophe in pipe text should be preserved as literal ', got: %q", out)
+	}
+}
+
+// TestTextDangerousCharsStillEscaped verifies that the targeted text escaping
+// still catches < > and & even though ' is now left unescaped.
+func TestTextDangerousCharsStillEscaped(t *testing.T) {
+	out := renderTest(t, "p 1 < 2 & 3 > 0", nil)
+	assertContains(t, out, "&lt;")
+	assertContains(t, out, "&gt;")
+	assertContains(t, out, "&amp;")
+	if strings.Contains(out, " < ") || strings.Contains(out, " > ") {
+		t.Errorf("< and > in text content must be HTML-escaped, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Class attribute — operator expressions
+// ---------------------------------------------------------------------------
+
+// TestClassAttributeTernaryTrue verifies that a ternary expression used as the
+// class attribute value is evaluated (truthy branch).
+func TestClassAttributeTernaryTrue(t *testing.T) {
+	out := renderTest(t, `div(class=isActive ? "active" : "")`, map[string]interface{}{
+		"isActive": true,
+	})
+	assertContains(t, out, `class="active"`)
+	if strings.Contains(out, "?") || strings.Contains(out, "isActive") {
+		t.Errorf("ternary class expression should be fully evaluated, got: %q", out)
+	}
+}
+
+// TestClassAttributeTernaryFalse verifies that a ternary expression used as
+// the class attribute value is evaluated (falsy branch).
+func TestClassAttributeTernaryFalse(t *testing.T) {
+	out := renderTest(t, `div(class=isActive ? "active" : "inactive")`, map[string]interface{}{
+		"isActive": false,
+	})
+	assertContains(t, out, `class="inactive"`)
+}
+
+// TestClassAttributeTernaryEmptyBranch verifies that when the ternary false
+// branch is an empty string the class attribute is still emitted.
+func TestClassAttributeTernaryEmptyBranch(t *testing.T) {
+	out := renderTest(t, `div(class=flag ? "on" : "")`, map[string]interface{}{
+		"flag": false,
+	})
+	// class="" is acceptable — what must NOT happen is the raw expression appearing
+	if strings.Contains(out, "flag") || strings.Contains(out, "?") {
+		t.Errorf("unevaluated ternary must not appear in output, got: %q", out)
+	}
+}
+
+// TestClassAttributeLogicalOr verifies that || in a class expression is
+// evaluated rather than word-split.
+func TestClassAttributeLogicalOr(t *testing.T) {
+	out := renderTest(t, `div(class=primary || "fallback")`, map[string]interface{}{
+		"primary": "",
+	})
+	assertContains(t, out, `class="fallback"`)
+	if strings.Contains(out, "||") {
+		t.Errorf("|| in class expression should be evaluated, got: %q", out)
+	}
+}
+
+// TestClassAttributeConcatenation verifies that a + expression in a class
+// attribute is evaluated rather than word-split.
+func TestClassAttributeConcatenation(t *testing.T) {
+	out := renderTest(t, `div(class="btn-" + size)`, map[string]interface{}{
+		"size": "lg",
+	})
+	assertContains(t, out, `class="btn-lg"`)
+	if strings.Contains(out, "+") {
+		t.Errorf("+ in class expression should be evaluated, got: %q", out)
+	}
+}
+
+// TestClassAttributeTernaryWithData mirrors the 05-dynamic-attrs.pug example
+// that originally showed the regression.
+func TestClassAttributeTernaryWithData(t *testing.T) {
+	src := `a(href=url, class=isActive ? "active" : "") Home`
+	data := map[string]interface{}{
+		"url":      "/home",
+		"isActive": true,
+	}
+	out := renderTest(t, src, data)
+	assertContains(t, out, `class="active"`)
+	assertContains(t, out, `href="/home"`)
+	if strings.Contains(out, "isActive") || strings.Contains(out, "?") {
+		t.Errorf("ternary class expression should be fully evaluated, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HTML entity pass-through in text content
+// ---------------------------------------------------------------------------
+
+// TestTextNamedEntityPassThrough verifies that named HTML entities like &copy;
+// are passed through unmodified in text content rather than double-escaped.
+func TestTextNamedEntityPassThrough(t *testing.T) {
+	out := renderTest(t, "p &copy; 2025", nil)
+	if strings.Contains(out, "&amp;copy;") {
+		t.Errorf("named HTML entity &copy; should not be double-escaped to &amp;copy;, got: %q", out)
+	}
+	assertContains(t, out, "&copy;")
+}
+
+// TestTextNumericEntityPassThrough verifies that numeric HTML entities like
+// &#169; are passed through unmodified.
+func TestTextNumericEntityPassThrough(t *testing.T) {
+	out := renderTest(t, "p &#169; 2025", nil)
+	if strings.Contains(out, "&amp;#169;") {
+		t.Errorf("numeric HTML entity &#169; should not be double-escaped, got: %q", out)
+	}
+	assertContains(t, out, "&#169;")
+}
+
+// TestTextHexEntityPassThrough verifies that hex numeric HTML entities like
+// &#xA9; are passed through unmodified.
+func TestTextHexEntityPassThrough(t *testing.T) {
+	out := renderTest(t, "p &#xA9; rights", nil)
+	if strings.Contains(out, "&amp;#xA9;") {
+		t.Errorf("hex HTML entity &#xA9; should not be double-escaped, got: %q", out)
+	}
+	assertContains(t, out, "&#xA9;")
+}
+
+// TestTextBareAmpersandEscaped verifies that a bare & not part of an entity
+// is still escaped to &amp;.
+func TestTextBareAmpersandEscaped(t *testing.T) {
+	out := renderTest(t, "p Cats & Dogs", nil)
+	if strings.Contains(out, "Cats & Dogs") {
+		t.Errorf("bare & should be escaped to &amp;, got: %q", out)
+	}
+	assertContains(t, out, "Cats &amp; Dogs")
+}
+
+// TestTextAmpersandNoSemicolonEscaped verifies that & followed by word chars
+// but no closing ; is treated as a bare & and escaped.
+func TestTextAmpersandNoSemicolonEscaped(t *testing.T) {
+	out := renderTest(t, "p AT&T", nil)
+	if strings.Contains(out, "AT&T") && !strings.Contains(out, "AT&amp;T") {
+		t.Errorf("& without closing ; should be escaped to &amp;, got: %q", out)
+	}
+	assertContains(t, out, "AT&amp;T")
+}
+
+// TestPipeTextNamedEntityPassThrough verifies entity pass-through in piped text.
+func TestPipeTextNamedEntityPassThrough(t *testing.T) {
+	out := renderTest(t, "p\n  | &copy; 2025", nil)
+	if strings.Contains(out, "&amp;copy;") {
+		t.Errorf("named HTML entity in pipe text should not be double-escaped, got: %q", out)
+	}
+	assertContains(t, out, "&copy;")
 }
