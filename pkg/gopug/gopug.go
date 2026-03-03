@@ -1,72 +1,123 @@
-// Package gopug provides a tiny, opinionated greeting utility intended
-// to be used as a reusable library by other projects.
-//
-// The API is small and safe for use in other packages: it exposes a
-// convenience function `Hello` plus a `Greeter` type for configurable use.
 package gopug
 
 import (
 	"fmt"
-	"strings"
+	"io"
+	"io/ioutil"
+	"path/filepath"
 )
 
-// Version is the library semantic version. Increment when you make a release.
-const Version = "0.1.0"
-
-// Greeter is a configurable greeting generator. Users can set a custom
-// Prefix which will be placed before the name in the greeting.
-type Greeter struct {
-	// Prefix placed before the name in the greeting. Default: "Hello"
-	Prefix string
+// Template represents a compiled Pug template ready for rendering.
+type Template struct {
+	ast  *DocumentNode
+	opts *Options
 }
 
-// New returns a Greeter configured with the provided prefix.
-// If prefix is empty, it defaults to "Hello".
-func New(prefix string) *Greeter {
-	if strings.TrimSpace(prefix) == "" {
-		prefix = "Hello"
+// Options configures template compilation and rendering behavior.
+type Options struct {
+	Basedir string                                  // root directory for absolute paths
+	Pretty  bool                                    // pretty-print HTML output
+	Globals map[string]interface{}                  // data available to all renders
+	Filters map[string]func(string) (string, error) // custom filters
+}
+
+// Render compiles a Pug template string and renders it with the given data.
+// This is a convenience function that compiles and renders in one step.
+func Render(src string, data map[string]interface{}, opts *Options) (string, error) {
+	tpl, err := Compile(src, opts)
+	if err != nil {
+		return "", err
 	}
-	return &Greeter{Prefix: prefix}
+	return tpl.Render(data)
 }
 
-// Hello returns a greeting for the provided name using the Greeter's Prefix.
-// If name is empty or only whitespace, a generic greeting is returned.
-func (g *Greeter) Hello(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Sprintf("%s, world!", g.Prefix)
+// RenderFile reads a .pug file, compiles it, and renders it with the given data.
+func RenderFile(path string, data map[string]interface{}, opts *Options) (string, error) {
+	src, err := ioutil.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file %q: %w", path, err)
 	}
-	return fmt.Sprintf("%s, %s!", g.Prefix, titleName(name))
+
+	if opts == nil {
+		opts = &Options{}
+	}
+	if opts.Basedir == "" {
+		opts.Basedir = filepath.Dir(path)
+	}
+
+	return Render(string(src), data, opts)
 }
 
-// Hello is a convenience function that uses a default Greeter with prefix "Hello".
-func Hello(name string) string {
-	return New("Hello").Hello(name)
+// Compile parses a Pug template string and returns a compiled Template.
+// The template can be rendered multiple times with different data.
+func Compile(src string, opts *Options) (*Template, error) {
+	if opts == nil {
+		opts = &Options{}
+	}
+
+	// Lex
+	lexer := NewLexer(src)
+	tokens, err := lexer.Lex()
+	if err != nil {
+		return nil, fmt.Errorf("lexer error: %w", err)
+	}
+
+	// Parse
+	parser := NewParser(tokens)
+	ast, err := parser.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("parser error: %w", err)
+	}
+
+	return &Template{
+		ast:  ast,
+		opts: opts,
+	}, nil
 }
 
-// titleName applies light normalization to a name so greetings look tidy.
-// It capitalizes the first rune of each word and collapses multiple spaces.
-func titleName(s string) string {
-	// Collapse multiple spaces and trim
-	fields := strings.Fields(s)
-	for i, f := range fields {
-		// Use strings.Title-like behavior for ASCII-friendly names.
-		// Avoid deprecated strings.Title; do simple capitalize.
-		if f == "" {
-			continue
-		}
-		runes := []rune(f)
-		if len(runes) == 0 {
-			continue
-		}
-		runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
-		// Lowercase rest (simple approach)
-		if len(runes) > 1 {
-			rest := strings.ToLower(string(runes[1:]))
-			fields[i] = string(runes[0]) + rest
-		} else {
-			fields[i] = string(runes[0])
+// CompileFile reads a .pug file and compiles it into a Template.
+func CompileFile(path string, opts *Options) (*Template, error) {
+	src, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %q: %w", path, err)
+	}
+
+	if opts == nil {
+		opts = &Options{}
+	}
+	if opts.Basedir == "" {
+		opts.Basedir = filepath.Dir(path)
+	}
+
+	return Compile(string(src), opts)
+}
+
+// Render renders the template with the provided data and returns HTML.
+func (t *Template) Render(data map[string]interface{}) (string, error) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+
+	// Merge globals into data
+	if t.opts != nil && t.opts.Globals != nil {
+		for k, v := range t.opts.Globals {
+			if _, exists := data[k]; !exists {
+				data[k] = v
+			}
 		}
 	}
-	return strings.Join(fields, " ")
+
+	// Create runtime and render
+	rt := NewRuntime(t.ast, data)
+	return rt.Render()
+}
+
+// RenderToWriter renders the template with the provided data and writes to w.
+func (t *Template) RenderToWriter(w io.Writer, data map[string]interface{}) error {
+	html, err := t.Render(data)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(w, html)
+	return err
 }
