@@ -82,6 +82,8 @@ func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 		return p.parseInterpolationNode(false)
 	case TokenInterpolationUnescape:
 		return p.parseInterpolationNode(true)
+	case TokenTagInterpolationStart:
+		return p.parseTagInterpolation()
 	case TokenHTMLLiteral:
 		return p.parseLiteralHTML()
 	case TokenTag, TokenClass, TokenID:
@@ -137,7 +139,8 @@ func (p *Parser) parseTag() (Node, error) {
 	}
 
 	// Parse attributes, classes, IDs, and special characters
-	for p.cur.Type == TokenClass || p.cur.Type == TokenID || p.cur.Type == TokenAttrStart || p.cur.Type == TokenDot || p.cur.Type == TokenColon || p.cur.Type == TokenTagEnd {
+	for p.cur.Type == TokenClass || p.cur.Type == TokenID || p.cur.Type == TokenAttrStart || p.cur.Type == TokenDot || p.cur.Type == TokenColon || p.cur.Type == TokenTagEnd ||
+		(p.cur.Type == TokenAttrName && p.cur.Value == "&attributes") {
 		switch p.cur.Type {
 		case TokenClass:
 			className := p.cur.Value
@@ -158,6 +161,24 @@ func (p *Parser) parseTag() (Node, error) {
 			p.advance() // consume (
 			if err := p.parseAttributes(tag); err != nil {
 				return nil, err
+			}
+
+		case TokenAttrName:
+			// &attributes(expr) emitted outside an AttrStart/AttrEnd block by the lexer.
+			if p.cur.Value == "&attributes" {
+				p.advance() // consume &attributes name
+				// Consume the = token
+				if p.cur.Type == TokenAttrEqual || p.cur.Type == TokenAttrEqualUnescape {
+					p.advance()
+				}
+				// Consume the value (expression)
+				if p.cur.Type == TokenAttrValue {
+					tag.Attributes["&attributes"] = &AttributeValue{Value: p.cur.Value}
+					p.advance()
+				}
+			} else {
+				// Unknown bare AttrName outside attribute block — skip
+				p.advance()
 			}
 
 		case TokenDot:
@@ -256,7 +277,34 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 
 				if p.cur.Type == TokenAttrValue {
 					value := p.cur.Value
-					tag.Attributes[name] = &AttributeValue{Value: value, Unescaped: unescaped}
+					// For the "class" attribute, merge with any existing value
+					// (e.g. from a prior .shorthand) instead of overwriting it.
+					if name == "class" {
+						if existing, ok := tag.Attributes["class"]; ok {
+							// Strip outer quotes from the existing value and the
+							// new value, join them, then re-quote.
+							existingInner := existing.Value
+							if len(existingInner) >= 2 &&
+								existingInner[0] == '"' &&
+								existingInner[len(existingInner)-1] == '"' {
+								existingInner = existingInner[1 : len(existingInner)-1]
+							}
+							newInner := value
+							if len(newInner) >= 2 &&
+								newInner[0] == '"' &&
+								newInner[len(newInner)-1] == '"' {
+								newInner = newInner[1 : len(newInner)-1]
+							}
+							tag.Attributes["class"] = &AttributeValue{
+								Value:     `"` + existingInner + " " + newInner + `"`,
+								Unescaped: unescaped,
+							}
+						} else {
+							tag.Attributes[name] = &AttributeValue{Value: value, Unescaped: unescaped}
+						}
+					} else {
+						tag.Attributes[name] = &AttributeValue{Value: value, Unescaped: unescaped}
+					}
 					p.advance()
 				} else {
 					return fmt.Errorf("expected attribute value at line %d", p.cur.Line)
@@ -298,7 +346,24 @@ func (p *Parser) parseComment() (*CommentNode, error) {
 	content := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
+	commentDepth := p.cur.Depth
 	p.advance()
+
+	// Collect indented body lines emitted by the lexer as TokenText tokens.
+	// The lexer eagerly consumed all lines that are indented more deeply than
+	// the comment header, so we just need to drain them here.
+	var bodyLines []string
+	if content != "" {
+		bodyLines = append(bodyLines, content)
+	}
+	for p.cur.Type == TokenText && p.cur.Depth > commentDepth {
+		bodyLines = append(bodyLines, p.cur.Value)
+		p.advance()
+	}
+	if len(bodyLines) > 0 {
+		content = strings.Join(bodyLines, "\n")
+	}
+
 	p.skipNewlines()
 	return &CommentNode{Content: content, Buffered: buffered, Line: line, Col: col}, nil
 }
@@ -394,6 +459,51 @@ func (p *Parser) collectTextRun(depth int) []Node {
 	}
 done:
 	return nodes
+}
+
+// parseTagInterpolation parses #[tag content] inline tag interpolation.
+// The token value contains the full inner content string (e.g. "strong Hello").
+// We re-lex and re-parse it as a mini document to produce a TagNode.
+func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
+	inner := p.cur.Value
+	line := p.cur.Line
+	col := p.cur.Col
+	p.advance() // consume TokenTagInterpolationStart
+	// Consume the paired TokenTagInterpolationEnd if present
+	if p.cur.Type == TokenTagInterpolationEnd {
+		p.advance()
+	}
+
+	// Re-lex the inner content as a standalone Pug snippet.
+	lx := NewLexer(inner)
+	tokens, err := lx.Lex()
+	if err != nil {
+		return nil, fmt.Errorf("tag interpolation lex error: %w", err)
+	}
+	pr := NewParser(tokens)
+	doc, err := pr.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("tag interpolation parse error: %w", err)
+	}
+
+	// Expect exactly one TagNode at the top level.
+	var tag *TagNode
+	for _, node := range doc.Children {
+		if t, ok := node.(*TagNode); ok {
+			tag = t
+			break
+		}
+	}
+	if tag == nil {
+		// Fallback: wrap as a span if the inner content didn't parse to a tag.
+		tag = &TagNode{
+			Name:       "span",
+			Attributes: make(map[string]*AttributeValue),
+			Children:   doc.Children,
+		}
+	}
+
+	return &TagInterpolationNode{Tag: tag, Line: line, Col: col}, nil
 }
 
 // parseInterpolationNode parses a standalone interpolation token.
@@ -851,6 +961,42 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 				continue
 			}
 			p.advance() // skip unexpected tokens inside ()
+		}
+		if p.cur.Type == TokenAttrEnd {
+			p.advance() // consume )
+		}
+	}
+
+	// A mixin call may be followed by a second attribute group for HTML
+	// attributes: +btn("OK")(class="primary").  Consume it and merge into
+	// call.Attributes (these become the implicit `attributes` map inside the
+	// mixin body).
+	if p.cur.Type == TokenAttrStart {
+		p.advance() // consume (
+		for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
+			if p.cur.Type == TokenAttrComma {
+				p.advance()
+				continue
+			}
+			if p.cur.Type == TokenAttrName {
+				attrName := p.cur.Value
+				p.advance()
+				if p.cur.Type == TokenAttrEqual || p.cur.Type == TokenAttrEqualUnescape {
+					unescaped := p.cur.Type == TokenAttrEqualUnescape
+					p.advance() // consume = or !=
+					val := ""
+					if p.cur.Type == TokenAttrValue {
+						val = p.cur.Value
+						p.advance()
+					}
+					call.Attributes[attrName] = &AttributeValue{Value: val, Unescaped: unescaped}
+				} else {
+					// Boolean attribute (no value)
+					call.Attributes[attrName] = &AttributeValue{Value: "true"}
+				}
+				continue
+			}
+			p.advance() // skip unexpected tokens
 		}
 		if p.cur.Type == TokenAttrEnd {
 			p.advance() // consume )

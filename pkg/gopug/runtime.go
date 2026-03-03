@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -27,6 +28,7 @@ type Runtime struct {
 	opts           *Options                  // compilation options (Basedir, Globals, Filters)
 	basedir        string                    // resolved base directory for includes
 	includedPaths  []string                  // stack of currently-rendering paths for cycle detection
+	prettyDepth    int                       // current indentation depth for pretty-print mode
 }
 
 // NewRuntime creates a new runtime for rendering.
@@ -47,11 +49,55 @@ func NewRuntimeWithOptions(ast *DocumentNode, data map[string]interface{}, opts 
 		mixins:        make(map[string]*MixinDeclNode),
 		opts:          opts,
 		includedPaths: make([]string, 0),
+		prettyDepth:   0,
 	}
 	if opts != nil && opts.Basedir != "" {
 		r.basedir = opts.Basedir
 	}
 	return r
+}
+
+// pretty returns true when pretty-print mode is enabled.
+func (r *Runtime) pretty() bool {
+	return r.opts != nil && r.opts.Pretty
+}
+
+// prettyNewline writes a newline + indentation when pretty-print is on.
+// Does nothing in compact mode.
+func (r *Runtime) prettyNewline() {
+	if !r.pretty() {
+		return
+	}
+	r.buf.WriteByte('\n')
+	for i := 0; i < r.prettyDepth; i++ {
+		r.buf.WriteString("  ")
+	}
+}
+
+// prettyInline returns true when the tag should be rendered without child
+// indentation (inline elements and tags whose only child is a text node).
+func prettyInline(tag *TagNode) bool {
+	inline := map[string]bool{
+		"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
+		"big": true, "br": true, "button": true, "cite": true, "code": true,
+		"dfn": true, "em": true, "i": true, "img": true, "input": true,
+		"kbd": true, "label": true, "map": true, "object": true, "output": true,
+		"q": true, "samp": true, "select": true, "small": true, "span": true,
+		"strong": true, "sub": true, "sup": true, "textarea": true, "time": true,
+		"tt": true, "var": true,
+	}
+	if inline[tag.Name] {
+		return true
+	}
+	// Single text-only child — keep on one line
+	if len(tag.Children) == 1 {
+		switch tag.Children[0].(type) {
+		case *TextNode, *PipeNode, *BlockTextNode, *TextRunNode,
+			*InterpolationNode, *CodeNode:
+			return true
+		}
+	}
+	return false
 }
 
 // Render renders the AST to a string.
@@ -359,6 +405,8 @@ func (r *Runtime) renderNode(node Node) error {
 		return r.renderBlockExpansion(n)
 	case *TextRunNode:
 		return r.renderTextRun(n)
+	case *TagInterpolationNode:
+		return r.renderTagInterpolation(n)
 	case *FilterNode:
 		return r.renderFilter(n)
 	case *MixinDeclNode:
@@ -385,6 +433,11 @@ func (r *Runtime) renderNode(node Node) error {
 	}
 }
 
+// renderTagInterpolation renders an inline #[tag content] interpolation.
+func (r *Runtime) renderTagInterpolation(n *TagInterpolationNode) error {
+	return r.renderTag(n.Tag)
+}
+
 // renderBlockBody renders the body of a BlockNode (used during inheritance rendering).
 func (r *Runtime) renderBlockBody(b *BlockNode) error {
 	for _, node := range b.Body {
@@ -395,31 +448,130 @@ func (r *Runtime) renderBlockBody(b *BlockNode) error {
 	return nil
 }
 
+// writeNewlineAfterDoctype writes a newline after the doctype declaration when
+// pretty-print is enabled, called by Render() before the first node walk.
+func (r *Runtime) writeNewlineAfterDoctype(nodes []Node) {
+	if !r.pretty() {
+		return
+	}
+	for _, n := range nodes {
+		if _, ok := n.(*DoctypeNode); ok {
+			r.buf.WriteByte('\n')
+			return
+		}
+	}
+}
+
 // renderTag renders an HTML tag and its children.
 func (r *Runtime) renderTag(tag *TagNode) error {
+	// Pretty-print: emit newline+indent before block-level tags (not inside
+	// an inline tag context — the caller manages that via prettyDepth).
+	if r.pretty() && !prettyInline(tag) {
+		r.prettyNewline()
+	}
+
 	// Write opening tag
 	r.buf.WriteString("<")
 	r.buf.WriteString(tag.Name)
 
-	// Write attributes
-	for name, val := range tag.Attributes {
+	// Build the final attribute map, resolving &attributes merges first.
+	// We use a slice of (name, value, unescaped) to preserve a stable sort
+	// order (id first, class second, then alphabetical) for deterministic output.
+	type attrEntry struct {
+		name      string
+		value     string
+		unescaped bool
+		boolean   bool // no value, just the name
+	}
+
+	// Start with a copy of tag.Attributes, expanding &attributes spreads.
+	merged := make(map[string]*AttributeValue)
+	for k, v := range tag.Attributes {
+		if k == "&attributes" {
+			// Evaluate the expression — expect a map[string]interface{} or similar.
+			raw, ok := r.lookup(v.Value)
+			if !ok {
+				// Try evaluating as an expression (e.g. a variable name)
+				if ev, err := r.evaluateExpr(v.Value); err == nil {
+					raw, ok = r.lookup(ev)
+				}
+			}
+			if ok && raw != nil {
+				rv := reflect.ValueOf(raw)
+				if rv.Kind() == reflect.Map {
+					for _, mk := range rv.MapKeys() {
+						attrKey := fmt.Sprintf("%v", mk.Interface())
+						attrVal := fmt.Sprintf("%v", rv.MapIndex(mk).Interface())
+						merged[attrKey] = &AttributeValue{Value: `"` + attrVal + `"`, Unescaped: false}
+					}
+				}
+			}
+			continue
+		}
+		merged[k] = v
+	}
+
+	// Collect and sort attribute names for deterministic output:
+	// id and class come first (in that order), then the rest alphabetically.
+	names := make([]string, 0, len(merged))
+	for k := range merged {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		order := func(n string) int {
+			switch n {
+			case "id":
+				return 0
+			case "class":
+				return 1
+			default:
+				return 2
+			}
+		}
+		oi, oj := order(names[i]), order(names[j])
+		if oi != oj {
+			return oi < oj
+		}
+		return names[i] < names[j]
+	})
+
+	for _, name := range names {
+		val := merged[name]
+
+		// Evaluate the attribute value first so we can check for boolean
+		// suppression before emitting anything.
+		evaluated := ""
+		if val.Value != "" && val.Value != name {
+			var err error
+			evaluated, err = r.evaluateExpr(val.Value)
+			if err != nil {
+				evaluated = val.Value
+			}
+		}
+
+		// Boolean suppression: if the raw attribute value is a variable
+		// expression (not a quoted string literal) and it evaluates to
+		// "false", omit the attribute entirely — matching Pug behaviour.
+		if evaluated == "false" {
+			rawVal := strings.TrimSpace(val.Value)
+			isQuoted := len(rawVal) >= 2 &&
+				((rawVal[0] == '"' && rawVal[len(rawVal)-1] == '"') ||
+					(rawVal[0] == '\'' && rawVal[len(rawVal)-1] == '\''))
+			if !isQuoted {
+				continue
+			}
+		}
+
 		r.buf.WriteString(" ")
 		r.buf.WriteString(name)
 
 		if val.Value != "" && val.Value != name {
-			r.buf.WriteString("=")
-
-			// Evaluate the attribute value
-			evaluated, err := r.evaluateExpr(val.Value)
-			if err != nil {
-				evaluated = val.Value
-			}
-
 			// Escape unless marked as unescaped
 			if !val.Unescaped {
 				evaluated = html.EscapeString(evaluated)
 			}
 
+			r.buf.WriteString("=")
 			r.buf.WriteString("\"")
 			r.buf.WriteString(evaluated)
 			r.buf.WriteString("\"")
@@ -439,11 +591,23 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 	r.buf.WriteString(">")
 
+	// Pretty-print: indent children of block-level tags
+	isInline := prettyInline(tag)
+	if r.pretty() && !isInline {
+		r.prettyDepth++
+	}
+
 	// Render children
 	for _, child := range tag.Children {
 		if err := r.renderNode(child); err != nil {
 			return err
 		}
+	}
+
+	// Pretty-print: close indent, newline before closing tag
+	if r.pretty() && !isInline {
+		r.prettyDepth--
+		r.prettyNewline()
 	}
 
 	// Write closing tag
@@ -478,6 +642,7 @@ func (r *Runtime) renderInterpolation(interp *InterpolationNode) error {
 // renderComment renders HTML comments.
 func (r *Runtime) renderComment(comment *CommentNode) error {
 	if comment.Buffered {
+		r.prettyNewline()
 		r.buf.WriteString("<!-- ")
 		r.buf.WriteString(comment.Content)
 		r.buf.WriteString(" -->")
@@ -521,6 +686,15 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 // For anything else the expression is evaluated and the result discarded.
 func (r *Runtime) executeStatement(stmt string) error {
 	stmt = strings.TrimSpace(stmt)
+
+	// Strip leading "var " / "let " / "const " keyword so that
+	// "- var x = 3" works the same as "- x = 3".
+	for _, kw := range []string{"var ", "let ", "const "} {
+		if strings.HasPrefix(stmt, kw) {
+			stmt = strings.TrimSpace(stmt[len(kw):])
+			break
+		}
+	}
 
 	// var++ / var--
 	if strings.HasSuffix(stmt, "++") {
@@ -663,12 +837,9 @@ func (r *Runtime) renderEach(each *EachNode) error {
 	// Look up collection as raw value (not string-converted) so we can iterate it.
 	collVal, ok := r.lookup(each.Collection)
 	if !ok {
-		// Fall back to expression evaluation for literals/expressions
-		str, err := r.evaluateExpr(each.Collection)
-		if err != nil {
-			return err
-		}
-		collVal = str
+		// Fall back to raw expression evaluation so that method expressions like
+		// csv.split(",") return a real []interface{} rather than a string.
+		collVal = r.evaluateExprRaw(each.Collection)
 	}
 
 	// Handle map iteration separately so we can expose both key and value.
@@ -836,23 +1007,29 @@ func (r *Runtime) renderDoctype(dt *DoctypeNode) error {
 	doctype := r.formatDoctype(dt.Value)
 	r.buf.WriteString(doctype)
 	r.doctype = dt.Value
+	if r.pretty() {
+		r.buf.WriteByte('\n')
+	}
 	return nil
 }
 
 // renderPipe renders piped text.
 func (r *Runtime) renderPipe(pipe *PipeNode) error {
+	r.prettyNewline()
 	r.buf.WriteString(html.EscapeString(pipe.Content))
 	return nil
 }
 
 // renderBlockText renders block text (indented text after .).
 func (r *Runtime) renderBlockText(block *BlockTextNode) error {
+	r.prettyNewline()
 	r.buf.WriteString(html.EscapeString(block.Content))
 	return nil
 }
 
 // renderLiteralHTML renders literal HTML (line starting with <).
 func (r *Runtime) renderLiteralHTML(lit *LiteralHTMLNode) error {
+	r.prettyNewline()
 	r.buf.WriteString(lit.Content)
 	return nil
 }
@@ -1146,6 +1323,63 @@ func (r *Runtime) lookupFilter(name string) (func(string) (string, error), bool)
 }
 
 // evaluateExpr evaluates a simple expression against the current scope.
+// evaluateExprRaw evaluates an expression and returns a raw interface{} value.
+// This is used when the caller needs a real Go slice/map rather than a string
+// (e.g. the collection expression in an each loop).  For most expressions it
+// delegates to evaluateExpr and returns the string; for method expressions that
+// produce slices (split) it returns the actual []interface{}.
+func (r *Runtime) evaluateExprRaw(expr string) interface{} {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil
+	}
+
+	// Method call producing a slice: obj.split(sep)
+	if dotIdx := findTopLevelDot(expr); dotIdx > 0 {
+		objExpr := expr[:dotIdx]
+		rest := expr[dotIdx+1:]
+		methodName := rest
+		argsStr := ""
+		if parenIdx := strings.Index(rest, "("); parenIdx >= 0 {
+			methodName = rest[:parenIdx]
+			inner := rest[parenIdx+1:]
+			if closeIdx := strings.LastIndex(inner, ")"); closeIdx >= 0 {
+				argsStr = strings.TrimSpace(inner[:closeIdx])
+			}
+		}
+		methodName = strings.TrimSpace(methodName)
+
+		if methodName == "split" {
+			// Resolve the object as a string.
+			objStr, _ := r.evaluateExpr(objExpr)
+			sep := ""
+			if argsStr != "" {
+				sep, _ = r.evaluateExpr(argsStr)
+				if len(sep) >= 2 &&
+					((sep[0] == '"' && sep[len(sep)-1] == '"') ||
+						(sep[0] == '\'' && sep[len(sep)-1] == '\'')) {
+					sep = sep[1 : len(sep)-1]
+				}
+			}
+			parts := strings.Split(objStr, sep)
+			result := make([]interface{}, len(parts))
+			for i, p := range parts {
+				result[i] = p
+			}
+			return result
+		}
+	}
+
+	// Simple variable lookup — return raw value so slices stay as slices.
+	if val, ok := r.lookup(expr); ok {
+		return val
+	}
+
+	// Fallback: string evaluation.
+	s, _ := r.evaluateExpr(expr)
+	return s
+}
+
 func (r *Runtime) evaluateExpr(expr string) (string, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -1225,11 +1459,37 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return "true", nil
 	}
 
-	// String literals (double or single quoted)
+	// String literals (double or single quoted).
+	// We only treat the expression as a single string literal when the opening
+	// and closing quotes are a *matched* pair — i.e. the very first character
+	// is a quote and the matching closing quote is at the very end with no
+	// unescaped quote of the same kind in between at the top level.
 	if len(expr) >= 2 {
-		if (expr[0] == '"' && expr[len(expr)-1] == '"') ||
-			(expr[0] == '\'' && expr[len(expr)-1] == '\'') {
-			return expr[1 : len(expr)-1], nil
+		q := rune(expr[0])
+		if q == '"' || q == '\'' {
+			// Walk forward looking for the matching closing quote.
+			escaped := false
+			closeIdx := -1
+			for i := 1; i < len(expr); i++ {
+				ch := rune(expr[i])
+				if escaped {
+					escaped = false
+					continue
+				}
+				if ch == '\\' {
+					escaped = true
+					continue
+				}
+				if ch == q {
+					closeIdx = i
+					break
+				}
+			}
+			// Only treat as a string literal when the close quote is at the
+			// very end of the expression (no trailing operators / identifiers).
+			if closeIdx == len(expr)-1 {
+				return expr[1 : len(expr)-1], nil
+			}
 		}
 	}
 
@@ -1248,16 +1508,23 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return "", nil
 	}
 
-	// String concatenation: "a" + variable or variable + "b"
-	if strings.Contains(expr, " + ") {
-		parts := strings.SplitN(expr, " + ", 2)
-		left, err := r.evaluateExpr(strings.TrimSpace(parts[0]))
+	// Addition / string concatenation: a + b
+	// Use findBinaryOp so we don't split inside quoted strings or parens.
+	if idx := findBinaryOp(expr, "+"); idx >= 0 {
+		left, err := r.evaluateExpr(strings.TrimSpace(expr[:idx]))
 		if err != nil {
 			return "", err
 		}
-		right, err := r.evaluateExpr(strings.TrimSpace(parts[1]))
+		right, err := r.evaluateExpr(strings.TrimSpace(expr[idx+1:]))
 		if err != nil {
 			return "", err
+		}
+		// If both sides look numeric, add them; otherwise concatenate as strings.
+		lf, lok := toFloat(left)
+		rf, rok := toFloat(right)
+		if lok && rok {
+			result := lf + rf
+			return strconv.FormatFloat(result, 'f', -1, 64), nil
 		}
 		return left + right, nil
 	}
@@ -1279,6 +1546,242 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 			return "", nil
 		}
 		return fmt.Sprintf("%v", result), nil
+	}
+
+	// Method / property access: expr.method() or expr.property
+	// We check for a top-level dot that is NOT part of a number literal and
+	// NOT inside parentheses/brackets/braces.  If found, evaluate the
+	// left-hand side then apply the method/property on the right.
+	if dotIdx := findTopLevelDot(expr); dotIdx > 0 {
+		objExpr := expr[:dotIdx]
+		rest := expr[dotIdx+1:] // everything after the dot
+
+		objVal, err := r.evaluateExpr(objExpr)
+		if err != nil {
+			return "", err
+		}
+
+		// Determine method name and optional argument list.
+		methodName := rest
+		argsStr := ""
+		if parenIdx := strings.Index(rest, "("); parenIdx >= 0 {
+			methodName = rest[:parenIdx]
+			// Extract arguments between the outermost parens.
+			inner := rest[parenIdx+1:]
+			if closeIdx := strings.LastIndex(inner, ")"); closeIdx >= 0 {
+				argsStr = strings.TrimSpace(inner[:closeIdx])
+			}
+		}
+		methodName = strings.TrimSpace(methodName)
+
+		switch methodName {
+		case "length":
+			// If the raw object is a slice or array, return its element count.
+			if rawObj, ok2 := r.lookup(objExpr); ok2 {
+				rv := reflect.ValueOf(rawObj)
+				if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+					return strconv.Itoa(rv.Len()), nil
+				}
+				if rv.Kind() == reflect.Map {
+					return strconv.Itoa(rv.Len()), nil
+				}
+			}
+			return strconv.Itoa(len([]rune(objVal))), nil
+
+		case "toUpperCase", "toUppercase":
+			return strings.ToUpper(objVal), nil
+
+		case "toLowerCase", "toLowercase":
+			return strings.ToLower(objVal), nil
+
+		case "trim":
+			return strings.TrimSpace(objVal), nil
+
+		case "trimLeft", "trimStart":
+			return strings.TrimLeft(objVal, " \t\n\r"), nil
+
+		case "trimRight", "trimEnd":
+			return strings.TrimRight(objVal, " \t\n\r"), nil
+
+		case "repeat":
+			if argsStr != "" {
+				n, err2 := r.evaluateExpr(argsStr)
+				if err2 == nil {
+					if count, err3 := strconv.Atoi(n); err3 == nil && count >= 0 {
+						return strings.Repeat(objVal, count), nil
+					}
+				}
+			}
+			return objVal, nil
+
+		case "split":
+			// split(sep) — when used in buffered code output, return a
+			// bracket-free joined string; when used as an each collection,
+			// evaluateExprRaw returns a real []interface{} instead.
+			sep := ""
+			if argsStr != "" {
+				sep, _ = r.evaluateExpr(argsStr)
+				if len(sep) >= 2 &&
+					((sep[0] == '"' && sep[len(sep)-1] == '"') ||
+						(sep[0] == '\'' && sep[len(sep)-1] == '\'')) {
+					sep = sep[1 : len(sep)-1]
+				}
+			}
+			parts := strings.Split(objVal, sep)
+			return strings.Join(parts, sep), nil
+
+		case "join":
+			// join(sep) — joins a slice-like string representation.
+			sep := ""
+			if argsStr != "" {
+				sep, _ = r.evaluateExpr(argsStr)
+				if len(sep) >= 2 &&
+					((sep[0] == '"' && sep[len(sep)-1] == '"') ||
+						(sep[0] == '\'' && sep[len(sep)-1] == '\'')) {
+					sep = sep[1 : len(sep)-1]
+				}
+			}
+			// If the object is a real slice in the scope, join it.
+			if rawObj, ok := r.lookup(objExpr); ok {
+				rv := reflect.ValueOf(rawObj)
+				if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+					parts := make([]string, rv.Len())
+					for i := 0; i < rv.Len(); i++ {
+						parts[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
+					}
+					return strings.Join(parts, sep), nil
+				}
+			}
+			return objVal, nil
+
+		case "replace":
+			// replace(old, new) — simple string replacement (first occurrence).
+			if argsStr != "" {
+				// Split on comma at top level.
+				commaIdx := findBinaryOp(argsStr, ",")
+				if commaIdx > 0 {
+					oldArg, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
+					newArg, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
+					for _, s := range []string{oldArg, newArg} {
+						if len(s) >= 2 &&
+							((s[0] == '"' && s[len(s)-1] == '"') ||
+								(s[0] == '\'' && s[len(s)-1] == '\'')) {
+							if s == oldArg {
+								oldArg = s[1 : len(s)-1]
+							} else {
+								newArg = s[1 : len(s)-1]
+							}
+						}
+					}
+					return strings.Replace(objVal, oldArg, newArg, 1), nil
+				}
+			}
+			return objVal, nil
+
+		case "slice":
+			// slice(start[, end]) — substring by rune index.
+			runes := []rune(objVal)
+			if argsStr != "" {
+				commaIdx := findBinaryOp(argsStr, ",")
+				if commaIdx > 0 {
+					startStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
+					endStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
+					start, _ := strconv.Atoi(startStr)
+					end, _ := strconv.Atoi(endStr)
+					if start < 0 {
+						start = len(runes) + start
+					}
+					if end < 0 {
+						end = len(runes) + end
+					}
+					if start < 0 {
+						start = 0
+					}
+					if end > len(runes) {
+						end = len(runes)
+					}
+					if start <= end {
+						return string(runes[start:end]), nil
+					}
+					return "", nil
+				}
+				// Single argument — start only.
+				startStr, _ := r.evaluateExpr(argsStr)
+				start, _ := strconv.Atoi(startStr)
+				if start < 0 {
+					start = len(runes) + start
+				}
+				if start < 0 {
+					start = 0
+				}
+				if start <= len(runes) {
+					return string(runes[start:]), nil
+				}
+				return "", nil
+			}
+			return objVal, nil
+
+		case "indexOf":
+			if argsStr != "" {
+				needle, _ := r.evaluateExpr(argsStr)
+				if len(needle) >= 2 &&
+					((needle[0] == '"' && needle[len(needle)-1] == '"') ||
+						(needle[0] == '\'' && needle[len(needle)-1] == '\'')) {
+					needle = needle[1 : len(needle)-1]
+				}
+				return strconv.Itoa(strings.Index(objVal, needle)), nil
+			}
+			return "-1", nil
+
+		case "includes", "contains":
+			if argsStr != "" {
+				needle, _ := r.evaluateExpr(argsStr)
+				if len(needle) >= 2 &&
+					((needle[0] == '"' && needle[len(needle)-1] == '"') ||
+						(needle[0] == '\'' && needle[len(needle)-1] == '\'')) {
+					needle = needle[1 : len(needle)-1]
+				}
+				if strings.Contains(objVal, needle) {
+					return "true", nil
+				}
+				return "false", nil
+			}
+			return "false", nil
+
+		case "startsWith":
+			if argsStr != "" {
+				prefix, _ := r.evaluateExpr(argsStr)
+				if len(prefix) >= 2 &&
+					((prefix[0] == '"' && prefix[len(prefix)-1] == '"') ||
+						(prefix[0] == '\'' && prefix[len(prefix)-1] == '\'')) {
+					prefix = prefix[1 : len(prefix)-1]
+				}
+				if strings.HasPrefix(objVal, prefix) {
+					return "true", nil
+				}
+				return "false", nil
+			}
+			return "false", nil
+
+		case "endsWith":
+			if argsStr != "" {
+				suffix, _ := r.evaluateExpr(argsStr)
+				if len(suffix) >= 2 &&
+					((suffix[0] == '"' && suffix[len(suffix)-1] == '"') ||
+						(suffix[0] == '\'' && suffix[len(suffix)-1] == '\'')) {
+					suffix = suffix[1 : len(suffix)-1]
+				}
+				if strings.HasSuffix(objVal, suffix) {
+					return "true", nil
+				}
+				return "false", nil
+			}
+			return "false", nil
+
+		case "toString", "String":
+			return objVal, nil
+		}
+		// Unknown method — fall through to variable lookup below.
 	}
 
 	// Variable lookup (with dot notation support)
@@ -1423,6 +1926,57 @@ func findBinaryOp(expr, op string) int {
 		}
 	}
 	return -1
+}
+
+// findTopLevelDot finds the position of a top-level dot (.) in an expression
+// that represents method/property access (e.g. "name.toUpperCase()").
+// It skips dots inside quoted strings, parentheses, brackets, and braces,
+// and ignores dots that are part of numeric literals (e.g. "3.14").
+// Returns the index of the dot, or -1 if not found.
+// Only the LAST top-level dot is returned so that chained calls like
+// "a.b.c" resolve right-to-left correctly.
+func findTopLevelDot(expr string) int {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	result := -1
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '(' || ch == '[' || ch == '{' {
+			depth++
+			continue
+		}
+		if ch == ')' || ch == ']' || ch == '}' {
+			depth--
+			continue
+		}
+		if ch == '.' && depth == 0 {
+			// Skip numeric literals like "3.14" — if the char before and after
+			// are both digits, this dot is part of a number.
+			prevIsDigit := i > 0 && expr[i-1] >= '0' && expr[i-1] <= '9'
+			nextIsDigit := i+1 < len(expr) && expr[i+1] >= '0' && expr[i+1] <= '9'
+			if prevIsDigit && nextIsDigit {
+				continue
+			}
+			result = i
+		}
+	}
+	return result
 }
 
 // compareValues compares two string-represented values with the given operator.
@@ -1579,7 +2133,7 @@ func (r *Runtime) isTruthy(val string) bool {
 // formatDoctype formats a doctype declaration.
 func (r *Runtime) formatDoctype(dt string) string {
 	switch strings.ToLower(dt) {
-	case "html", "5":
+	case "", "html", "5", "doctype":
 		return "<!DOCTYPE html>"
 	case "xml":
 		return `<?xml version="1.0" encoding="utf-8" ?>`

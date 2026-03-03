@@ -1503,3 +1503,967 @@ func TestFilterViaGlobals(t *testing.T) {
 	}
 	assertEqual(t, out, "[global test]")
 }
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Polish
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 8a — Tag interpolation #[tag content]
+// ---------------------------------------------------------------------------
+
+// TestTagInterpolationBasic verifies that #[strong text] inside a pipe line
+// renders as an inline tag.
+func TestTagInterpolationBasic(t *testing.T) {
+	src := "p\n  | Click #[strong here] now"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<strong>here</strong>")
+	assertContains(t, out, "Click")
+	assertContains(t, out, "now")
+}
+
+// TestTagInterpolationWithAttribute verifies that attributes on the inline tag
+// are rendered correctly.
+func TestTagInterpolationWithAttribute(t *testing.T) {
+	src := "p\n  | Visit #[a(href=\"https://example.com\") example.com] today"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `href="https://example.com"`)
+	assertContains(t, out, "example.com")
+}
+
+// TestTagInterpolationInTagText verifies #[...] in inline tag text.
+func TestTagInterpolationInTagText(t *testing.T) {
+	src := "p Use #[em emphasis] here"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<em>emphasis</em>")
+	assertContains(t, out, "Use")
+	assertContains(t, out, "here")
+}
+
+// TestTagInterpolationMixedWithExprInterp verifies that #{} and #[] can coexist
+// on the same line.
+func TestTagInterpolationMixedWithExprInterp(t *testing.T) {
+	src := "p Hello #{name}, click #[a(href=\"/\") home]"
+	out := renderTest(t, src, map[string]interface{}{"name": "Alice"})
+	assertContains(t, out, "Hello Alice")
+	assertContains(t, out, `<a href="/">home</a>`)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8b — &attributes spread
+// ---------------------------------------------------------------------------
+
+// TestAndAttributesBasic verifies that &attributes merges a map into the tag.
+func TestAndAttributesBasic(t *testing.T) {
+	src := "div&attributes(attrs)"
+	out := renderTest(t, src, map[string]interface{}{
+		"attrs": map[string]interface{}{
+			"class": "container",
+			"id":    "main",
+		},
+	})
+	assertContains(t, out, `class="container"`)
+	assertContains(t, out, `id="main"`)
+}
+
+// TestAndAttributesMergesWithExisting verifies that &attributes are added
+// alongside explicitly declared attributes.
+func TestAndAttributesMergesWithExisting(t *testing.T) {
+	src := "button(type=\"button\")&attributes(extra)"
+	out := renderTest(t, src, map[string]interface{}{
+		"extra": map[string]interface{}{
+			"class":   "btn",
+			"data-id": "42",
+		},
+	})
+	assertContains(t, out, `type="button"`)
+	assertContains(t, out, `class="btn"`)
+	assertContains(t, out, `data-id="42"`)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8c — Pretty-print mode
+// ---------------------------------------------------------------------------
+
+// TestPrettyPrintBasic verifies that opts.Pretty=true adds newlines and
+// indentation to block-level tags.
+func TestPrettyPrintBasic(t *testing.T) {
+	src := "html\n  head\n    title Hello\n  body\n    p World"
+	opts := &Options{Pretty: true}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "\n")
+	assertContains(t, out, "<html>")
+	assertContains(t, out, "<title>Hello</title>")
+	assertContains(t, out, "<p>World</p>")
+	assertContains(t, out, "</html>")
+}
+
+// TestPrettyPrintDoctype verifies that the DOCTYPE line is followed by a
+// newline in pretty mode.
+func TestPrettyPrintDoctype(t *testing.T) {
+	src := "doctype html\nhtml\n  body\n    p Hello"
+	opts := &Options{Pretty: true}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<!DOCTYPE html>\n")
+	assertContains(t, out, "<html>")
+	assertContains(t, out, "<p>Hello</p>")
+}
+
+// TestPrettyPrintInlineTagNotIndented verifies that inline elements like
+// <strong> are not broken across multiple lines.
+func TestPrettyPrintInlineTagNotIndented(t *testing.T) {
+	src := "p\n  strong World"
+	opts := &Options{Pretty: true}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<strong>World</strong>")
+}
+
+// TestCompactModeDefault verifies that without Pretty, output has no newlines.
+func TestCompactModeDefault(t *testing.T) {
+	src := "html\n  head\n    title T\n  body\n    p Hi"
+	out := renderTest(t, src, nil)
+	if strings.Contains(out, "\n") {
+		t.Errorf("expected no newlines in compact mode, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8d — Method expressions
+// ---------------------------------------------------------------------------
+
+// TestMethodToUpperCase verifies .toUpperCase() in buffered code.
+func TestMethodToUpperCase(t *testing.T) {
+	src := "p= name.toUpperCase()"
+	out := renderTest(t, src, map[string]interface{}{"name": "alice"})
+	assertContains(t, out, "ALICE")
+}
+
+// TestMethodToLowerCase verifies .toLowerCase() in buffered code.
+func TestMethodToLowerCase(t *testing.T) {
+	src := "p= name.toLowerCase()"
+	out := renderTest(t, src, map[string]interface{}{"name": "BOB"})
+	assertContains(t, out, "bob")
+}
+
+// TestMethodLength verifies .length on a string.
+func TestMethodLength(t *testing.T) {
+	src := "p= name.length"
+	out := renderTest(t, src, map[string]interface{}{"name": "hello"})
+	assertEqual(t, out, "<p>5</p>")
+}
+
+// TestMethodTrim verifies .trim() removes surrounding whitespace.
+func TestMethodTrim(t *testing.T) {
+	src := "p= padded.trim()"
+	out := renderTest(t, src, map[string]interface{}{"padded": "  hello  "})
+	assertEqual(t, out, "<p>hello</p>")
+}
+
+// TestMethodSlice verifies .slice(start, end) returns a substring.
+func TestMethodSlice(t *testing.T) {
+	src := "p= name.slice(0, 3)"
+	out := renderTest(t, src, map[string]interface{}{"name": "Alice"})
+	assertEqual(t, out, "<p>Ali</p>")
+}
+
+// TestMethodIndexOf verifies .indexOf(substr) returns the position.
+func TestMethodIndexOf(t *testing.T) {
+	src := "p= greeting.indexOf(\"World\")"
+	out := renderTest(t, src, map[string]interface{}{"greeting": "Hello, World!"})
+	assertEqual(t, out, "<p>7</p>")
+}
+
+// TestMethodIncludes verifies .includes(substr) returns true/false.
+func TestMethodIncludes(t *testing.T) {
+	src := "if greeting.includes(\"World\")\n  p found"
+	out := renderTest(t, src, map[string]interface{}{"greeting": "Hello, World!"})
+	assertContains(t, out, "found")
+}
+
+// TestMethodStartsWith verifies .startsWith(prefix).
+func TestMethodStartsWith(t *testing.T) {
+	src := "if name.startsWith(\"Al\")\n  p starts with Al"
+	out := renderTest(t, src, map[string]interface{}{"name": "Alice"})
+	assertContains(t, out, "starts with Al")
+}
+
+// TestMethodEndsWith verifies .endsWith(suffix).
+func TestMethodEndsWith(t *testing.T) {
+	src := "if name.endsWith(\"ce\")\n  p ends with ce"
+	out := renderTest(t, src, map[string]interface{}{"name": "Alice"})
+	assertContains(t, out, "ends with ce")
+}
+
+// TestMethodReplace verifies .replace(old, new).
+func TestMethodReplace(t *testing.T) {
+	src := "p= greeting.replace(\"World\", \"Go-Pug\")"
+	out := renderTest(t, src, map[string]interface{}{"greeting": "Hello, World!"})
+	assertContains(t, out, "Hello, Go-Pug!")
+}
+
+// TestMethodInInterpolation verifies method calls work inside #{...}.
+func TestMethodInInterpolation(t *testing.T) {
+	src := "p Hello, #{name.toUpperCase()}!"
+	out := renderTest(t, src, map[string]interface{}{"name": "world"})
+	assertEqual(t, out, "<p>Hello, WORLD!</p>")
+}
+
+// TestMethodRepeat verifies .repeat(n).
+func TestMethodRepeat(t *testing.T) {
+	src := "p= dash.repeat(3)"
+	out := renderTest(t, src, map[string]interface{}{"dash": "-"})
+	assertEqual(t, out, "<p>---</p>")
+}
+
+// TestMethodJoin verifies .join(sep) on a slice.
+func TestMethodJoin(t *testing.T) {
+	src := "p= items.join(\", \")"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []string{"a", "b", "c"},
+	})
+	assertEqual(t, out, "<p>a, b, c</p>")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8e — CompileFile cache
+// ---------------------------------------------------------------------------
+
+// TestCompileFileCacheHit verifies that the second CompileFile call for the
+// same path returns the cached template (no read error even if file deleted).
+func TestCompileFileCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cached.pug"
+	if err := os.WriteFile(path, []byte("p= msg"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First compile — populates cache.
+	tpl1, err := CompileFile(path, nil)
+	if err != nil {
+		t.Fatalf("first CompileFile error: %v", err)
+	}
+
+	// Delete the file — cache should serve the second call.
+	_ = os.Remove(path)
+
+	tpl2, err := CompileFile(path, nil)
+	if err != nil {
+		t.Fatalf("second CompileFile error (expected cache hit): %v", err)
+	}
+
+	// Both templates should produce the same output.
+	out1, _ := tpl1.Render(map[string]interface{}{"msg": "hello"})
+	out2, _ := tpl2.Render(map[string]interface{}{"msg": "hello"})
+	assertEqual(t, out1, out2)
+
+	ClearCache()
+}
+
+// TestClearCache verifies that ClearCache forces a re-read on the next call.
+func TestClearCache(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/mutable.pug"
+	if err := os.WriteFile(path, []byte("p version one"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tpl1, err := CompileFile(path, nil)
+	if err != nil {
+		t.Fatalf("CompileFile error: %v", err)
+	}
+	out1, _ := tpl1.Render(nil)
+	assertContains(t, out1, "version one")
+
+	if err := os.WriteFile(path, []byte("p version two"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ClearCache()
+
+	tpl2, err := CompileFile(path, nil)
+	if err != nil {
+		t.Fatalf("CompileFile after ClearCache error: %v", err)
+	}
+	out2, _ := tpl2.Render(nil)
+	assertContains(t, out2, "version two")
+
+	ClearCache()
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8f — Comprehensive Pug reference tests
+// ---------------------------------------------------------------------------
+
+// ── Attributes ───────────────────────────────────────────────────────────────
+
+// TestAttributeNewlineStyle verifies that attributes can be written one-per-line
+// (Pug allows splitting long attribute lists across lines when the opening
+// parenthesis is on the same line as the tag).
+func TestAttributeMultiValue(t *testing.T) {
+	src := `input(type="text", name="q", placeholder="Search", required)`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `type="text"`)
+	assertContains(t, out, `name="q"`)
+	assertContains(t, out, `placeholder="Search"`)
+	assertContains(t, out, `required`)
+}
+
+// TestAttributeInterpolated verifies that an attribute value that is an
+// expression (= expr) is evaluated at render time.
+func TestAttributeInterpolated(t *testing.T) {
+	src := `a(href="/user/" + uid) profile`
+	out := renderTest(t, src, map[string]interface{}{"uid": "42"})
+	assertContains(t, out, `href="/user/42"`)
+	assertContains(t, out, `profile`)
+}
+
+// TestAttributeNumberValue verifies that numeric attribute expressions render
+// without quotes (just the number string).
+func TestAttributeNumberValue(t *testing.T) {
+	src := `input(maxlength=maxLen)`
+	out := renderTest(t, src, map[string]interface{}{"maxLen": "128"})
+	assertContains(t, out, `maxlength="128"`)
+}
+
+// TestAttributeBooleanDynamic verifies that a falsy expression omits the
+// attribute entirely.
+func TestAttributeBooleanDynamic(t *testing.T) {
+	src := `button(disabled=isDisabled) Click`
+	out := renderTest(t, src, map[string]interface{}{"isDisabled": "false"})
+	if strings.Contains(out, "disabled") {
+		t.Errorf("disabled attribute should be omitted when false, got: %q", out)
+	}
+}
+
+// TestAttributeBooleanDynamicTrue verifies that a truthy expression keeps a
+// boolean attribute.
+func TestAttributeBooleanDynamicTrue(t *testing.T) {
+	src := `button(disabled=isDisabled) Click`
+	out := renderTest(t, src, map[string]interface{}{"isDisabled": "true"})
+	assertContains(t, out, `disabled`)
+}
+
+// TestAttributeClassArray verifies multiple shorthand classes are joined with
+// a space in the class attribute.
+func TestAttributeClassShorthandMultiple(t *testing.T) {
+	src := `.foo.bar.baz`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `class="foo bar baz"`)
+}
+
+// TestAttributeClassAndShorthandMerge verifies that an explicit class()
+// attribute and shorthand .class are both present in the output.
+func TestAttributeClassExplicitAndShorthand(t *testing.T) {
+	src := `div.extra(class="explicit")`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `extra`)
+	assertContains(t, out, `explicit`)
+}
+
+// ── Block text (. notation) ───────────────────────────────────────────────────
+
+// TestBlockTextBasic verifies that a dot after a tag introduces a literal text
+// block whose content is rendered as-is inside the tag.
+func TestBlockTextBasic(t *testing.T) {
+	src := "p.\n  Hello World"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>")
+	assertContains(t, out, "Hello World")
+	assertContains(t, out, "</p>")
+}
+
+// TestBlockTextMultiLine verifies that multi-line block text is preserved.
+func TestBlockTextMultiLine(t *testing.T) {
+	src := "p.\n  Line one\n  Line two"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Line one")
+	assertContains(t, out, "Line two")
+}
+
+// TestBlockTextNotParsedAsPug verifies that block text content is not
+// re-interpreted as Pug tag markup — the lines are rendered as text inside
+// the parent tag, not as child elements.
+func TestBlockTextNotParsedAsPug(t *testing.T) {
+	src := "script.\n  if (x > 0) { alert('hi'); }"
+	out := renderTest(t, src, nil)
+	// The content must be wrapped inside <script>...</script>.
+	assertContains(t, out, "<script>")
+	assertContains(t, out, "</script>")
+	// The content must NOT have been parsed as a child <if> or <alert> tag.
+	if strings.Contains(out, "<if") || strings.Contains(out, "<alert") {
+		t.Errorf("block text should not be parsed as Pug tags, got: %q", out)
+	}
+	// The text content should be present (HTML-escaped form is acceptable).
+	if !strings.Contains(out, "alert") {
+		t.Errorf("expected block text content to be rendered, got: %q", out)
+	}
+}
+
+// ── Multiline piped text ──────────────────────────────────────────────────────
+
+// TestMultiplePipeLinesJoined verifies that consecutive pipe lines are joined
+// with a space (Pug spec: each | line is a separate text node).
+func TestPipeLinesAreSeparateNodes(t *testing.T) {
+	src := "p\n  | first\n  | second\n  | third"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "first")
+	assertContains(t, out, "second")
+	assertContains(t, out, "third")
+}
+
+// ── Comments ─────────────────────────────────────────────────────────────────
+
+// TestBufferedCommentMultiline verifies that an indented block under //
+// is included in an HTML comment.
+func TestBufferedCommentMultiline(t *testing.T) {
+	src := "//\n  first line\n  second line"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<!--")
+	assertContains(t, out, "-->")
+	assertContains(t, out, "first line")
+	assertContains(t, out, "second line")
+}
+
+// TestUnbufferedCommentMultiline verifies that a block under //- produces no
+// HTML output at all.
+func TestUnbufferedCommentMultiline(t *testing.T) {
+	src := "//-\n  this is secret\n  not rendered\np visible"
+	out := renderTest(t, src, nil)
+	if strings.Contains(out, "secret") || strings.Contains(out, "rendered") {
+		t.Errorf("unbuffered comment body should not appear in output, got: %q", out)
+	}
+	assertContains(t, out, "visible")
+}
+
+// TestInlineComment verifies a single-line buffered comment.
+func TestInlineComment(t *testing.T) {
+	src := "// just a comment"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<!-- just a comment -->")
+}
+
+// ── Doctype variants ──────────────────────────────────────────────────────────
+
+// TestDoctypeBasic verifies "doctype html" produces the HTML5 declaration.
+func TestDoctypeBasicHTML5(t *testing.T) {
+	out := renderTest(t, "doctype html", nil)
+	assertEqual(t, out, "<!DOCTYPE html>")
+}
+
+// TestDoctypeDefault verifies bare "doctype" produces the HTML5 declaration.
+func TestDoctypeDefault(t *testing.T) {
+	out := renderTest(t, "doctype", nil)
+	assertEqual(t, out, "<!DOCTYPE html>")
+}
+
+// TestDoctypeXMLFull verifies "doctype xml" produces an XML declaration.
+func TestDoctypeXMLFull(t *testing.T) {
+	out := renderTest(t, "doctype xml", nil)
+	assertContains(t, out, "<?xml")
+	assertContains(t, out, `encoding="utf-8"`)
+}
+
+// ── Void / self-closing elements ─────────────────────────────────────────────
+
+// TestVoidTagBr verifies <br> is self-closed without a separate closing tag.
+func TestVoidTagBr(t *testing.T) {
+	out := renderTest(t, "br", nil)
+	// Must contain <br> or <br/> but not </br>
+	if strings.Contains(out, "</br>") {
+		t.Errorf("br should not have a closing tag, got: %q", out)
+	}
+	assertContains(t, out, "<br")
+}
+
+// TestVoidTagCol verifies <col> is void.
+func TestVoidTagCol(t *testing.T) {
+	out := renderTest(t, "col", nil)
+	if strings.Contains(out, "</col>") {
+		t.Errorf("col should not have a closing tag, got: %q", out)
+	}
+	assertContains(t, out, "<col")
+}
+
+// TestExplicitSelfCloseWithSlash verifies that appending / to any tag makes it
+// self-closing even if it is not a void element.
+func TestExplicitSelfCloseNonVoid(t *testing.T) {
+	src := `foo/`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<foo")
+	assertContains(t, out, "/>")
+	if strings.Contains(out, "</foo>") {
+		t.Errorf("self-closed tag should not have a closing tag, got: %q", out)
+	}
+}
+
+// ── Control flow edge cases ───────────────────────────────────────────────────
+
+// TestIfWithStringTruth verifies that a non-empty string is truthy.
+func TestIfStringTruth(t *testing.T) {
+	src := "if name\n  p= name"
+	out := renderTest(t, src, map[string]interface{}{"name": "Alice"})
+	assertContains(t, out, "Alice")
+}
+
+// TestIfEmptyStringFalsy verifies that an empty string is falsy.
+func TestIfEmptyStringFalsy(t *testing.T) {
+	src := "if name\n  p shown\nelse\n  p hidden"
+	out := renderTest(t, src, map[string]interface{}{"name": ""})
+	assertContains(t, out, "hidden")
+	if strings.Contains(out, "shown") {
+		t.Errorf("empty string should be falsy, got: %q", out)
+	}
+}
+
+// TestIfZeroFalsy verifies that the string "0" is falsy.
+func TestIfZeroFalsy(t *testing.T) {
+	src := "if count\n  p nonzero\nelse\n  p zero"
+	out := renderTest(t, src, map[string]interface{}{"count": "0"})
+	assertContains(t, out, "zero")
+}
+
+// TestUnlessTrue verifies that unless with a truthy condition skips the body.
+func TestUnlessTrue(t *testing.T) {
+	src := "unless loggedIn\n  p Please log in"
+	out := renderTest(t, src, map[string]interface{}{"loggedIn": "true"})
+	if strings.Contains(out, "Please log in") {
+		t.Errorf("unless body should be skipped when condition is true, got: %q", out)
+	}
+}
+
+// TestUnlessFalse verifies that unless with a falsy condition renders the body.
+func TestUnlessFalse(t *testing.T) {
+	src := "unless loggedIn\n  p Please log in"
+	out := renderTest(t, src, map[string]interface{}{"loggedIn": "false"})
+	assertContains(t, out, "Please log in")
+}
+
+// TestEachIndexStartsAtZero verifies that the key variable in each over a
+// slice holds the zero-based index.
+func TestEachIndexStartsAtZero(t *testing.T) {
+	src := "each v, i in items\n  p= i"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{"a", "b", "c"},
+	})
+	assertContains(t, out, "<p>0</p>")
+	assertContains(t, out, "<p>1</p>")
+	assertContains(t, out, "<p>2</p>")
+}
+
+// TestEachSingleItem verifies that each works correctly for a one-item slice.
+func TestEachSingleItem(t *testing.T) {
+	src := "each v in items\n  p= v"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{"only"},
+	})
+	assertEqual(t, out, "<p>only</p>")
+}
+
+// TestEachElseBranch verifies that the else branch renders when the
+// collection is empty.
+func TestEachElseBranch(t *testing.T) {
+	src := "each v in items\n  p= v\nelse\n  p no items"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{},
+	})
+	assertContains(t, out, "no items")
+	if strings.Contains(out, "<p></p>") {
+		t.Errorf("loop body should not render for empty collection, got: %q", out)
+	}
+}
+
+// TestCaseStringMatch verifies case/when matching on a string value.
+func TestCaseStringMatch(t *testing.T) {
+	src := "case color\n  when \"red\"\n    p stop\n  when \"green\"\n    p go\n  default\n    p wait"
+	out := renderTest(t, src, map[string]interface{}{"color": "green"})
+	assertContains(t, out, "go")
+	if strings.Contains(out, "stop") || strings.Contains(out, "wait") {
+		t.Errorf("only matching when should render, got: %q", out)
+	}
+}
+
+// TestWhileAccumulates verifies that a while loop with a counter produces the
+// expected number of iterations.
+func TestWhileAccumulates(t *testing.T) {
+	src := "- var n = 0\n- var out = 0\nwhile n < 5\n  - n++\n  - out++\np= out"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>5</p>")
+}
+
+// ── Nested tags and block expansion ──────────────────────────────────────────
+
+// TestBlockExpansionChained verifies tag: child: grandchild shorthand.
+func TestBlockExpansionChained(t *testing.T) {
+	src := "ul: li: a(href=\"/\") Home"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<ul>")
+	assertContains(t, out, "<li>")
+	assertContains(t, out, `<a href="/">Home</a>`)
+}
+
+// TestDeeplyNestedMixedSiblings verifies that sibling tags at the same depth
+// are all rendered correctly.
+func TestDeeplyNestedMixedSiblings(t *testing.T) {
+	src := "div\n  p first\n  p second\n  p third"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>first</p>")
+	assertContains(t, out, "<p>second</p>")
+	assertContains(t, out, "<p>third</p>")
+}
+
+// ── Mixin edge cases ──────────────────────────────────────────────────────────
+
+// TestMixinDefaultParamEmpty verifies that calling a mixin without an
+// argument for a declared parameter results in an empty string (not a crash).
+func TestMixinDefaultParamEmpty(t *testing.T) {
+	src := "mixin greet(name)\n  p Hello #{name}\n+greet()"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>Hello </p>")
+}
+
+// TestMixinAttributesVariable verifies that the implicit `attributes` map
+// inside a mixin body contains the attributes passed by the caller.
+func TestMixinAttributesVariable(t *testing.T) {
+	src := "mixin btn(label)\n  button(class=attributes.class)= label\n+btn(\"OK\")(class=\"primary\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `class="primary"`)
+	assertContains(t, out, "OK")
+}
+
+// TestMixinRestParamCollectsAll verifies that ...args collects all extra
+// positional arguments into a list.
+func TestMixinRestParamAll(t *testing.T) {
+	src := "mixin list(title, ...items)\n  h2= title\n  each item in items\n    li= item\n+list(\"My List\", \"a\", \"b\", \"c\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<h2>My List</h2>")
+	assertContains(t, out, "<li>a</li>")
+	assertContains(t, out, "<li>b</li>")
+	assertContains(t, out, "<li>c</li>")
+}
+
+// ── Interpolation edge cases ──────────────────────────────────────────────────
+
+// TestInterpolationInsideAttribute verifies that #{} inside an attribute value
+// is treated as a concatenation expression.
+func TestInterpolationAdjacentText(t *testing.T) {
+	src := `p prefix-#{val}-suffix`
+	out := renderTest(t, src, map[string]interface{}{"val": "mid"})
+	assertContains(t, out, "prefix-mid-suffix")
+}
+
+// TestUnescapedInterpolationRaw verifies that !{} does not HTML-escape the value.
+func TestUnescapedInterpolationRaw(t *testing.T) {
+	src := `p !{raw}`
+	out := renderTest(t, src, map[string]interface{}{"raw": "<b>bold</b>"})
+	assertContains(t, out, "<b>bold</b>")
+}
+
+// TestEscapedInterpolationEntity verifies that #{} HTML-escapes angle brackets.
+func TestEscapedInterpolationEntity(t *testing.T) {
+	src := `p #{raw}`
+	out := renderTest(t, src, map[string]interface{}{"raw": "<script>alert(1)</script>"})
+	if strings.Contains(out, "<script>") {
+		t.Errorf("#{} should HTML-escape the value, got: %q", out)
+	}
+	assertContains(t, out, "&lt;script&gt;")
+}
+
+// ── Pretty-print edge cases ────────────────────────────────────────────────────
+
+// TestPrettyPrintNestedLists verifies that nested block-level lists are
+// indented correctly in pretty mode.
+func TestPrettyPrintNestedList(t *testing.T) {
+	src := "ul\n  li one\n  li two"
+	opts := &Options{Pretty: true}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<ul>")
+	assertContains(t, out, "<li>one</li>")
+	assertContains(t, out, "<li>two</li>")
+	assertContains(t, out, "</ul>")
+	// In pretty mode the tags should be on separate lines.
+	if !strings.Contains(out, "\n") {
+		t.Errorf("expected newlines in pretty mode, got: %q", out)
+	}
+}
+
+// TestPrettyPrintVoidTag verifies that void tags render on their own line
+// without a closing tag in pretty mode.
+func TestPrettyPrintVoidTag(t *testing.T) {
+	src := "div\n  br\n  span text"
+	opts := &Options{Pretty: true}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<br")
+	if strings.Contains(out, "</br>") {
+		t.Errorf("br should not have a closing tag, got: %q", out)
+	}
+}
+
+// ── Globals ───────────────────────────────────────────────────────────────────
+
+// TestGlobalsVisibleInTemplate verifies that values in Options.Globals are
+// accessible from the template without passing them in per-render data.
+func TestGlobalsVisibleInTemplate(t *testing.T) {
+	opts := &Options{
+		Globals: map[string]interface{}{
+			"siteName": "Go-Pug",
+		},
+	}
+	out, err := Render("p= siteName", nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "Go-Pug")
+}
+
+// TestGlobalsDataOverridesGlobal verifies that per-render data takes precedence
+// over the same key in Globals.
+func TestGlobalsDataOverridesGlobal(t *testing.T) {
+	opts := &Options{
+		Globals: map[string]interface{}{
+			"title": "Global Title",
+		},
+	}
+	out, err := Render("p= title", map[string]interface{}{"title": "Local Title"}, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "Local Title")
+	if strings.Contains(out, "Global Title") {
+		t.Errorf("per-render data should override globals, got: %q", out)
+	}
+}
+
+// ── Expression evaluator edge cases ──────────────────────────────────────────
+
+// TestExprAddIntegers verifies that numeric addition works in buffered code.
+func TestExprAddIntegers(t *testing.T) {
+	src := "- var x = 3\n- var y = 4\np= x + y"
+	out := renderTest(t, src, nil)
+	// Variables are stored as strings; + concatenates unless both are numeric.
+	// The result should be "7" (numeric path).
+	assertContains(t, out, "7")
+}
+
+// TestExprNestedTernary verifies deeply nested ternary expressions.
+func TestExprNestedTernary(t *testing.T) {
+	src := "p= a == \"1\" ? \"one\" : a == \"2\" ? \"two\" : \"other\""
+	out := renderTest(t, src, map[string]interface{}{"a": "2"})
+	assertContains(t, out, "two")
+}
+
+// TestExprStringConcatMulti verifies that multiple + operators chain correctly.
+func TestExprStringConcatMulti(t *testing.T) {
+	src := `p= "a" + "b" + "c"`
+	out := renderTest(t, src, nil)
+	assertEqual(t, out, "<p>abc</p>")
+}
+
+// TestExprCompareNumericStrings verifies that "10" > "9" evaluates numerically
+// (i.e. 10 > 9 = true), not lexicographically.
+func TestExprCompareNumericStrings(t *testing.T) {
+	src := "if score > limit\n  p passed"
+	out := renderTest(t, src, map[string]interface{}{"score": "10", "limit": "9"})
+	assertContains(t, out, "passed")
+}
+
+// TestExprLogicalOrShortCircuit verifies that || returns truthy when the first
+// operand is true.
+func TestExprLogicalOrFirstTrue(t *testing.T) {
+	src := "if a || b\n  p yes"
+	out := renderTest(t, src, map[string]interface{}{"a": "true", "b": "false"})
+	assertContains(t, out, "yes")
+}
+
+// TestExprLogicalAndBothTrue verifies && requires both operands to be truthy.
+func TestExprLogicalAndBothTrue(t *testing.T) {
+	src := "if a && b\n  p yes\nelse\n  p no"
+	out := renderTest(t, src, map[string]interface{}{"a": "true", "b": "true"})
+	assertContains(t, out, "yes")
+}
+
+// TestExprLogicalAndOneFalse verifies && is false when one operand is falsy.
+func TestExprLogicalAndOneFalse(t *testing.T) {
+	src := "if a && b\n  p yes\nelse\n  p no"
+	out := renderTest(t, src, map[string]interface{}{"a": "true", "b": "false"})
+	assertContains(t, out, "no")
+}
+
+// ── Method chain edge cases ───────────────────────────────────────────────────
+
+// TestMethodSplit verifies .split(sep) returns a slice used by each.
+func TestMethodSplit(t *testing.T) {
+	src := "each part in csv.split(\",\")\n  p= part"
+	out := renderTest(t, src, map[string]interface{}{"csv": "x,y,z"})
+	assertContains(t, out, "<p>x</p>")
+	assertContains(t, out, "<p>y</p>")
+	assertContains(t, out, "<p>z</p>")
+}
+
+// TestMethodLengthOnSlice verifies .length on a Go slice returns its len.
+func TestMethodLengthOnSlice(t *testing.T) {
+	src := "p= items.length"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{"a", "b", "c", "d"},
+	})
+	assertEqual(t, out, "<p>4</p>")
+}
+
+// TestMethodChainTrimThenUpper verifies chaining .trim().toUpperCase().
+func TestMethodChainTrimThenUpper(t *testing.T) {
+	src := "p= val.trim().toUpperCase()"
+	out := renderTest(t, src, map[string]interface{}{"val": "  hello  "})
+	assertEqual(t, out, "<p>HELLO</p>")
+}
+
+// ── HTML escaping ─────────────────────────────────────────────────────────────
+
+// TestBufferedCodeEscapesAmpersand verifies & in output is entity-escaped.
+func TestBufferedCodeEscapesAmpersand(t *testing.T) {
+	src := `p= content`
+	out := renderTest(t, src, map[string]interface{}{"content": "cats & dogs"})
+	assertContains(t, out, "cats &amp; dogs")
+}
+
+// TestUnescapedCodeRaw verifies != outputs raw HTML without escaping.
+func TestUnescapedCodeRaw(t *testing.T) {
+	src := `p!= content`
+	out := renderTest(t, src, map[string]interface{}{"content": "<em>raw</em>"})
+	assertContains(t, out, "<em>raw</em>")
+}
+
+// TestTextEscapesLtGt verifies plain inline text escapes < and >.
+func TestTextEscapesLtGt(t *testing.T) {
+	src := "p a < b > c"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "&lt;")
+	assertContains(t, out, "&gt;")
+}
+
+// ── Struct field access via reflection ────────────────────────────────────────
+
+// TestStructNestedFieldAccess verifies that dot notation resolves nested
+// struct fields via reflect.
+type Address struct {
+	City string
+}
+
+type Person struct {
+	Name    string
+	Age     int
+	Address Address
+}
+
+func TestStructNestedFieldAccess(t *testing.T) {
+	src := "p= person.Name\np= person.Address.City"
+	out := renderTest(t, src, map[string]interface{}{
+		"person": Person{
+			Name:    "Alice",
+			Age:     30,
+			Address: Address{City: "Wonderland"},
+		},
+	})
+	assertContains(t, out, "Alice")
+	assertContains(t, out, "Wonderland")
+}
+
+// TestStructIntField verifies that integer struct fields render correctly.
+func TestStructIntField(t *testing.T) {
+	src := "p= person.Age"
+	out := renderTest(t, src, map[string]interface{}{
+		"person": Person{Name: "Bob", Age: 25},
+	})
+	assertContains(t, out, "25")
+}
+
+// ── Include edge cases ────────────────────────────────────────────────────────
+
+// TestIncludeRelativePath verifies that an included file's own path is used
+// as the base for further nested includes.
+func TestIncludeRelativeResolves(t *testing.T) {
+	dir := t.TempDir()
+	subDir := dir + "/sub"
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write the leaf partial.
+	if err := os.WriteFile(subDir+"/leaf.pug", []byte("span leaf"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Write the mid partial (includes leaf via relative path).
+	if err := os.WriteFile(subDir+"/mid.pug", []byte("div\n  include leaf"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Write the root template.
+	if err := os.WriteFile(dir+"/root.pug", []byte("p\n  include sub/mid"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(dir+"/root.pug", nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "<span>leaf</span>")
+}
+
+// ── Extends / block edge cases ────────────────────────────────────────────────
+
+// TestExtendsBlockReplaceWithMixin verifies that mixins defined in the child
+// template are available inside an overriding block body.
+func TestExtendsBlockWithMixinFromChild(t *testing.T) {
+	dir := t.TempDir()
+	base := dir + "/base.pug"
+	child := dir + "/child.pug"
+	if err := os.WriteFile(base, []byte("html\n  body\n    block content\n      p default"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	childSrc := "extends base\nmixin pill(label)\n  span.pill= label\nblock content\n  +pill(\"Hello\")"
+	if err := os.WriteFile(child, []byte(childSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(child, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, `class="pill"`)
+	assertContains(t, out, "Hello")
+}
+
+// TestExtendsMultipleBlocks verifies that two blocks in the same layout are
+// both overridden independently by the child.
+func TestExtendsMultipleBlocks(t *testing.T) {
+	dir := t.TempDir()
+	base := dir + "/base2.pug"
+	child := dir + "/child2.pug"
+	if err := os.WriteFile(base, []byte("html\n  head\n    block head\n      title Default\n  body\n    block body\n      p Default body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	childSrc := "extends base2\nblock head\n  title Custom\nblock body\n  p Custom body"
+	if err := os.WriteFile(child, []byte(childSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(child, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "<title>Custom</title>")
+	assertContains(t, out, "<p>Custom body</p>")
+	if strings.Contains(out, "Default") {
+		t.Errorf("default block content should be replaced, got: %q", out)
+	}
+}

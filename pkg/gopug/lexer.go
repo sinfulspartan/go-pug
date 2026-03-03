@@ -15,24 +15,29 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 	l.depth = depth
 
 	for len(text) > 0 {
-		// Find the earliest interpolation marker
-		hashIdx := strings.Index(text, "#{")
+		// Find the earliest interpolation marker: #{expr}, !{expr}, or #[tag]
+		hashBraceIdx := strings.Index(text, "#{")
 		bangIdx := strings.Index(text, "!{")
+		hashBracketIdx := strings.Index(text, "#[")
 
-		// Determine which comes first (ignore -1 as "not found")
-		first := -1
-		isUnescaped := false
-		markerLen := 2
-
-		if hashIdx >= 0 && (bangIdx < 0 || hashIdx <= bangIdx) {
-			first = hashIdx
-			isUnescaped = false
-		} else if bangIdx >= 0 {
-			first = bangIdx
-			isUnescaped = true
+		// Determine which marker comes first (treat -1 as "not found" / infinity)
+		type marker struct {
+			pos         int
+			kind        string // "expr", "unescape", "taginterp"
+			markerLen   int
+		}
+		candidates := []marker{}
+		if hashBraceIdx >= 0 {
+			candidates = append(candidates, marker{hashBraceIdx, "expr", 2})
+		}
+		if bangIdx >= 0 {
+			candidates = append(candidates, marker{bangIdx, "unescape", 2})
+		}
+		if hashBracketIdx >= 0 {
+			candidates = append(candidates, marker{hashBracketIdx, "taginterp", 2})
 		}
 
-		if first < 0 {
+		if len(candidates) == 0 {
 			// No more interpolations — emit remaining text as-is
 			if text != "" {
 				l.addToken(TokenText, text)
@@ -40,29 +45,58 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 			break
 		}
 
+		// Pick the earliest marker
+		best := candidates[0]
+		for _, c := range candidates[1:] {
+			if c.pos < best.pos {
+				best = c
+			}
+		}
+
 		// Emit any plain text before the marker
-		if first > 0 {
-			l.addToken(TokenText, text[:first])
+		if best.pos > 0 {
+			l.addToken(TokenText, text[:best.pos])
 		}
 
-		// Skip past the marker (#{ or !{)
-		rest := text[first+markerLen:]
+		rest := text[best.pos+best.markerLen:]
 
-		// Scan balanced braces to find the closing }
-		expr, remaining, ok := scanBalancedBraces(rest)
-		if !ok {
-			// Malformed interpolation — treat the rest as plain text
-			l.addToken(TokenText, text[first:])
-			break
-		}
-
-		if isUnescaped {
-			l.addToken(TokenInterpolationUnescape, expr)
-		} else {
+		switch best.kind {
+		case "expr":
+			// #{expr} — scan balanced braces
+			expr, remaining, ok := scanBalancedBraces(rest)
+			if !ok {
+				l.addToken(TokenText, text[best.pos:])
+				text = ""
+				break
+			}
 			l.addToken(TokenInterpolation, expr)
-		}
+			text = remaining
 
-		text = remaining
+		case "unescape":
+			// !{expr} — scan balanced braces
+			expr, remaining, ok := scanBalancedBraces(rest)
+			if !ok {
+				l.addToken(TokenText, text[best.pos:])
+				text = ""
+				break
+			}
+			l.addToken(TokenInterpolationUnescape, expr)
+			text = remaining
+
+		case "taginterp":
+			// #[tag content] — scan balanced brackets
+			inner, remaining, ok := scanBalancedBrackets(rest)
+			if !ok {
+				// Malformed — treat as plain text
+				l.addToken(TokenText, text[best.pos:])
+				text = ""
+				break
+			}
+			// Emit start/content/end tokens for the inline tag
+			l.addToken(TokenTagInterpolationStart, inner)
+			l.addToken(TokenTagInterpolationEnd, "")
+			text = remaining
+		}
 	}
 
 	l.depth = savedDepth
@@ -90,6 +124,39 @@ func scanBalancedBraces(s string) (string, string, bool) {
 			if ch == '{' {
 				depth++
 			} else if ch == '}' {
+				if depth == 0 {
+					return s[:i], s[i+1:], true
+				}
+				depth--
+			}
+		}
+		i++
+	}
+	return "", "", false
+}
+
+// scanBalancedBrackets reads characters from s up to (but not including) the
+// matching closing bracket ], handling nested brackets and quoted strings.
+// Returns (inner, remaining, ok).  remaining starts after the closing ].
+func scanBalancedBrackets(s string) (string, string, bool) {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i += 2
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+		} else if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+		} else if !inDouble && !inSingle {
+			if ch == '[' {
+				depth++
+			} else if ch == ']' {
 				if depth == 0 {
 					return s[:i], s[i+1:], true
 				}
@@ -209,7 +276,10 @@ func (l *Lexer) scanComment() error {
 		unbuffered = true
 	}
 
-	// Skip to end of line to get comment text
+	// Remember the depth of the comment header line.
+	commentDepth := l.depth
+
+	// Capture any inline text on the same line as the comment marker.
 	text := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		text += string(l.advance())
@@ -222,7 +292,49 @@ func (l *Lexer) scanComment() error {
 		l.addToken(TokenComment, text)
 	}
 
+	// Eagerly consume all indented body lines that follow the comment header,
+	// emitting them as TokenText so the main scanLine dispatcher never
+	// re-interprets comment body content as Pug tags/keywords.
 	l.skipToNewline()
+
+	for l.pos < len(l.input) {
+		savedPos := l.pos
+		savedLine := l.line
+		savedCol := l.col
+
+		// Count leading whitespace (raw space/tab count).
+		bodyIndent := 0
+		for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
+			l.advance()
+			bodyIndent++
+		}
+
+		// Blank or EOF line — skip and continue (may be inside the block).
+		if l.isEOF() || l.peek() == '\n' || l.peek() == '\r' {
+			l.skipToNewline()
+			continue
+		}
+
+		// If this line is not indented strictly deeper than the comment header,
+		// it does not belong to the comment body — restore position and stop.
+		if bodyIndent <= commentDepth {
+			l.pos = savedPos
+			l.line = savedLine
+			l.col = savedCol
+			break
+		}
+
+		// Update l.depth so addToken records the correct depth for the parser.
+		l.depth = bodyIndent
+		// This line belongs to the comment body — read it verbatim.
+		lineContent := ""
+		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+			lineContent += string(l.advance())
+		}
+		l.addToken(TokenText, lineContent)
+		l.skipToNewline()
+	}
+
 	return nil
 }
 
@@ -507,6 +619,46 @@ func (l *Lexer) scanTagOrKeyword() error {
 }
 
 // scanTagRest handles everything after a tag name: classes, IDs, attributes, text, etc.
+// scanBlockTextBody eagerly consumes all lines that are indented more deeply
+// than headerDepth, emitting each as a TokenText token.  This is used after a
+// block-text dot (p.) so that the main scanLine dispatcher never tries to
+// re-parse the literal text lines as Pug tags or keywords.
+func (l *Lexer) scanBlockTextBody(headerDepth int) {
+	l.skipToNewline()
+	for l.pos < len(l.input) {
+		savedPos := l.pos
+		savedLine := l.line
+		savedCol := l.col
+
+		bodyIndent := 0
+		for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
+			l.advance()
+			bodyIndent++
+		}
+
+		if l.isEOF() || l.peek() == '\n' || l.peek() == '\r' {
+			l.skipToNewline()
+			continue
+		}
+
+		if bodyIndent <= headerDepth {
+			l.pos = savedPos
+			l.line = savedLine
+			l.col = savedCol
+			break
+		}
+
+		// Update l.depth so addToken records the correct depth for the parser.
+		l.depth = bodyIndent
+		lineContent := ""
+		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+			lineContent += string(l.advance())
+		}
+		l.addToken(TokenText, lineContent)
+		l.skipToNewline()
+	}
+}
+
 func (l *Lexer) scanTagRest() error {
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		ch := l.peek()
@@ -527,8 +679,43 @@ func (l *Lexer) scanTagRest() error {
 				// .classname — class shorthand
 				l.addToken(TokenClass, className)
 			} else {
-				// standalone dot — block text indicator
+				// Standalone dot after a tag name — block text indicator.
+				// Eagerly consume all indented body lines as TokenText so the
+				// main scanLine dispatcher never re-parses them as Pug content.
 				l.addToken(TokenDot, ".")
+				l.scanBlockTextBody(l.depth)
+				return nil
+			}
+
+		case '&':
+			// &attributes(expr) — merge a map expression into the tag's attributes.
+			// We peek ahead to confirm it is exactly "&attributes(".
+			if strings.HasPrefix(l.input[l.pos:], "&attributes(") {
+				// Skip "&attributes("
+				for i := 0; i < len("&attributes("); i++ {
+					l.advance()
+				}
+				// Scan the expression inside the parens using balanced-paren logic.
+				expr := ""
+				depth := 1
+				for l.pos < len(l.input) && depth > 0 {
+					ch := l.peek()
+					if ch == '(' {
+						depth++
+					} else if ch == ')' {
+						depth--
+						if depth == 0 {
+							l.advance()
+							break
+						}
+					}
+					expr += string(l.advance())
+				}
+				l.addToken(TokenAttrName, "&attributes")
+				l.addToken(TokenAttrEqual, "=")
+				l.addToken(TokenAttrValue, expr)
+			} else {
+				// Unknown & sequence — skip to end of line
 				l.skipToNewline()
 				return nil
 			}
@@ -715,14 +902,27 @@ func (l *Lexer) scanAttributes() error {
 
 // scanAttributeValue scans a quoted string, backtick string, or expression.
 func (l *Lexer) scanAttributeValue() string {
-	if l.peek() == '"' {
-		return l.scanQuotedString('"')
-	}
-	if l.peek() == '\'' {
-		return l.scanQuotedString('\'')
-	}
-	if l.peek() == '`' {
-		return l.scanQuotedString('`')
+	// If the value starts with a quote, scan the quoted string first, then
+	// check whether an operator follows (e.g. "/user/" + uid).  If so,
+	// continue reading the rest as an unquoted expression fragment.
+	if l.peek() == '"' || l.peek() == '\'' || l.peek() == '`' {
+		q := l.peek()
+		value := l.scanQuotedString(rune(q))
+		// After the closing quote, check for a following operator so that
+		// expressions like `"/user/" + uid` are captured whole.
+		l.skipSpaces()
+		ch := l.peek()
+		if ch == '+' || ch == '-' || ch == '*' || ch == '/' {
+			// Consume the operator and the rest of the expression.
+			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+				c := l.peek()
+				if c == ')' || c == ',' {
+					break
+				}
+				value += string(l.advance())
+			}
+		}
+		return strings.TrimSpace(value)
 	}
 
 	// Unquoted value: read until comma, closing paren, or end of line
