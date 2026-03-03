@@ -315,5 +315,5 @@ mod:
 
 clean:
 	@echo "=> Cleaning build artifacts"
-	-rm -rf $(BIN_DIR) ; rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV) $(_BENCH_TMP) $(TEST_BIN)
+	-rm -rf $(BIN_DIR) ; rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV) $(_BENCH_TMP) $(TEST_BIN) bench2md bench2md.exe
 	@echo "-> Done"
