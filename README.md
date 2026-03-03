@@ -11,6 +11,7 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Demo Server](#demo-server)
 - [Syntax Reference](#syntax-reference)
    - [Doctype](#doctype)
    - [Tags](#tags)
@@ -44,6 +45,7 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 - **Method expressions** — `s.toUpperCase()`, `s.trim()`, `s.slice(0,3)`, `items.length`, and more
 - **`&attributes` spread** — merge a map into a tag's attribute list at render time
 - **No external dependencies** — pure Go, standard library only
+- **Interactive demo server** — `make run` launches a local web server showing all 34 syntax examples side-by-side (Pug source, HTML output, live preview)
 
 ---
 
@@ -54,6 +56,26 @@ go get github.com/sinfulspartan/go-pug
 ```
 
 Import path: `github.com/sinfulspartan/go-pug/pkg/gopug`
+
+---
+
+## Demo Server
+
+The `cmd/` directory contains an HTTP demo server that renders every supported syntax feature as a card showing the Pug source, the generated HTML, and a live preview iframe.
+
+```sh
+make run           # build + start on http://localhost:8080
+# or
+go run ./cmd
+```
+
+The server embeds all template files and stylesheets at compile time (`//go:embed`), so no extra assets need to be on disk at runtime. Three built-in filters are registered for the filter examples:
+
+| Filter      | Behaviour                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| `uppercase` | Uppercases the body text                                                                          |
+| `shout`     | Uppercases each line and appends a configurable suffix (`!` by default); accepts `suffix=` option |
+| `wrap`      | Wraps each line in configurable brackets (`[` `]` by default); accepts `open=` / `close=` options |
 
 ---
 
@@ -494,7 +516,7 @@ include :uppercase README.txt
 
 ### Filters
 
-Register Go functions as named filters via `Options.Filters`. Each `FilterFunc` receives the block text and a `map[string]string` of any parsed options.
+Register Go functions as named filters via `Options.Filters`. Each `FilterFunc` receives the body text and a `map[string]string` of any parsed options. Filter output is written **raw** — the filter function is responsible for any HTML escaping it needs (this allows filters such as Markdown renderers to return real HTML tags).
 
 ```go
 opts := &gopug.Options{
@@ -516,19 +538,25 @@ opts := &gopug.Options{
   Paragraph text.
 ```
 
-**Inline filter** — body on the same line
+**Inline filter** — pipe text followed by a filter as sibling children of a tag; use a trailing space in the pipe text to separate the label from the filter output
 
 ```pug
 p
+  | Result:
   :uppercase hello world
 ```
 
-**Chained filters** — innermost applied first
+**Chained filters** — innermost applied first; options may appear before or after a subfilter colon
 
 ```pug
 :wrap:uppercase
   content
+
+:outer(suffix="!!"):inner
+  body text
 ```
+
+Multi-line filter output has its `\n` characters replaced with `<br>` tags so visual line breaks are preserved in the browser without forcing monospace `<pre>` formatting. Single-line output is emitted as-is.
 
 **Options syntax** — key=value pairs in parentheses, quoted or bare
 
@@ -651,23 +679,23 @@ The expression evaluator supports:
 
 **String methods**
 
-| Method                         | Description                                              |
-| ------------------------------ | -------------------------------------------------------- |
-| `.length`                      | Character count (or element count for slices/maps)       |
-| `.toUpperCase()`               | Upper-case                                               |
-| `.toLowerCase()`               | Lower-case                                               |
-| `.trim()`                      | Strip leading/trailing whitespace                        |
-| `.trimStart()` / `.trimLeft()` | Strip leading whitespace                                 |
-| `.trimEnd()` / `.trimRight()`  | Strip trailing whitespace                                |
-| `.slice(start[, end])`         | Substring by rune index; negative indices count from end |
-| `.indexOf(needle)`             | First index of needle, or `-1`                           |
-| `.includes(needle)`            | `true` / `false`                                         |
-| `.startsWith(prefix)`          | `true` / `false`                                         |
-| `.endsWith(suffix)`            | `true` / `false`                                         |
-| `.replace(old, new)`           | Replace first occurrence                                 |
-| `.repeat(n)`                   | Repeat string n times                                    |
-| `.split(sep)`                  | Split into a slice (usable as an `each` collection)      |
-| `.join(sep)`                   | Join a slice into a string                               |
+| Method                         | Description                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `.length`                      | Character count (or element count for slices/maps)                                                                       |
+| `.toUpperCase()`               | Upper-case                                                                                                               |
+| `.toLowerCase()`               | Lower-case                                                                                                               |
+| `.trim()`                      | Strip leading/trailing whitespace                                                                                        |
+| `.trimStart()` / `.trimLeft()` | Strip leading whitespace                                                                                                 |
+| `.trimEnd()` / `.trimRight()`  | Strip trailing whitespace                                                                                                |
+| `.slice(start[, end])`         | Substring by rune index; negative indices count from end                                                                 |
+| `.indexOf(needle)`             | First index of needle, or `-1`                                                                                           |
+| `.includes(needle)`            | `true` / `false`                                                                                                         |
+| `.startsWith(prefix)`          | `true` / `false`                                                                                                         |
+| `.endsWith(suffix)`            | `true` / `false`                                                                                                         |
+| `.replace(old, new)`           | Replace first occurrence                                                                                                 |
+| `.repeat(n)`                   | Repeat string n times                                                                                                    |
+| `.split(sep)`                  | Split into a slice (usable as an `each` collection or chained into `.join`)                                              |
+| `.join(sep)`                   | Join a slice into a string; works on Go slice variables and on chained expressions such as `csv.split(",").join(" \| ")` |
 
 ---
 
@@ -690,7 +718,8 @@ make test-race     # race detector
 make cover         # coverage profile + text summary
 make cover-html    # coverage as HTML (opens in browser on macOS / Linux)
 
-make build         # build bin/go-pug CLI demo
+make build         # build bin/go-pug demo server binary
+make run           # build + run the demo server on http://localhost:8080
 make fmt           # gofmt -s
 make vet           # go vet ./...
 make lint          # golangci-lint (if installed)
@@ -756,17 +785,18 @@ GitHub Actions runs on every push to `main` and on pull requests:
 | ------- | ------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `test`  | ubuntu, windows    | `go vet` + full test suite                                                                                  |
 | `race`  | ubuntu             | test suite with `-race`                                                                                     |
-| `build` | ubuntu             | build the CLI binary                                                                                        |
+| `build` | ubuntu             | build the demo server binary (`bin/go-pug`)                                                                 |
 | `bench` | ubuntu (push only) | benchmark run; uploads `BENCHMARKS.md`, `benchmarks.json`, `benchmarks.csv` as artifacts (retained 90 days) |
 
 ---
 
 ## Known Limitations
 
-| Area                                        | Detail                                                                                                                                                  |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unquoted attribute values containing spaces | e.g. `class!=attributes.class href=href` is mis-lexed as a single token. Workaround: quote the value or use `&attributes`.                              |
-| Ternary in `each` collection                | `each v in cond ? list : [fallback]` is not supported. Only a plain variable or an inline array literal `[a, b, c]` works as the collection expression. |
+| Area                                        | Detail                                                                                                                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unquoted attribute values containing spaces | e.g. `class!=attributes.class href=href` is mis-lexed as a single token. Workaround: quote the value or use `&attributes`.                                              |
+| Ternary in `each` collection                | `each v in cond ? list : [fallback]` is not supported. Only a plain variable or an inline array literal `[a, b, c]` works as the collection expression.                 |
+| Filter output escaping                      | Filter output is always written raw. Filters that return plain text must escape it themselves (e.g. with `html.EscapeString`) if the text may contain `<`, `>`, or `&`. |
 
 ---
 
