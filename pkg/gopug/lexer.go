@@ -314,7 +314,7 @@ func (l *Lexer) scanComment() error {
 	// Capture any inline text on the same line as the comment marker.
 	text := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		text += string(l.advance())
+		text += l.advanceStr()
 	}
 	text = strings.TrimSpace(text)
 
@@ -361,7 +361,7 @@ func (l *Lexer) scanComment() error {
 		// This line belongs to the comment body — read it verbatim.
 		lineContent := ""
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			lineContent += string(l.advance())
+			lineContent += l.advanceStr()
 		}
 		l.addToken(TokenText, lineContent)
 		l.skipToNewline()
@@ -378,7 +378,7 @@ func (l *Lexer) scanUnbufferedCode() error {
 	// Collect rest of line as code
 	code := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		code += string(l.advance())
+		code += l.advanceStr()
 	}
 
 	headerDepth := l.depth
@@ -417,7 +417,7 @@ func (l *Lexer) scanUnbufferedCode() error {
 
 			lineContent := ""
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				lineContent += string(l.advance())
+				lineContent += l.advanceStr()
 			}
 			stmt := strings.TrimSpace(lineContent)
 			if stmt != "" {
@@ -439,7 +439,7 @@ func (l *Lexer) scanBufferedCode() error {
 
 	code := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		code += string(l.advance())
+		code += l.advanceStr()
 	}
 
 	l.addToken(TokenCodeBuffered, strings.TrimSpace(code))
@@ -457,7 +457,7 @@ func (l *Lexer) scanExclamation() error {
 
 	code := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		code += string(l.advance())
+		code += l.advanceStr()
 	}
 
 	l.addToken(TokenCodeUnescaped, strings.TrimSpace(code))
@@ -474,7 +474,7 @@ func (l *Lexer) scanPipedText() error {
 
 	text := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		text += string(l.advance())
+		text += l.advanceStr()
 	}
 
 	// Split on #{} / !{} interpolations
@@ -487,7 +487,7 @@ func (l *Lexer) scanPipedText() error {
 func (l *Lexer) scanLiteralHTML() error {
 	html := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		html += string(l.advance())
+		html += l.advanceStr()
 	}
 
 	l.addToken(TokenHTMLLiteral, html)
@@ -523,14 +523,23 @@ func (l *Lexer) scanFilter() error {
 
 	l.addToken(TokenFilter, name)
 
-	// Check for chained subfilters  :outer:inner  (may repeat)
-	for l.peek() == ':' {
-		l.advance()
-		sub := l.scanIdentifier()
-		if sub != "" {
-			l.addToken(TokenFilterColon, sub)
+	// Check for chained subfilters  :outer:inner  (may repeat).
+	// Subfilters may appear before OR after the options block, so we scan
+	// both positions:
+	//   :outer:inner(opts)        — subfilter before options
+	//   :outer(opts):inner        — subfilter after options
+	//   :outer:mid(opts):inner    — mixed (uncommon but possible)
+	scanSubfilters := func() {
+		for l.peek() == ':' {
+			l.advance()
+			sub := l.scanIdentifier()
+			if sub != "" {
+				l.addToken(TokenFilterColon, sub)
+			}
 		}
 	}
+
+	scanSubfilters() // subfilters before the options block
 
 	// Check for optional filter options in parentheses:
 	//   :filtername(key=val, key2="val2") body…
@@ -552,18 +561,20 @@ func (l *Lexer) scanFilter() error {
 					break
 				}
 			}
-			raw += string(l.advance())
+			raw += l.advanceStr()
 		}
 		l.addToken(TokenFilterOptions, strings.TrimSpace(raw))
 		l.skipSpaces()
 	}
+
+	scanSubfilters() // subfilters after the options block (e.g. :outer(opts):inner)
 
 	// Capture any same-line inline content after the filter name(s) / options.
 	// e.g.  :uppercase Hello World
 	//               filter^  ^inline text
 	inline := ""
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		inline += string(l.advance())
+		inline += l.advanceStr()
 	}
 	if inline != "" {
 		// Emit inline content as a single TokenText — no further body lines.
@@ -615,7 +626,7 @@ func (l *Lexer) scanFilter() error {
 		// This line belongs to the filter body — read it verbatim.
 		lineContent := ""
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			lineContent += string(l.advance())
+			lineContent += l.advanceStr()
 		}
 		l.addToken(TokenText, lineContent)
 		l.skipToNewline()
@@ -671,7 +682,7 @@ func (l *Lexer) scanTagOrKeyword() error {
 			// Doctype has an optional argument
 			arg := ""
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				arg += string(l.advance())
+				arg += l.advanceStr()
 			}
 			if arg != "" {
 				// Update last token with the full doctype value
@@ -707,7 +718,7 @@ func (l *Lexer) scanTagOrKeyword() error {
 		// For other keywords (if, each, etc.), collect the rest as the condition
 		cond := ""
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			cond += string(l.advance())
+			cond += l.advanceStr()
 		}
 		if cond != "" {
 			l.tokens[len(l.tokens)-1].Value = strings.TrimSpace(cond)
@@ -755,7 +766,7 @@ func (l *Lexer) scanBlockTextBody(headerDepth int) {
 		l.depth = bodyIndent
 		lineContent := ""
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			lineContent += string(l.advance())
+			lineContent += l.advanceStr()
 		}
 		l.addToken(TokenText, lineContent)
 		l.skipToNewline()
@@ -812,7 +823,7 @@ func (l *Lexer) scanTagRest() error {
 							break
 						}
 					}
-					expr += string(l.advance())
+					expr += l.advanceStr()
 				}
 				l.addToken(TokenAttrName, "&attributes")
 				l.addToken(TokenAttrEqual, "=")
@@ -832,7 +843,7 @@ func (l *Lexer) scanTagRest() error {
 				// Collect from the current position to end of line as text
 				text := ""
 				for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-					text += string(l.advance())
+					text += l.advanceStr()
 				}
 				l.emitTextWithInterpolations(text, l.depth)
 				l.skipToNewline()
@@ -844,12 +855,23 @@ func (l *Lexer) scanTagRest() error {
 			l.addToken(TokenID, idName)
 
 		case ':':
-			// Block expansion
+			// Block expansion: tag: child
+			// We must scan the child tag immediately — still on the same
+			// logical line — so that all tokens it produces carry the
+			// correct l.depth (the parent's indentation level).  If we
+			// return here and let the Lex loop call scanLine again,
+			// scanLine would invoke scanIndentation which counts zero
+			// leading spaces (we already skipped them) and reset l.depth
+			// to 0, making the child appear at the wrong depth and
+			// causing the parser to nest subsequent siblings inside it.
 			l.advance()
 			l.addToken(TokenColon, ":")
-			// After colon, scan the nested tag at increased depth
 			l.skipSpaces()
-			// Don't recurse here; let the parser handle block expansion
+			if !l.isEOF() && l.peek() != '\n' && l.peek() != '\r' {
+				if err := l.scanTagOrKeyword(); err != nil {
+					return err
+				}
+			}
 			return nil
 
 		case '=':
@@ -858,7 +880,7 @@ func (l *Lexer) scanTagRest() error {
 			l.skipSpaces()
 			code := ""
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				code += string(l.advance())
+				code += l.advanceStr()
 			}
 			l.addToken(TokenCodeBuffered, strings.TrimSpace(code))
 			l.skipToNewline()
@@ -872,7 +894,7 @@ func (l *Lexer) scanTagRest() error {
 				l.skipSpaces()
 				code := ""
 				for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-					code += string(l.advance())
+					code += l.advanceStr()
 				}
 				l.addToken(TokenCodeUnescaped, strings.TrimSpace(code))
 				l.skipToNewline()
@@ -892,7 +914,7 @@ func (l *Lexer) scanTagRest() error {
 			l.skipSpaces()
 			text := ""
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				text += string(l.advance())
+				text += l.advanceStr()
 			}
 			if text != "" {
 				// Split on #{} / !{} interpolations
@@ -1022,7 +1044,7 @@ func (l *Lexer) scanAttributeValue() string {
 				if c == ')' || c == ',' {
 					break
 				}
-				value += string(l.advance())
+				value += l.advanceStr()
 			}
 		}
 		return strings.TrimSpace(value)
@@ -1043,26 +1065,26 @@ func (l *Lexer) scanAttributeValue() string {
 		} else if ch == ',' && depth == 0 {
 			break
 		}
-		value += string(l.advance())
+		value += l.advanceStr()
 	}
 	return strings.TrimSpace(value)
 }
 
 // scanQuotedString scans a quoted string and returns its content (including quotes).
 func (l *Lexer) scanQuotedString(quote rune) string {
-	value := string(l.advance()) // opening quote
+	value := l.advanceStr() // opening quote
 	for l.pos < len(l.input) {
 		ch := l.peek()
 		if ch == '\\' {
-			value += string(l.advance())
+			value += l.advanceStr()
 			if l.pos < len(l.input) {
-				value += string(l.advance())
+				value += l.advanceStr()
 			}
 		} else if rune(ch) == quote {
-			value += string(l.advance()) // closing quote
+			value += l.advanceStr() // closing quote
 			break
 		} else {
-			value += string(l.advance())
+			value += l.advanceStr()
 		}
 	}
 	return value
@@ -1104,6 +1126,13 @@ func (l *Lexer) advance() byte {
 		l.col = 0
 	}
 	return ch
+}
+
+// advanceStr advances one byte and returns it as a correct single-byte string.
+// Unlike string(l.advance()), which re-encodes the byte value as a Unicode
+// code point (corrupting non-ASCII bytes), this preserves the raw byte.
+func (l *Lexer) advanceStr() string {
+	return string([]byte{l.advance()})
 }
 
 func (l *Lexer) match(expected byte) bool {
