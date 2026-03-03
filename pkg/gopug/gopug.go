@@ -3,7 +3,7 @@ package gopug
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 )
 
@@ -33,7 +33,7 @@ func Render(src string, data map[string]interface{}, opts *Options) (string, err
 
 // RenderFile reads a .pug file, compiles it, and renders it with the given data.
 func RenderFile(path string, data map[string]interface{}, opts *Options) (string, error) {
-	src, err := ioutil.ReadFile(path)
+	src, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file %q: %w", path, err)
 	}
@@ -77,7 +77,7 @@ func Compile(src string, opts *Options) (*Template, error) {
 
 // CompileFile reads a .pug file and compiles it into a Template.
 func CompileFile(path string, opts *Options) (*Template, error) {
-	src, err := ioutil.ReadFile(path)
+	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file %q: %w", path, err)
 	}
