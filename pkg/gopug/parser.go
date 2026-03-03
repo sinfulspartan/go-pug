@@ -889,6 +889,10 @@ func (p *Parser) parseBlock() (*BlockNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
+	// Capture the block's own indentation depth BEFORE advancing so that
+	// child nodes (which are at depth+1) are correctly collected into the
+	// block body instead of being treated as siblings.
+	currentDepth := p.cur.Depth
 	p.advance()
 
 	block := &BlockNode{
@@ -899,7 +903,6 @@ func (p *Parser) parseBlock() (*BlockNode, error) {
 		Col:  col,
 	}
 
-	currentDepth := p.cur.Depth
 	p.skipNewlines()
 
 	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
@@ -916,22 +919,44 @@ func (p *Parser) parseBlock() (*BlockNode, error) {
 	return block, nil
 }
 
-// parseBlockModifier parses standalone append/prepend.
+// parseBlockModifier parses standalone append/prepend keywords.
+//
+// Two forms are supported:
+//
+//  1. Standalone keyword: "append <name>" or "prepend <name>"
+//     The lexer emits TokenAppend/TokenPrepend with the block name already
+//     stored in the token's Value field (the rest of the line after the
+//     keyword).
+//
+//  2. Legacy two-token form: "append block <name>" or "prepend block <name>"
+//     where a separate TokenBlock token follows (kept for compatibility with
+//     any future lexer variant that splits the tokens).
 func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 	mode := BlockModeAppend
 	if p.cur.Type == TokenPrepend {
 		mode = BlockModePrepend
 	}
 
-	p.advance()
-	if p.cur.Type != TokenBlock {
-		return nil, fmt.Errorf("expected block name after append/prepend at line %d", p.cur.Line)
-	}
-
+	// The token's Value holds the block name directly (set by the lexer when
+	// it collects the rest of the keyword line as the value).
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
+	// Capture the modifier token's own depth BEFORE advancing so that child
+	// nodes (at depth+1) are correctly collected into the block body.
+	currentDepth := p.cur.Depth
 	p.advance()
+
+	// If the name is empty, the lexer may have emitted a separate TokenBlock
+	// with the actual name (legacy / alternative lexer behaviour).
+	if name == "" {
+		if p.cur.Type != TokenBlock {
+			return nil, fmt.Errorf("expected block name after append/prepend at line %d", p.cur.Line)
+		}
+		name = p.cur.Value
+		currentDepth = p.cur.Depth
+		p.advance()
+	}
 
 	block := &BlockNode{
 		Name: name,
@@ -941,7 +966,6 @@ func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 		Col:  col,
 	}
 
-	currentDepth := p.cur.Depth
 	p.skipNewlines()
 
 	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {

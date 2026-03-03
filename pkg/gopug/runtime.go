@@ -14,18 +14,19 @@ import (
 
 // Runtime renders an AST to HTML.
 type Runtime struct {
-	ast          *DocumentNode
-	data         map[string]interface{}
-	globals      map[string]interface{}
-	out          io.Writer
-	buf          *bytes.Buffer
-	scope        []map[string]interface{} // stack of scopes for loops, conditionals, etc.
-	doctype      string
-	mixins       map[string]*MixinDeclNode // collected mixin declarations
-	mixinBlock   []Node                    // block nodes passed by the current mixin call
-	opts         *Options                  // compilation options (Basedir, Globals, Filters)
-	basedir      string                    // resolved base directory for includes
-	includedPaths []string                 // stack of currently-rendering paths for cycle detection
+	ast            *DocumentNode
+	data           map[string]interface{}
+	globals        map[string]interface{}
+	out            io.Writer
+	buf            *bytes.Buffer
+	scope          []map[string]interface{} // stack of scopes for loops, conditionals, etc.
+	doctype        string
+	mixins         map[string]*MixinDeclNode // collected mixin declarations
+	mixinBlock     []Node                    // block nodes passed by the current mixin call
+	inMixinContext bool                      // true when rendering inside a mixin body
+	opts           *Options                  // compilation options (Basedir, Globals, Filters)
+	basedir        string                    // resolved base directory for includes
+	includedPaths  []string                  // stack of currently-rendering paths for cycle detection
 }
 
 // NewRuntime creates a new runtime for rendering.
@@ -61,6 +62,11 @@ func (r *Runtime) Render() (string, error) {
 	// regardless of declaration order relative to call sites.
 	r.collectMixins(r.ast.Children)
 
+	// Check if the template uses inheritance (extends as first meaningful node).
+	if ext := r.findExtendsNode(r.ast.Children); ext != nil {
+		return r.renderExtends(ext)
+	}
+
 	for _, node := range r.ast.Children {
 		if err := r.renderNode(node); err != nil {
 			return "", err
@@ -69,11 +75,253 @@ func (r *Runtime) Render() (string, error) {
 	return r.buf.String(), nil
 }
 
+// findExtendsNode returns the first ExtendsNode in the node list, skipping
+// over comments and mixin declarations (which are allowed before extends).
+// Returns nil if there is no ExtendsNode.
+func (r *Runtime) findExtendsNode(nodes []Node) *ExtendsNode {
+	for _, node := range nodes {
+		switch n := node.(type) {
+		case *CommentNode, *MixinDeclNode:
+			continue
+		case *ExtendsNode:
+			return n
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
 // collectMixins walks a node list and registers every MixinDeclNode found.
 func (r *Runtime) collectMixins(nodes []Node) {
 	for _, node := range nodes {
 		if m, ok := node.(*MixinDeclNode); ok {
 			r.mixins[m.Name] = m
+		}
+	}
+}
+
+// renderExtends handles template inheritance.
+//
+// Algorithm:
+//  1. Resolve the fully-patched root AST via resolveExtendsAST (handles
+//     chained extends of any depth without goto / label spaghetti).
+//  2. Merge all collected mixins into the runtime.
+//  3. Render the patched root AST with the current data.
+func (r *Runtime) renderExtends(ext *ExtendsNode) (string, error) {
+	// We need to know the "current file path" for relative resolution.
+	// If we are inside an include stack, the top of the stack is the current
+	// file; otherwise we use basedir as a hint (we create a synthetic path).
+	currentPath := ""
+	if len(r.includedPaths) > 0 {
+		currentPath = r.includedPaths[len(r.includedPaths)-1]
+	} else if r.basedir != "" {
+		// Synthesise a path so that relative extends resolution works.
+		currentPath = filepath.Join(r.basedir, "_root_.pug")
+	}
+
+	// resolveExtendsAST expects the *child* AST (this template's AST) and
+	// the path of the child file so it can resolve the parent path relatively.
+	// Since r.ast IS the child AST, we wrap the call appropriately.
+	rootAST, mixins, err := r.resolveExtendsAST(currentPath, r.ast)
+	if err != nil {
+		return "", err
+	}
+
+	// Merge collected mixins.
+	for k, v := range mixins {
+		r.mixins[k] = v
+	}
+	r.collectMixins(rootAST.Children)
+
+	// Render the fully-patched root.
+	for _, node := range rootAST.Children {
+		if err := r.renderNode(node); err != nil {
+			return "", err
+		}
+	}
+	return r.buf.String(), nil
+}
+
+// resolveExtendsAST resolves a chain of extends declarations and returns the
+// fully-patched root DocumentNode along with all collected mixins. This is
+// used to resolve multi-level inheritance chains without rendering.
+func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) (*DocumentNode, map[string]*MixinDeclNode, error) {
+	mixins := make(map[string]*MixinDeclNode)
+
+	// Track the current file in the path stack so that cycle detection can
+	// catch mutual-extends cycles (e.g. a extends b, b extends a).
+	// We only push real file paths, not the synthetic "_root_.pug" sentinel.
+	if currentPath != "" && !strings.HasSuffix(currentPath, "_root_.pug") {
+		absCurrentPath, err := filepath.Abs(currentPath)
+		if err == nil {
+			// Check for cycle before pushing.
+			for _, p := range r.includedPaths {
+				if p == absCurrentPath {
+					return nil, nil, fmt.Errorf("extends: cycle — %q", absCurrentPath)
+				}
+			}
+			r.includedPaths = append(r.includedPaths, absCurrentPath)
+			defer func() { r.includedPaths = r.includedPaths[:len(r.includedPaths)-1] }()
+		}
+	}
+
+	// Find ExtendsNode in childAST.
+	var ext *ExtendsNode
+	for _, node := range childAST.Children {
+		switch node.(type) {
+		case *CommentNode, *MixinDeclNode:
+			if m, ok := node.(*MixinDeclNode); ok {
+				mixins[m.Name] = m
+			}
+			continue
+		case *ExtendsNode:
+			ext = node.(*ExtendsNode)
+		default:
+		}
+		break
+	}
+
+	if ext == nil {
+		// No further extends — this is the root. Return as-is.
+		for _, node := range childAST.Children {
+			if m, ok := node.(*MixinDeclNode); ok {
+				mixins[m.Name] = m
+			}
+		}
+		return childAST, mixins, nil
+	}
+
+	// Resolve parent path.
+	parentPath := ext.Path
+	if len(parentPath) >= 2 &&
+		((parentPath[0] == '"' && parentPath[len(parentPath)-1] == '"') ||
+			(parentPath[0] == '\'' && parentPath[len(parentPath)-1] == '\'')) {
+		parentPath = parentPath[1 : len(parentPath)-1]
+	}
+
+	base := filepath.Dir(currentPath)
+	var resolved string
+	if filepath.IsAbs(parentPath) {
+		if r.basedir != "" {
+			resolved = filepath.Join(r.basedir, parentPath)
+		} else {
+			resolved = parentPath
+		}
+	} else {
+		resolved = filepath.Join(base, parentPath)
+	}
+
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extends: cannot resolve %q: %w", parentPath, err)
+	}
+	// Cycle detection.
+	for _, p := range r.includedPaths {
+		if p == abs {
+			return nil, nil, fmt.Errorf("extends: cycle — %q", abs)
+		}
+	}
+	if filepath.Ext(abs) == "" {
+		abs += ".pug"
+	}
+
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extends: cannot read %q: %w", abs, err)
+	}
+	lx := NewLexer(string(src))
+	toks, err := lx.Lex()
+	if err != nil {
+		return nil, nil, fmt.Errorf("extends: lex error in %q: %w", abs, err)
+	}
+	pr := NewParser(toks)
+	parentAST, err := pr.Parse()
+	if err != nil {
+		return nil, nil, fmt.Errorf("extends: parse error in %q: %w", abs, err)
+	}
+
+	// Recursively resolve the parent's parent chain.
+	// (cycle detection is now handled at the top of resolveExtendsAST via the
+	// currentPath push, so we no longer need a separate push/pop here)
+	rootAST, parentMixins, err := r.resolveExtendsAST(abs, parentAST)
+	if err != nil {
+		return nil, nil, err
+	}
+	for k, v := range parentMixins {
+		mixins[k] = v
+	}
+
+	// Apply childAST's block overrides onto the resolved root.
+	childBlocks := r.collectBlocks(childAST.Children)
+	for _, node := range childAST.Children {
+		if m, ok := node.(*MixinDeclNode); ok {
+			mixins[m.Name] = m
+		}
+	}
+	r.applyBlockOverrides(rootAST.Children, childBlocks)
+
+	return rootAST, mixins, nil
+}
+
+// collectBlocks returns a map of block name → *BlockNode for all named blocks
+// found at the top level of the given node list (child template overrides).
+func (r *Runtime) collectBlocks(nodes []Node) map[string]*BlockNode {
+	blocks := make(map[string]*BlockNode)
+	for _, node := range nodes {
+		if b, ok := node.(*BlockNode); ok {
+			blocks[b.Name] = b
+		}
+	}
+	return blocks
+}
+
+// applyBlockOverrides recursively walks a node slice (the parent/root AST) and
+// replaces, appends to, or prepends each BlockNode whose name appears in the
+// overrides map. The walk is deep so blocks nested inside tags, conditionals,
+// etc. are also patched.
+func (r *Runtime) applyBlockOverrides(nodes []Node, overrides map[string]*BlockNode) {
+	for i, node := range nodes {
+		switch n := node.(type) {
+		case *BlockNode:
+			override, ok := overrides[n.Name]
+			if !ok {
+				// No child override — keep parent default body but still walk
+				// into it for nested blocks.
+				r.applyBlockOverrides(n.Body, overrides)
+				continue
+			}
+			switch override.Mode {
+			case BlockModeAppend:
+				n.Body = append(n.Body, override.Body...)
+			case BlockModePrepend:
+				n.Body = append(override.Body, n.Body...)
+			default: // BlockModeReplace
+				n.Body = override.Body
+			}
+			nodes[i] = n
+			// Walk inside the now-patched body for any nested block slots.
+			r.applyBlockOverrides(n.Body, overrides)
+
+		case *TagNode:
+			r.applyBlockOverrides(n.Children, overrides)
+		case *ConditionalNode:
+			r.applyBlockOverrides(n.Consequent, overrides)
+			r.applyBlockOverrides(n.Alternate, overrides)
+		case *EachNode:
+			r.applyBlockOverrides(n.Body, overrides)
+			r.applyBlockOverrides(n.ElseBody, overrides)
+		case *WhileNode:
+			r.applyBlockOverrides(n.Body, overrides)
+		case *CaseNode:
+			for _, when := range n.Cases {
+				r.applyBlockOverrides(when.Body, overrides)
+			}
+			r.applyBlockOverrides(n.Default, overrides)
+		case *MixinDeclNode:
+			r.applyBlockOverrides(n.Body, overrides)
+		case *BlockExpansionNode:
+			r.applyBlockOverrides([]Node{n.Child}, overrides)
 		}
 	}
 }
@@ -119,16 +367,32 @@ func (r *Runtime) renderNode(node Node) error {
 	case *MixinCallNode:
 		return r.renderMixinCall(n)
 	case *BlockNode:
-		// Inside a mixin body "block" renders the caller's block content.
-		return r.renderMixinBlockSlot()
+		if r.inMixinContext {
+			// Inside a mixin body — render the caller's block content.
+			return r.renderMixinBlockSlot()
+		}
+		// In the inheritance context (or top-level default), render the
+		// block's body. By the time we reach here the block has already been
+		// patched with child overrides (or kept with its parent default body).
+		return r.renderBlockBody(n)
 	case *ExtendsNode:
-		// Extends is resolved at compile time, skip rendering
+		// Extends is resolved before render — skip during normal walk.
 		return nil
 	case *IncludeNode:
 		return r.renderInclude(n)
 	default:
 		return fmt.Errorf("unknown node type: %T", node)
 	}
+}
+
+// renderBlockBody renders the body of a BlockNode (used during inheritance rendering).
+func (r *Runtime) renderBlockBody(b *BlockNode) error {
+	for _, node := range b.Body {
+		if err := r.renderNode(node); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // renderTag renders an HTML tag and its children.
@@ -777,14 +1041,18 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 
 	// Push scope and render the mixin body.
 	r.scope = append(r.scope, scope)
+	prevMixinContext := r.inMixinContext
+	r.inMixinContext = true
 	for _, node := range decl.Body {
 		if err := r.renderNode(node); err != nil {
 			r.scope = r.scope[:len(r.scope)-1]
+			r.inMixinContext = prevMixinContext
 			r.mixinBlock = prevBlock
 			return err
 		}
 	}
 	r.scope = r.scope[:len(r.scope)-1]
+	r.inMixinContext = prevMixinContext
 
 	// Restore the previous mixin block.
 	r.mixinBlock = prevBlock

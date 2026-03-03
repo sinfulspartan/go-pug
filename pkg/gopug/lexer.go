@@ -382,10 +382,10 @@ func (l *Lexer) scanTagOrKeyword() error {
 
 	// Check if it's a keyword
 	if tt, isKeyword := Keywords[name]; isKeyword {
-		l.addToken(tt, name)
 		// Keywords often have arguments on the same line
 		l.skipSpaces()
 		if name == "doctype" {
+			l.addToken(tt, name)
 			// Doctype has an optional argument
 			arg := ""
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
@@ -400,6 +400,28 @@ func (l *Lexer) scanTagOrKeyword() error {
 			l.skipToNewline()
 			return nil
 		}
+		if name == "block" {
+			// "block" may be followed by "append" or "prepend" modifier:
+			//   block append <name>   → TokenBlockAppend{value: <name>}
+			//   block prepend <name>  → TokenBlockPrepend{value: <name>}
+			//   block <name>          → TokenBlock{value: <name>}
+			modifier := l.scanIdentifier()
+			l.skipSpaces()
+			switch modifier {
+			case "append":
+				blockName := l.scanIdentifier()
+				l.addToken(TokenBlockAppend, blockName)
+			case "prepend":
+				blockName := l.scanIdentifier()
+				l.addToken(TokenBlockPrepend, blockName)
+			default:
+				// modifier is actually the block name itself
+				l.addToken(TokenBlock, modifier)
+			}
+			l.skipToNewline()
+			return nil
+		}
+		l.addToken(tt, name)
 		// For other keywords (if, each, etc.), collect the rest as the condition
 		cond := ""
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {

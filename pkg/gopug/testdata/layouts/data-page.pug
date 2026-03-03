@@ -1,0 +1,12 @@
+extends data-base
+
+block title
+  | #{pageTitle}
+
+block content
+  main
+    h1 #{heading}
+    p #{body}
+
+block scripts
+  script(src="/main.js")

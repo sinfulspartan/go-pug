@@ -1102,3 +1102,234 @@ html
 	assertContains(t, out, "<p>Welcome</p>")
 	assertContains(t, out, "</html>")
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Template Inheritance (extends + block)
+// ---------------------------------------------------------------------------
+
+func layoutPath(name string) string {
+	return "testdata/layouts/" + name
+}
+
+// TestExtendsBasicBlockReplace verifies that a child can replace a named block
+// in the parent layout.
+func TestExtendsBasicBlockReplace(t *testing.T) {
+	out, err := RenderFile(layoutPath("page.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	// Title block replaced
+	assertContains(t, out, "My Page")
+	// Content block replaced
+	assertContains(t, out, "<h1>Hello from page</h1>")
+	assertContains(t, out, "<p>This is the page content.</p>")
+	// Parent default header preserved (child did not override it)
+	assertContains(t, out, "Default Header")
+	// Parent default footer preserved
+	assertContains(t, out, "Default Footer")
+	// DOCTYPE from parent
+	assertContains(t, out, "<!DOCTYPE html>")
+}
+
+// TestExtendsDefaultBlockKept verifies that when a child does not override a
+// block, the parent's default body is rendered.
+func TestExtendsDefaultBlockKept(t *testing.T) {
+	out, err := RenderFile(layoutPath("page.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Default Header")
+	assertContains(t, out, "Default Footer")
+}
+
+// TestExtendsFullOverride verifies that a child can replace every block in the parent.
+func TestExtendsFullOverride(t *testing.T) {
+	out, err := RenderFile(layoutPath("full-override.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Full Override")
+	assertContains(t, out, "Custom Header")
+	assertContains(t, out, "<p>Full override content</p>")
+	assertContains(t, out, "Custom Footer")
+	// meta tag from head block override
+	assertContains(t, out, `name="description"`)
+	// Parent defaults must NOT appear
+	if strings.Contains(out, "Default Header") {
+		t.Error("expected 'Default Header' to be replaced, but it is still present")
+	}
+	if strings.Contains(out, "Default Footer") {
+		t.Error("expected 'Default Footer' to be replaced, but it is still present")
+	}
+}
+
+// TestExtendsBlockAppend verifies block append mode (parent default + child additions).
+func TestExtendsBlockAppend(t *testing.T) {
+	out, err := RenderFile(layoutPath("append-page.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Append Page")
+	assertContains(t, out, "<p>Append page content</p>")
+	// The appended link tag must appear in the head block
+	assertContains(t, out, `href="/app.css"`)
+}
+
+// TestExtendsBlockPrepend verifies block prepend mode (child additions + parent default).
+func TestExtendsBlockPrepend(t *testing.T) {
+	out, err := RenderFile(layoutPath("prepend-page.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Prepend Page")
+	assertContains(t, out, "<p>Prepend page content</p>")
+	// The prepended meta tag must appear
+	assertContains(t, out, `name="viewport"`)
+}
+
+// TestExtendsChained verifies three-level inheritance (leaf → mid → root).
+func TestExtendsChained(t *testing.T) {
+	out, err := RenderFile(layoutPath("chain-leaf.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	// Leaf overrides title
+	assertContains(t, out, "Leaf Title")
+	// Mid overrides header — leaf did not override it
+	assertContains(t, out, "Mid Header")
+	// Leaf overrides mid-content block (nested inside content block)
+	assertContains(t, out, "<p>Leaf content here</p>")
+	// Leaf overrides footer
+	assertContains(t, out, "Leaf Footer")
+	// Root-default content must NOT appear (overridden by mid then leaf)
+	if strings.Contains(out, "Root default content") {
+		t.Error("expected 'Root default content' to be replaced")
+	}
+	assertContains(t, out, "<!DOCTYPE html>")
+}
+
+// TestExtendsChainedMidDefaultsPreserved verifies the mid-level template still
+// renders correctly with its own defaults when rendered directly.
+func TestExtendsChainedMidDefaults(t *testing.T) {
+	out, err := RenderFile(layoutPath("chain-mid.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Mid Title")
+	assertContains(t, out, "Mid Header")
+	assertContains(t, out, "Mid default content")
+	// Root footer preserved (mid didn't override it)
+	assertContains(t, out, "Root Footer")
+}
+
+// TestExtendsWithData verifies that template data is accessible inside block
+// bodies in child templates.
+func TestExtendsWithData(t *testing.T) {
+	data := map[string]interface{}{
+		"pageTitle": "Dynamic Title",
+		"heading":   "Welcome",
+		"body":      "Hello from data.",
+	}
+	out, err := RenderFile(layoutPath("data-page.pug"), data, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Dynamic Title")
+	assertContains(t, out, "<h1>Welcome</h1>")
+	assertContains(t, out, "<p>Hello from data.</p>")
+	assertContains(t, out, `src="/main.js"`)
+}
+
+// TestExtendsViaRenderString verifies that Render() (not RenderFile) works for
+// extends when Basedir is supplied pointing to the layouts directory.
+func TestExtendsViaRenderString(t *testing.T) {
+	src := "extends base\n\nblock content\n  p From render string"
+	opts := &Options{Basedir: "testdata/layouts"}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<p>From render string</p>")
+	assertContains(t, out, "Default Title")
+	assertContains(t, out, "Default Header")
+	assertContains(t, out, "Default Footer")
+}
+
+// TestExtendsMissingParentError verifies that a meaningful error is returned
+// when the extended layout file does not exist.
+func TestExtendsMissingParentError(t *testing.T) {
+	src := "extends does-not-exist"
+	opts := &Options{Basedir: "testdata/layouts"}
+	_, err := Render(src, nil, opts)
+	if err == nil {
+		t.Error("expected error for missing extends file, got nil")
+	}
+}
+
+// TestExtendsEmptyBlock verifies that overriding a block with an empty body
+// produces no output for that block slot.
+func TestExtendsEmptyBlock(t *testing.T) {
+	src := "extends base\n\nblock header\n\nblock content\n  p Content only\n\nblock footer"
+	opts := &Options{Basedir: "testdata/layouts"}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<p>Content only</p>")
+	// Header and footer defaults replaced with empty — should not appear
+	if strings.Contains(out, "Default Header") {
+		t.Error("expected 'Default Header' to be replaced with empty block")
+	}
+	if strings.Contains(out, "Default Footer") {
+		t.Error("expected 'Default Footer' to be replaced with empty block")
+	}
+}
+
+// TestExtendsStandaloneAppend verifies that the shorthand "append <name>"
+// (without the "block" prefix) works identically to "block append <name>".
+func TestExtendsStandaloneAppend(t *testing.T) {
+	out, err := RenderFile(layoutPath("standalone-append.pug"), nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "Standalone Append")
+	assertContains(t, out, "<p>Standalone append content</p>")
+	// The appended link tag must appear
+	assertContains(t, out, `href="/standalone.css"`)
+}
+
+// TestExtendsStandalonePrepend verifies that the shorthand "prepend <name>"
+// (without the "block" prefix) works identically to "block prepend <name>".
+func TestExtendsStandalonePrepend(t *testing.T) {
+	src := "extends base\n\nblock title\n  | Standalone Prepend\n\nprepend head\n  meta(name=\"robots\" content=\"noindex\")\n\nblock content\n  main\n    p Standalone prepend content"
+	opts := &Options{Basedir: "testdata/layouts"}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "Standalone Prepend")
+	assertContains(t, out, "<p>Standalone prepend content</p>")
+	assertContains(t, out, `name="robots"`)
+}
+
+// TestExtendsCycleDetection verifies that a meaningful error is returned when
+// a layout file creates an inheritance cycle.
+func TestExtendsCycleDetection(t *testing.T) {
+	dir := t.TempDir()
+	// Write two layout files that extend each other.
+	aPath := dir + "/a.pug"
+	bPath := dir + "/b.pug"
+	if err := os.WriteFile(aPath, []byte("extends b\n\nblock content\n  p A"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("extends a\n\nblock content\n  p B"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RenderFile(aPath, nil, nil)
+	if err == nil {
+		t.Error("expected cycle detection error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected 'cycle' in error, got: %v", err)
+	}
+}
