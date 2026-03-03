@@ -16,12 +16,6 @@ import (
 //go:embed views/*.pug views/*.css
 var viewsFS embed.FS
 
-// ---------------------------------------------------------------------------
-// Example metadata
-// ---------------------------------------------------------------------------
-
-// example holds one demo section: the file name, display title, Pug source,
-// optional render data, and optional Options (filters, globals, pretty).
 type example struct {
 	filename string
 	title    string
@@ -30,15 +24,12 @@ type example struct {
 	opts     *gopug.Options
 }
 
-// meta carries per-file title, data, and opts. Anything not listed here gets
-// sensible defaults (no data, no opts, title derived from the filename).
 type meta struct {
 	title string
 	data  map[string]interface{}
 	opts  *gopug.Options
 }
 
-// filterOpts is the shared Options used by all filter examples.
 var filterOpts = &gopug.Options{
 	Filters: map[string]gopug.FilterFunc{
 		"uppercase": func(s string, _ map[string]string) (string, error) {
@@ -69,10 +60,9 @@ var filterOpts = &gopug.Options{
 	},
 }
 
-// registry maps filename (without path, with extension) to its metadata.
 var registry = map[string]meta{
-	"01-doctype.pug": {title: "Doctype"},
-	"02-tags.pug":    {title: "Tags & nesting"},
+	"01-doctype.pug":  {title: "Doctype"},
+	"02-tags.pug":     {title: "Tags & nesting"},
 	"03-class-id.pug": {title: "Class & ID shorthand"},
 	"04-attributes.pug": {title: "Attributes"},
 	"05-dynamic-attrs.pug": {
@@ -140,15 +130,15 @@ var registry = map[string]meta{
 			"status": "active",
 		},
 	},
-	"21-mixins-basic.pug":      {title: "Mixins — basic"},
+	"21-mixins-basic.pug":         {title: "Mixins — basic"},
 	"22-mixins-defaults-rest.pug": {title: "Mixins — default params & rest"},
-	"23-mixins-block.pug":      {title: "Mixins — block content"},
-	"24-mixins-attributes.pug": {title: "Mixins — attributes map"},
-	"25-filters-block.pug":     {title: "Filters — block", opts: filterOpts},
-	"26-filters-inline.pug":    {title: "Filters — inline", opts: filterOpts},
-	"27-filters-options.pug":   {title: "Filters — options (key=value)", opts: filterOpts},
-	"28-filters-chained.pug":   {title: "Filters — chained (:outer:inner)", opts: filterOpts},
-	"29-comments.pug":          {title: "Comments"},
+	"23-mixins-block.pug":         {title: "Mixins — block content"},
+	"24-mixins-attributes.pug":    {title: "Mixins — attributes map"},
+	"25-filters-block.pug":        {title: "Filters — block", opts: filterOpts},
+	"26-filters-inline.pug":       {title: "Filters — inline", opts: filterOpts},
+	"27-filters-options.pug":      {title: "Filters — options (key=value)", opts: filterOpts},
+	"28-filters-chained.pug":      {title: "Filters — chained (:outer:inner)", opts: filterOpts},
+	"29-comments.pug":             {title: "Comments"},
 	"30-methods.pug": {
 		title: "String method expressions",
 		data:  map[string]interface{}{"s": "Hello, World!"},
@@ -190,17 +180,12 @@ var registry = map[string]meta{
 	},
 }
 
-// ---------------------------------------------------------------------------
-// Load examples from the embedded filesystem
-// ---------------------------------------------------------------------------
-
 func loadExamples() ([]example, error) {
 	entries, err := fs.ReadDir(viewsFS, "views")
 	if err != nil {
 		return nil, fmt.Errorf("reading views dir: %w", err)
 	}
 
-	// Collect only .pug files and sort them so numbering is stable.
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".pug") {
@@ -218,11 +203,9 @@ func loadExamples() ([]example, error) {
 
 		m := registry[name]
 
-		// Derive a readable title from the filename if none was registered.
 		title := m.title
 		if title == "" {
 			base := strings.TrimSuffix(name, ".pug")
-			// Strip leading "NN-" prefix.
 			if idx := strings.Index(base, "-"); idx >= 0 {
 				base = base[idx+1:]
 			}
@@ -240,10 +223,6 @@ func loadExamples() ([]example, error) {
 
 	return examples, nil
 }
-
-// ---------------------------------------------------------------------------
-// Page rendering
-// ---------------------------------------------------------------------------
 
 func writePage(w http.ResponseWriter, exs []example) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -264,18 +243,14 @@ func writePage(w http.ResponseWriter, exs []example) {
 		rendered, renderErr := gopug.Render(ex.pug, ex.data, ex.opts)
 
 		sb.WriteString(`<div class="card">`)
-
-		// Header
 		sb.WriteString(`<div class="card-header">`)
 		fmt.Fprintf(&sb, `<span class="card-number">%d</span>`, i+1)
 		fmt.Fprintf(&sb, `<span class="card-title">%s</span>`, html.EscapeString(ex.title))
 		fmt.Fprintf(&sb, `<span class="card-filename">%s</span>`, html.EscapeString(ex.filename))
 		sb.WriteString(`</div>`)
 
-		// Body — two panes
 		sb.WriteString(`<div class="card-body">`)
 
-		// Left: Pug source
 		sb.WriteString(`<div class="pane source-pane">`)
 		sb.WriteString(`<div class="pane-label">Pug source</div>`)
 		sb.WriteString(`<pre>`)
@@ -283,7 +258,6 @@ func writePage(w http.ResponseWriter, exs []example) {
 		sb.WriteString(`</pre>`)
 		sb.WriteString(`</div>`)
 
-		// Right: rendered output or error
 		if renderErr != nil {
 			sb.WriteString(`<div class="pane error-pane">`)
 			sb.WriteString(`<div class="pane-label">Error</div>`)
@@ -300,20 +274,16 @@ func writePage(w http.ResponseWriter, exs []example) {
 			sb.WriteString(`</div>`)
 		}
 
-		sb.WriteString(`</div>`) // card-body
-		sb.WriteString(`</div>`) // card
+		sb.WriteString(`</div>`)
+		sb.WriteString(`</div>`)
 	}
 
-	sb.WriteString(`</div>`) // grid
+	sb.WriteString(`</div>`)
 	sb.WriteString(`<footer>go-pug &mdash; github.com/sinfulspartan/go-pug</footer>`)
 	sb.WriteString(`</body></html>`)
 
 	fmt.Fprint(w, sb.String())
 }
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
 
 func main() {
 	exs, err := loadExamples()
