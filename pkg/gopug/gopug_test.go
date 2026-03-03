@@ -268,6 +268,238 @@ func TestDotNotationLookup(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Doctype variants
+// ---------------------------------------------------------------------------
+
+func TestDoctypeHtml5(t *testing.T) {
+	out := renderTest(t, "doctype 5", nil)
+	assertEqual(t, out, "<!DOCTYPE html>")
+}
+
+func TestDoctypeTransitional(t *testing.T) {
+	out := renderTest(t, "doctype transitional", nil)
+	assertContains(t, out, "Transitional")
+}
+
+func TestDoctypeStrict(t *testing.T) {
+	out := renderTest(t, "doctype strict", nil)
+	assertContains(t, out, "Strict")
+}
+
+func TestDoctype11(t *testing.T) {
+	out := renderTest(t, "doctype 1.1", nil)
+	assertContains(t, out, "XHTML 1.1")
+}
+
+// ---------------------------------------------------------------------------
+// Block expansion (tag: child)
+// ---------------------------------------------------------------------------
+
+func TestBlockExpansion(t *testing.T) {
+	out := renderTest(t, "a: img", nil)
+	assertContains(t, out, "<a>")
+	assertContains(t, out, "<img>")
+	assertContains(t, out, "</a>")
+}
+
+func TestBlockExpansionWithText(t *testing.T) {
+	out := renderTest(t, "ul: li Item", nil)
+	assertContains(t, out, "<ul>")
+	assertContains(t, out, "<li>Item</li>")
+	assertContains(t, out, "</ul>")
+}
+
+// ---------------------------------------------------------------------------
+// Explicit self-closing tag
+// ---------------------------------------------------------------------------
+
+func TestExplicitSelfClose(t *testing.T) {
+	out := renderTest(t, "foo/", nil)
+	assertContains(t, out, "<foo")
+	// Should not have a closing tag
+	if strings.Contains(out, "</foo>") {
+		t.Errorf("self-closed tag should not have closing tag, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Deeply nested tags
+// ---------------------------------------------------------------------------
+
+func TestDeeplyNested(t *testing.T) {
+	src := "div\n  section\n    article\n      p Deep"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<div>")
+	assertContains(t, out, "<section>")
+	assertContains(t, out, "<article>")
+	assertContains(t, out, "<p>Deep</p>")
+	assertContains(t, out, "</article>")
+	assertContains(t, out, "</section>")
+	assertContains(t, out, "</div>")
+}
+
+// ---------------------------------------------------------------------------
+// Multiple classes and combined class+ID
+// ---------------------------------------------------------------------------
+
+func TestMultipleClasses(t *testing.T) {
+	out := renderTest(t, "p.foo.bar.baz Hello", nil)
+	assertContains(t, out, "foo")
+	assertContains(t, out, "bar")
+	assertContains(t, out, "baz")
+}
+
+func TestClassAndIDTogether(t *testing.T) {
+	out := renderTest(t, "p.intro#main Hello", nil)
+	assertContains(t, out, `class="intro"`)
+	assertContains(t, out, `id="main"`)
+}
+
+// ---------------------------------------------------------------------------
+// Attributes — comma separated and unescaped
+// ---------------------------------------------------------------------------
+
+func TestCommaSeperatedAttributes(t *testing.T) {
+	out := renderTest(t, `a(href="/", class="btn") Click`, nil)
+	assertContains(t, out, `href="/"`)
+	assertContains(t, out, `class="btn"`)
+}
+
+func TestUnescapedAttribute(t *testing.T) {
+	out := renderTest(t, `div(data!="<b>hi</b>")`, nil)
+	assertContains(t, out, "<b>hi</b>")
+}
+
+// ---------------------------------------------------------------------------
+// Void tag variants
+// ---------------------------------------------------------------------------
+
+func TestVoidTagHr(t *testing.T) {
+	out := renderTest(t, "hr", nil)
+	assertEqual(t, out, "<hr>")
+}
+
+func TestVoidTagInput(t *testing.T) {
+	out := renderTest(t, `input(type="text")`, nil)
+	assertContains(t, out, "<input")
+	if strings.Contains(out, "</input>") {
+		t.Errorf("void tag input should not have closing tag, got: %q", out)
+	}
+}
+
+func TestVoidTagLink(t *testing.T) {
+	out := renderTest(t, `link(rel="stylesheet" href="style.css")`, nil)
+	assertContains(t, out, "<link")
+	if strings.Contains(out, "</link>") {
+		t.Errorf("void tag link should not have closing tag, got: %q", out)
+	}
+}
+
+func TestVoidTagMeta(t *testing.T) {
+	out := renderTest(t, `meta(charset="utf-8")`, nil)
+	assertContains(t, out, "<meta")
+	if strings.Contains(out, "</meta>") {
+		t.Errorf("void tag meta should not have closing tag, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HTML escaping in text content
+// ---------------------------------------------------------------------------
+
+func TestTextContentIsEscaped(t *testing.T) {
+	out := renderTest(t, "p <b>bold</b>", nil)
+	assertContains(t, out, "&lt;b&gt;")
+	if strings.Contains(out, "<b>") {
+		t.Errorf("text content should be HTML-escaped, got: %q", out)
+	}
+}
+
+func TestPipeTextIsEscaped(t *testing.T) {
+	src := "p\n  | <script>alert(1)</script>"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "&lt;script&gt;")
+	if strings.Contains(out, "<script>") {
+		t.Errorf("pipe text should be HTML-escaped, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiple consecutive pipe lines
+// ---------------------------------------------------------------------------
+
+func TestMultiplePipeLines(t *testing.T) {
+	src := "p\n  | Hello\n  | World"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Hello")
+	assertContains(t, out, "World")
+}
+
+// ---------------------------------------------------------------------------
+// Conditional — else if chaining
+// ---------------------------------------------------------------------------
+
+func TestElseIfChain(t *testing.T) {
+	src := "if val == 1\n  p One\nelse if val == 2\n  p Two\nelse\n  p Other"
+	outOne := renderTest(t, src, map[string]interface{}{"val": "1"})
+	assertContains(t, outOne, "<p>One</p>")
+
+	outTwo := renderTest(t, src, map[string]interface{}{"val": "2"})
+	assertContains(t, outTwo, "<p>Two</p>")
+
+	outOther := renderTest(t, src, map[string]interface{}{"val": "3"})
+	assertContains(t, outOther, "<p>Other</p>")
+}
+
+// ---------------------------------------------------------------------------
+// Each — for alias and key variable
+// ---------------------------------------------------------------------------
+
+func TestForAsAliasOfEach(t *testing.T) {
+	src := "ul\n  for item in items\n    li= item"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{"a", "b"},
+	})
+	assertContains(t, out, "<li>a</li>")
+	assertContains(t, out, "<li>b</li>")
+}
+
+func TestEachWithKeyVariable(t *testing.T) {
+	src := "ul\n  each val, idx in items\n    li= idx"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []interface{}{"x", "y", "z"},
+	})
+	assertContains(t, out, "<li>0</li>")
+	assertContains(t, out, "<li>1</li>")
+	assertContains(t, out, "<li>2</li>")
+}
+
+func TestEachOverStringSlice(t *testing.T) {
+	src := "ul\n  each item in items\n    li= item"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []string{"go", "pug"},
+	})
+	assertContains(t, out, "<li>go</li>")
+	assertContains(t, out, "<li>pug</li>")
+}
+
+// ---------------------------------------------------------------------------
+// Struct field lookup via reflect
+// ---------------------------------------------------------------------------
+
+func TestStructFieldLookup(t *testing.T) {
+	type User struct {
+		Name string
+		Age  int
+	}
+	src := "p= user.Name"
+	out := renderTest(t, src, map[string]interface{}{
+		"user": User{Name: "Bob", Age: 30},
+	})
+	assertContains(t, out, "Bob")
+}
+
+// ---------------------------------------------------------------------------
 // Full page test
 // ---------------------------------------------------------------------------
 

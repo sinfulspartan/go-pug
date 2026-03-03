@@ -423,6 +423,61 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return "", nil
 	}
 
+	// Logical OR: a || b  (lowest precedence, evaluated left-to-right)
+	if idx := findBinaryOp(expr, "||"); idx >= 0 {
+		left, err := r.evaluateExpr(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		if r.isTruthy(left) {
+			return left, nil
+		}
+		return r.evaluateExpr(expr[idx+2:])
+	}
+
+	// Logical AND: a && b
+	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
+		left, err := r.evaluateExpr(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		if !r.isTruthy(left) {
+			return "false", nil
+		}
+		return r.evaluateExpr(expr[idx+2:])
+	}
+
+	// Comparison operators (order matters: check longer operators first)
+	for _, op := range []string{"===", "!==", "==", "!=", "<=", ">=", "<", ">"} {
+		if idx := findBinaryOp(expr, op); idx >= 0 {
+			left, err := r.evaluateExpr(expr[:idx])
+			if err != nil {
+				return "", err
+			}
+			right, err := r.evaluateExpr(expr[idx+len(op):])
+			if err != nil {
+				return "", err
+			}
+			result := r.compareValues(left, right, op)
+			if result {
+				return "true", nil
+			}
+			return "false", nil
+		}
+	}
+
+	// Logical NOT: !expr
+	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		inner, err := r.evaluateExpr(expr[1:])
+		if err != nil {
+			return "", err
+		}
+		if r.isTruthy(inner) {
+			return "false", nil
+		}
+		return "true", nil
+	}
+
 	// String literals (double or single quoted)
 	if len(expr) >= 2 {
 		if (expr[0] == '"' && expr[len(expr)-1] == '"') ||
@@ -470,6 +525,94 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 
 	// Unrecognised expression — return empty rather than error for now
 	return "", nil
+}
+
+// findBinaryOp finds the position of a binary operator in an expression,
+// skipping over quoted strings and balanced parentheses.
+// Returns -1 if the operator is not found at the top level.
+func findBinaryOp(expr, op string) int {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++ // skip escaped character
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '(' || ch == '[' || ch == '{' {
+			depth++
+			continue
+		}
+		if ch == ')' || ch == ']' || ch == '}' {
+			depth--
+			continue
+		}
+		if depth == 0 && i+len(op) <= len(expr) && expr[i:i+len(op)] == op {
+			// Make sure it's surrounded by non-operator characters (rough boundary check)
+			return i
+		}
+	}
+	return -1
+}
+
+// compareValues compares two string-represented values with the given operator.
+// Numeric comparison is used when both sides parse as numbers.
+func (r *Runtime) compareValues(left, right, op string) bool {
+	// Normalise: strip surrounding quotes if any (from literal evaluation)
+	leftF, leftIsNum := parseNumber(left)
+	rightF, rightIsNum := parseNumber(right)
+
+	if leftIsNum && rightIsNum {
+		switch op {
+		case "==", "===":
+			return leftF == rightF
+		case "!=", "!==":
+			return leftF != rightF
+		case "<":
+			return leftF < rightF
+		case ">":
+			return leftF > rightF
+		case "<=":
+			return leftF <= rightF
+		case ">=":
+			return leftF >= rightF
+		}
+	}
+
+	// String comparison
+	switch op {
+	case "==", "===":
+		return left == right
+	case "!=", "!==":
+		return left != right
+	case "<":
+		return left < right
+	case ">":
+		return left > right
+	case "<=":
+		return left <= right
+	case ">=":
+		return left >= right
+	}
+	return false
+}
+
+// parseNumber attempts to parse a string as a float64.
+func parseNumber(s string) (float64, bool) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	return f, err == nil
 }
 
 // lookup retrieves a value from the scope stack, searching innermost scope first.

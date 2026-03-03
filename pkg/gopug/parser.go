@@ -137,7 +137,12 @@ func (p *Parser) parseTag() (Node, error) {
 		switch p.cur.Type {
 		case TokenClass:
 			className := p.cur.Value
-			tag.Attributes["class"] = &AttributeValue{Value: `"` + className + `"`}
+			if existing, ok := tag.Attributes["class"]; ok {
+				// Append to existing class list (strip surrounding quotes)
+				existing.Value = `"` + existing.Value[1:len(existing.Value)-1] + " " + className + `"`
+			} else {
+				tag.Attributes["class"] = &AttributeValue{Value: `"` + className + `"`}
+			}
 			p.advance()
 
 		case TokenID:
@@ -378,24 +383,28 @@ func (p *Parser) parseConditional() (*ConditionalNode, error) {
 		p.skipNewlines()
 	}
 
-	// Parse else/else if
+	// Parse else/else if.
+	// The lexer emits "else if <cond>" as a single TokenElse whose Value starts with "if ".
+	// A bare "else" is emitted as TokenElse with Value "else" (or empty).
 	for p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
-		p.advance() // consume else
+		elseToken := p.cur
+		p.advance() // consume the TokenElse token
 		p.skipNewlines()
 
-		if p.cur.Type == TokenIf {
-			// else if
+		// Detect "else if …" — the lexer folds "else if <cond>" into one token
+		// whose Value is "if <cond>".
+		if strings.HasPrefix(elseToken.Value, "if ") {
+			elseIfCond := strings.TrimPrefix(elseToken.Value, "if ")
 			elseCond := &ConditionalNode{
-				Condition:  p.cur.Value,
+				Condition:  strings.TrimSpace(elseIfCond),
 				Consequent: make([]Node, 0),
 				Alternate:  make([]Node, 0),
 				IsElseIf:   true,
-				Line:       p.cur.Line,
-				Col:        p.cur.Col,
+				Line:       elseToken.Line,
+				Col:        elseToken.Col,
 			}
-			p.advance()
-			p.skipNewlines()
 
+			// Parse the else-if consequent body
 			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
 				if p.cur.Type == TokenElse {
 					break
@@ -409,9 +418,57 @@ func (p *Parser) parseConditional() (*ConditionalNode, error) {
 				}
 				p.skipNewlines()
 			}
+
+			// Recursively collect any further else-if / else chains into this node
+			for p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+				innerElse := p.cur
+				p.advance()
+				p.skipNewlines()
+
+				if strings.HasPrefix(innerElse.Value, "if ") {
+					innerCond := strings.TrimSpace(strings.TrimPrefix(innerElse.Value, "if "))
+					innerNode := &ConditionalNode{
+						Condition:  innerCond,
+						Consequent: make([]Node, 0),
+						Alternate:  make([]Node, 0),
+						IsElseIf:   true,
+						Line:       innerElse.Line,
+						Col:        innerElse.Col,
+					}
+					for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+						if p.cur.Type == TokenElse {
+							break
+						}
+						node, err := p.parseNode(currentDepth + 1)
+						if err != nil {
+							return nil, err
+						}
+						if node != nil {
+							innerNode.Consequent = append(innerNode.Consequent, node)
+						}
+						p.skipNewlines()
+					}
+					elseCond.Alternate = append(elseCond.Alternate, innerNode)
+					elseCond = innerNode
+				} else {
+					// bare else — collect its body into the current innermost else-if
+					for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+						node, err := p.parseNode(currentDepth + 1)
+						if err != nil {
+							return nil, err
+						}
+						if node != nil {
+							elseCond.Alternate = append(elseCond.Alternate, node)
+						}
+						p.skipNewlines()
+					}
+					break
+				}
+			}
+
 			cond.Alternate = append(cond.Alternate, elseCond)
 		} else {
-			// else
+			// bare else — collect body directly into cond.Alternate
 			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
 				node, err := p.parseNode(currentDepth + 1)
 				if err != nil {
@@ -472,12 +529,13 @@ func (p *Parser) parseEach() (*EachNode, error) {
 	itemPart := strings.TrimSpace(parts[0])
 	collectionPart := strings.TrimSpace(parts[1])
 
-	// Check for key, value
+	// Pug syntax: each value, key in collection
+	// kv[0] is the value variable, kv[1] is the key/index variable
 	var item, key string
 	if strings.Contains(itemPart, ",") {
 		kv := strings.Split(itemPart, ",")
-		key = strings.TrimSpace(kv[0])
-		item = strings.TrimSpace(kv[1])
+		item = strings.TrimSpace(kv[0])
+		key = strings.TrimSpace(kv[1])
 	} else {
 		item = itemPart
 	}
