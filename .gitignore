@@ -3,6 +3,10 @@ BENCHMARKS.md
 benchmarks.json
 benchmarks.csv
 
+# bench2md binary if accidentally built at the repo root (go build ./scripts/bench2md/...)
+/bench2md
+/bench2md.exe
+
 # Windows reserved device name that can appear as a stray file
 /nul
 
