@@ -541,11 +541,148 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		// Evaluate the attribute value first so we can check for boolean
 		// suppression before emitting anything.
 		evaluated := ""
-		if val.Value != "" && val.Value != name {
-			var err error
-			evaluated, err = r.evaluateExpr(val.Value)
-			if err != nil {
-				evaluated = val.Value
+		if val.Value != "" {
+			rawValExpr := strings.TrimSpace(val.Value)
+
+			// style={color:'red', background:'green'} — convert object to CSS string
+			if name == "style" && len(rawValExpr) >= 2 && rawValExpr[0] == '{' && rawValExpr[len(rawValExpr)-1] == '}' {
+				obj := parseInlineObject(rawValExpr)
+				if obj != nil {
+					var parts []string
+					for k, v := range obj {
+						parts = append(parts, k+":"+v)
+					}
+					sort.Strings(parts)
+					evaluated = strings.Join(parts, ";") + ";"
+				}
+			} else if name == "class" {
+				// class={active:true, disabled:false} — inline object literal
+				if len(rawValExpr) >= 2 && rawValExpr[0] == '{' && rawValExpr[len(rawValExpr)-1] == '}' {
+					obj := parseInlineObject(rawValExpr)
+					if obj != nil {
+						var activeClasses []string
+						for k, v := range obj {
+							evaled, _ := r.evaluateExpr(v)
+							if r.isTruthy(evaled) {
+								activeClasses = append(activeClasses, k)
+							}
+						}
+						sort.Strings(activeClasses)
+						evaluated = strings.Join(activeClasses, " ")
+					}
+				} else {
+					// class may be a variable holding a slice, map, or string.
+					// The parser may also have produced a merged string like
+					// `"bang" classes` (shorthand + variable). We need to split
+					// on spaces, evaluate each token, and rejoin.
+					raw := r.evaluateExprRaw(rawValExpr)
+					if raw != nil {
+						rv := reflect.ValueOf(raw)
+						switch rv.Kind() {
+						case reflect.Slice, reflect.Array:
+							// []string or []interface{} → join with spaces
+							parts := make([]string, rv.Len())
+							for i := 0; i < rv.Len(); i++ {
+								parts[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
+							}
+							evaluated = strings.Join(parts, " ")
+						case reflect.Map:
+							// map[string]interface{}{active:true} → truthy keys
+							var activeClasses []string
+							for _, mk := range rv.MapKeys() {
+								mv := rv.MapIndex(mk).Interface()
+								mvStr := fmt.Sprintf("%v", mv)
+								if r.isTruthy(mvStr) {
+									activeClasses = append(activeClasses, fmt.Sprintf("%v", mk.Interface()))
+								}
+							}
+							sort.Strings(activeClasses)
+							evaluated = strings.Join(activeClasses, " ")
+						default:
+								// String or other scalar. The parser may have merged a
+								// shorthand literal with a variable name by producing a
+								// quoted string like `"bang classes"` where "bang" is a
+								// literal class and "classes" is a variable reference.
+								// Strategy:
+								//  1. If rawValExpr is a quoted string, unquote it and
+								//     treat each space-separated word as either a literal
+								//     (quoted) or a variable to resolve.
+								//  2. Otherwise split on spaces and resolve each token.
+								inner := rawValExpr
+								if len(inner) >= 2 &&
+									((inner[0] == '"' && inner[len(inner)-1] == '"') ||
+										(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
+									inner = inner[1 : len(inner)-1]
+								}
+								words := strings.Fields(inner)
+								var resolved []string
+								for _, word := range words {
+									// Try as a variable first; if it resolves use it,
+									// else use the word verbatim as a literal class name.
+									rawWord := r.evaluateExprRaw(word)
+									if rawWord != nil {
+										wv := reflect.ValueOf(rawWord)
+										if wv.Kind() == reflect.Slice || wv.Kind() == reflect.Array {
+											for i := 0; i < wv.Len(); i++ {
+												resolved = append(resolved, fmt.Sprintf("%v", wv.Index(i).Interface()))
+											}
+											continue
+										}
+									}
+									v, _ := r.evaluateExpr(word)
+									if v != "" {
+										resolved = append(resolved, v)
+									} else if word != "" {
+										resolved = append(resolved, word)
+									}
+								}
+								if len(resolved) > 0 {
+									evaluated = strings.Join(resolved, " ")
+								} else {
+									evaluated, _ = r.evaluateExpr(rawValExpr)
+								}
+							}
+						} else {
+							// nil raw — the value is likely a quoted merged string.
+							inner := rawValExpr
+							if len(inner) >= 2 &&
+								((inner[0] == '"' && inner[len(inner)-1] == '"') ||
+									(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
+								inner = inner[1 : len(inner)-1]
+							}
+							words := strings.Fields(inner)
+							var resolved []string
+							for _, word := range words {
+								rawWord := r.evaluateExprRaw(word)
+								if rawWord != nil {
+									wv := reflect.ValueOf(rawWord)
+									if wv.Kind() == reflect.Slice || wv.Kind() == reflect.Array {
+										for i := 0; i < wv.Len(); i++ {
+											resolved = append(resolved, fmt.Sprintf("%v", wv.Index(i).Interface()))
+										}
+										continue
+									}
+								}
+								v, _ := r.evaluateExpr(word)
+								if v != "" {
+									resolved = append(resolved, v)
+								} else if word != "" {
+									resolved = append(resolved, word)
+								}
+							}
+							if len(resolved) > 0 {
+								evaluated = strings.Join(resolved, " ")
+							} else {
+								evaluated, _ = r.evaluateExpr(rawValExpr)
+							}
+						}
+				}
+			} else {
+				var err error
+				evaluated, err = r.evaluateExpr(val.Value)
+				if err != nil {
+					evaluated = val.Value
+				}
 			}
 		}
 
@@ -565,7 +702,11 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		r.buf.WriteString(" ")
 		r.buf.WriteString(name)
 
-		if val.Value != "" && val.Value != name {
+		// Boolean attributes (bare `checked`, `disabled`, etc.) have no value.
+		// Only omit the value when the attribute was explicitly marked as Boolean
+		// by the parser — NOT when the expression happens to equal the attr name
+		// (e.g. `href=href` must still emit the evaluated value).
+		if !val.Boolean && val.Value != "" {
 			// Escape unless marked as unescaped
 			if !val.Unescaped {
 				evaluated = html.EscapeString(evaluated)
@@ -801,8 +942,14 @@ func toFloat(v interface{}) (float64, bool) {
 
 // renderConditional renders if/else if/else blocks.
 func (r *Runtime) renderConditional(cond *ConditionalNode) error {
+	// Strip optional surrounding parentheses: `if (cond)` → `if cond`
+	condition := strings.TrimSpace(cond.Condition)
+	if len(condition) >= 2 && condition[0] == '(' && condition[len(condition)-1] == ')' {
+		condition = strings.TrimSpace(condition[1 : len(condition)-1])
+	}
+
 	// Evaluate the condition
-	val, err := r.evaluateExpr(cond.Condition)
+	val, err := r.evaluateExpr(condition)
 	if err != nil {
 		return err
 	}
@@ -1021,9 +1168,60 @@ func (r *Runtime) renderPipe(pipe *PipeNode) error {
 }
 
 // renderBlockText renders block text (indented text after .).
+// The content may contain #{...} / !{...} interpolations and #[tag] tag
+// interpolations, so we process the tokens emitted by emitTextWithInterpolations
+// directly rather than running the full parser (which would loop waiting for
+// structural tokens that are never emitted for plain text content).
 func (r *Runtime) renderBlockText(block *BlockTextNode) error {
 	r.prettyNewline()
-	r.buf.WriteString(html.EscapeString(block.Content))
+
+	// Use the lexer helper to split on interpolation markers and collect tokens.
+	lx := NewLexer("")
+	lx.emitTextWithInterpolations(block.Content, 0)
+
+	for _, tok := range lx.tokens {
+		switch tok.Type {
+		case TokenText:
+			r.buf.WriteString(html.EscapeString(tok.Value))
+
+		case TokenInterpolation:
+			val, err := r.evaluateExpr(tok.Value)
+			if err != nil {
+				val = tok.Value
+			}
+			r.buf.WriteString(html.EscapeString(val))
+
+		case TokenInterpolationUnescape:
+			val, err := r.evaluateExpr(tok.Value)
+			if err != nil {
+				val = tok.Value
+			}
+			r.buf.WriteString(val)
+
+		case TokenTagInterpolationStart:
+			// Parse the inner content as a mini tag and render it.
+			innerLex := NewLexer(tok.Value)
+			if _, err := innerLex.Lex(); err != nil {
+				r.buf.WriteString(html.EscapeString(tok.Value))
+				continue
+			}
+			innerParser := NewParser(innerLex.tokens)
+			innerAST, err := innerParser.Parse()
+			if err != nil || innerAST == nil || len(innerAST.Children) == 0 {
+				r.buf.WriteString(html.EscapeString(tok.Value))
+				continue
+			}
+			for _, node := range innerAST.Children {
+				if err := r.renderNode(node); err != nil {
+					return err
+				}
+			}
+
+		case TokenTagInterpolationEnd:
+			// already consumed by the Start case above — skip
+		}
+	}
+
 	return nil
 }
 
@@ -1190,11 +1388,24 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
 			// Evaluate the argument expression in the current (caller) scope.
+			// Store as the evaluated string so that `href=href` inside the
+			// mixin body resolves the param variable correctly.
 			val, err := r.evaluateExpr(call.Arguments[i])
 			if err != nil {
 				return err
 			}
 			scope[param] = val
+		} else if decl.DefaultValues != nil {
+			if defaultExpr, ok := decl.DefaultValues[param]; ok {
+				// Evaluate the default expression in the caller scope.
+				val, err := r.evaluateExpr(defaultExpr)
+				if err != nil {
+					val = defaultExpr
+				}
+				scope[param] = val
+			} else {
+				scope[param] = "" // missing arg with no default
+			}
 		} else {
 			scope[param] = "" // missing arg defaults to empty string
 		}
@@ -1213,19 +1424,24 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 		scope[decl.RestParam] = rest
 	}
 
-	// Expose caller-supplied HTML attributes as the "attributes" variable.
-	// Each entry is the evaluated attribute value string.
-	if len(call.Attributes) > 0 {
-		attrMap := make(map[string]interface{})
-		for k, v := range call.Attributes {
-			evaluated, err := r.evaluateExpr(v.Value)
+	// Always expose an "attributes" variable inside the mixin — even when
+	// no HTML attributes were passed (empty map).  This lets `attributes.class`
+	// resolve to "" rather than causing a lookup failure.
+	attrMap := make(map[string]interface{})
+	for k, v := range call.Attributes {
+		var evaluated string
+		if v.Boolean {
+			evaluated = "true"
+		} else {
+			var err error
+			evaluated, err = r.evaluateExpr(v.Value)
 			if err != nil {
 				evaluated = v.Value
 			}
-			attrMap[k] = evaluated
 		}
-		scope["attributes"] = attrMap
+		attrMap[k] = evaluated
 	}
+	scope["attributes"] = attrMap
 
 	// Save the previous mixin block and install the call's block content.
 	prevBlock := r.mixinBlock
@@ -1370,6 +1586,22 @@ func (r *Runtime) evaluateExprRaw(expr string) interface{} {
 		}
 	}
 
+	// Inline array literal: [a, b, c] — return a real []interface{} slice
+	// so that each/for loops can iterate it properly.
+	if len(expr) >= 2 && expr[0] == '[' && expr[len(expr)-1] == ']' {
+		inner := strings.TrimSpace(expr[1 : len(expr)-1])
+		if inner == "" {
+			return []interface{}{}
+		}
+		parts := splitTopLevel(inner, ',')
+		result := make([]interface{}, 0, len(parts))
+		for _, p := range parts {
+			v, _ := r.evaluateExpr(strings.TrimSpace(p))
+			result = append(result, v)
+		}
+		return result
+	}
+
 	// Simple variable lookup — return raw value so slices stay as slices.
 	if val, ok := r.lookup(expr); ok {
 		return val
@@ -1491,6 +1723,37 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 				return expr[1 : len(expr)-1], nil
 			}
 		}
+	}
+
+	// Special mixin keyword: `block` evaluates to truthy when the mixin was
+	// called with block content, falsy when called without.
+	if expr == "block" && r.inMixinContext {
+		if len(r.mixinBlock) > 0 {
+			return "true", nil
+		}
+		return "false", nil
+	}
+
+	// Inline array literal: [a, b, c]
+	// Evaluate to a joined string for output; evaluateExprRaw handles the
+	// real slice case for each/iteration.
+	if len(expr) >= 2 && expr[0] == '[' && expr[len(expr)-1] == ']' {
+		inner := expr[1 : len(expr)-1]
+		parts := splitTopLevel(inner, ',')
+		strs := make([]string, 0, len(parts))
+		for _, p := range parts {
+			v, _ := r.evaluateExpr(strings.TrimSpace(p))
+			strs = append(strs, v)
+		}
+		return strings.Join(strs, ","), nil
+	}
+
+	// Inline object literal: {key: val, key2: val2}
+	// For style={color:'red'} we render as CSS; for class={active:true} we
+	// return space-joined truthy keys.  In a generic context just return "".
+	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
+		// Parsed by renderTag for special attributes; here return empty.
+		return "", nil
 	}
 
 	// Numeric literals
@@ -2119,6 +2382,68 @@ func (r *Runtime) toSlice(val interface{}) []interface{} {
 	}
 
 	return []interface{}{val}
+}
+
+// splitTopLevel splits s on the given separator rune, but only at depth 0
+// (not inside quotes, parens, brackets, or braces).
+func splitTopLevel(s string, sep rune) []string {
+	var parts []string
+	depth := 0
+	inDouble := false
+	inSingle := false
+	start := 0
+	for i, ch := range s {
+		switch {
+		case ch == '\\' && (inDouble || inSingle):
+			// skip next char — handled by range advancing bytes, good enough
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+		case (ch == '(' || ch == '[' || ch == '{') && !inDouble && !inSingle:
+			depth++
+		case (ch == ')' || ch == ']' || ch == '}') && !inDouble && !inSingle:
+			depth--
+		case ch == sep && depth == 0 && !inDouble && !inSingle:
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+// parseInlineObject parses a JS-style object literal string like
+// {color: "red", background: "green"} into a map[string]string.
+// Keys and values are trimmed; string values have their quotes stripped.
+func parseInlineObject(s string) map[string]string {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '{' || s[len(s)-1] != '}' {
+		return nil
+	}
+	inner := s[1 : len(s)-1]
+	result := make(map[string]string)
+	for _, pair := range splitTopLevel(inner, ',') {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		// Split on first colon
+		colonIdx := strings.Index(pair, ":")
+		if colonIdx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(pair[:colonIdx])
+		val := strings.TrimSpace(pair[colonIdx+1:])
+		// Strip surrounding quotes from value
+		if len(val) >= 2 &&
+			((val[0] == '"' && val[len(val)-1] == '"') ||
+				(val[0] == '\'' && val[len(val)-1] == '\'')) {
+			val = val[1 : len(val)-1]
+		}
+		result[key] = val
+	}
+	return result
 }
 
 // isTruthy determines if a string-evaluated value is truthy.

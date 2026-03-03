@@ -37,6 +37,7 @@ func (n *TagNode) String() string {
 type AttributeValue struct {
 	Value     string
 	Unescaped bool
+	Boolean   bool // true when the attribute was written without = (bare: checked, disabled)
 }
 
 // TextNode represents plain text content.
@@ -184,12 +185,13 @@ func (n *WhenNode) String() string {
 
 // MixinDeclNode represents a mixin declaration.
 type MixinDeclNode struct {
-	Name       string
-	Parameters []string
-	RestParam  string // for ...args
-	Body       []Node
-	Line       int
-	Col        int
+	Name          string
+	Parameters    []string
+	DefaultValues map[string]string // param name -> default expression
+	RestParam     string            // for ...args
+	Body          []Node
+	Line          int
+	Col           int
 }
 
 func (n *MixinDeclNode) node() {}

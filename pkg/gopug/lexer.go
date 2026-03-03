@@ -16,9 +16,41 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 
 	for len(text) > 0 {
 		// Find the earliest interpolation marker: #{expr}, !{expr}, or #[tag]
-		hashBraceIdx := strings.Index(text, "#{")
+		// Skip any marker that is preceded by a backslash (\#{) — that is an
+		// escaped interpolation and should be emitted as literal "#{".
+		hashBraceIdx := -1
+		for i := 0; i < len(text)-1; i++ {
+			if text[i] == '#' && text[i+1] == '{' {
+				if i == 0 || text[i-1] != '\\' {
+					hashBraceIdx = i
+					break
+				}
+				// Escaped: replace \#{ with #{ as plain text and skip.
+				// We do this by breaking the text at the backslash, emitting
+				// everything before it, then continuing with the rest (minus \).
+				if i > 0 {
+					l.addToken(TokenText, text[:i-1])
+				}
+				l.addToken(TokenText, "#{")
+				text = text[i+2:]
+				hashBraceIdx = -2 // sentinel: restart outer loop
+				break
+			}
+		}
+		if hashBraceIdx == -2 {
+			continue
+		}
+
 		bangIdx := strings.Index(text, "!{")
-		hashBracketIdx := strings.Index(text, "#[")
+		hashBracketIdx := -1
+		for i := 0; i < len(text)-1; i++ {
+			if text[i] == '#' && text[i+1] == '[' {
+				if i == 0 || text[i-1] != '\\' {
+					hashBracketIdx = i
+					break
+				}
+			}
+		}
 
 		// Determine which marker comes first (treat -1 as "not found" / infinity)
 		type marker struct {
@@ -349,8 +381,54 @@ func (l *Lexer) scanUnbufferedCode() error {
 		code += string(l.advance())
 	}
 
-	l.addToken(TokenCode, strings.TrimSpace(code))
+	headerDepth := l.depth
+	trimmed := strings.TrimSpace(code)
 	l.skipToNewline()
+
+	// If the - line has no inline code (bare "-"), consume indented lines as
+	// individual code statements — emitting one TokenCode per line.
+	// Example:
+	//   -
+	//     var x = 1
+	//     var y = 2
+	if trimmed == "" {
+		for l.pos < len(l.input) {
+			savedPos := l.pos
+			savedLine := l.line
+			savedCol := l.col
+
+			bodyIndent := 0
+			for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
+				l.advance()
+				bodyIndent++
+			}
+
+			if l.isEOF() || l.peek() == '\n' || l.peek() == '\r' {
+				l.skipToNewline()
+				continue
+			}
+
+			if bodyIndent <= headerDepth {
+				l.pos = savedPos
+				l.line = savedLine
+				l.col = savedCol
+				break
+			}
+
+			lineContent := ""
+			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+				lineContent += string(l.advance())
+			}
+			stmt := strings.TrimSpace(lineContent)
+			if stmt != "" {
+				l.addToken(TokenCode, stmt)
+			}
+			l.skipToNewline()
+		}
+		return nil
+	}
+
+	l.addToken(TokenCode, trimmed)
 	return nil
 }
 

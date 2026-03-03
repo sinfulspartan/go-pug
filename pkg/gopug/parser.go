@@ -310,8 +310,9 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 					return fmt.Errorf("expected attribute value at line %d", p.cur.Line)
 				}
 			} else {
-				// Boolean attribute
-				tag.Attributes[name] = &AttributeValue{Value: `"` + name + `"`, Unescaped: false}
+				// Boolean attribute — no = was present; mark explicitly so the
+				// runtime can distinguish bare `checked` from `href=href`.
+				tag.Attributes[name] = &AttributeValue{Value: name, Unescaped: false, Boolean: true}
 			}
 		} else if p.cur.Type == TokenAttrComma {
 			p.advance()
@@ -867,22 +868,31 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 	}
 
 	mixin := &MixinDeclNode{
-		Name:       mixinName,
-		Parameters: make([]string, 0),
-		Body:       make([]Node, 0),
-		Line:       line,
-		Col:        col,
+		Name:          mixinName,
+		Parameters:    make([]string, 0),
+		DefaultValues: make(map[string]string),
+		Body:          make([]Node, 0),
+		Line:          line,
+		Col:           col,
 	}
 
-	// Parse parameter list: "text, cls" or "name, ...attrs"
+	// Parse parameter list: "text, cls", "name, ...attrs", or
+	// "title=\"Default\"" (default values).
+	// We split on commas that are not inside quotes or parens.
 	if paramStr != "" {
-		for _, p := range strings.Split(paramStr, ",") {
-			param := strings.TrimSpace(p)
+		for _, raw := range splitMixinParams(paramStr) {
+			param := strings.TrimSpace(raw)
 			if param == "" {
 				continue
 			}
 			if strings.HasPrefix(param, "...") {
-				mixin.RestParam = strings.TrimPrefix(param, "...")
+				mixin.RestParam = strings.TrimSpace(strings.TrimPrefix(param, "..."))
+			} else if eqIdx := strings.Index(param, "="); eqIdx >= 0 {
+				// Default value: name=expr or name="Default"
+				paramName := strings.TrimSpace(param[:eqIdx])
+				defaultExpr := strings.TrimSpace(param[eqIdx+1:])
+				mixin.Parameters = append(mixin.Parameters, paramName)
+				mixin.DefaultValues[paramName] = defaultExpr
 			} else {
 				mixin.Parameters = append(mixin.Parameters, param)
 			}
@@ -905,6 +915,37 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 	}
 
 	return mixin, nil
+}
+
+// splitMixinParams splits a mixin parameter string on top-level commas
+// (i.e. commas not inside quotes or nested parentheses/brackets).
+// For example: `title="Hello, World", cls` → [`title="Hello, World"`, ` cls`]
+func splitMixinParams(s string) []string {
+	var parts []string
+	depth := 0
+	inDouble := false
+	inSingle := false
+	start := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch == '\\' && (inDouble || inSingle):
+			i++ // skip escaped char
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+		case (ch == '(' || ch == '[' || ch == '{') && !inDouble && !inSingle:
+			depth++
+		case (ch == ')' || ch == ']' || ch == '}') && !inDouble && !inSingle:
+			depth--
+		case ch == ',' && depth == 0 && !inDouble && !inSingle:
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }
 
 // parseMixinCall parses mixin calls (+name).
@@ -992,7 +1033,7 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 					call.Attributes[attrName] = &AttributeValue{Value: val, Unescaped: unescaped}
 				} else {
 					// Boolean attribute (no value)
-					call.Attributes[attrName] = &AttributeValue{Value: "true"}
+					call.Attributes[attrName] = &AttributeValue{Value: attrName, Boolean: true}
 				}
 				continue
 			}

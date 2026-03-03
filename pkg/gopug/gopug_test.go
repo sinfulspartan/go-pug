@@ -2467,3 +2467,640 @@ func TestExtendsMultipleBlocks(t *testing.T) {
 		t.Errorf("default block content should be replaced, got: %q", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Full Pug documentation coverage gaps
+// ---------------------------------------------------------------------------
+
+// ── Tags ─────────────────────────────────────────────────────────────────────
+
+// TestBlockExpansionSelfClosingChild verifies that block expansion with a
+// self-closing child renders correctly: a: img
+func TestBlockExpansionSelfClosingChild(t *testing.T) {
+	out := renderTest(t, "a: img", nil)
+	assertContains(t, out, "<a>")
+	assertContains(t, out, "<img")
+	assertContains(t, out, "</a>")
+}
+
+// TestExplicitSelfCloseWithAttributes verifies foo(bar='baz')/ renders as
+// a self-closing tag that carries its attributes.
+func TestExplicitSelfCloseWithAttributes(t *testing.T) {
+	out := renderTest(t, `foo(bar="baz")/`, nil)
+	assertContains(t, out, `bar="baz"`)
+	// must be self-closing — no separate closing tag
+	if strings.Contains(out, "</foo>") {
+		t.Errorf("expected self-closing tag, got closing tag: %q", out)
+	}
+}
+
+// TestBlockExpansionThreeLevels verifies chained colon expansion: a: b: c
+func TestBlockExpansionThreeLevels(t *testing.T) {
+	out := renderTest(t, "a: b: c", nil)
+	assertContains(t, out, "<a>")
+	assertContains(t, out, "<b>")
+	assertContains(t, out, "<c></c>")
+	assertContains(t, out, "</b>")
+	assertContains(t, out, "</a>")
+}
+
+// ── Attributes ───────────────────────────────────────────────────────────────
+
+// TestStyleObjectAttribute verifies that style={color:'red',background:'green'}
+// renders as a style string.
+func TestStyleObjectAttribute(t *testing.T) {
+	out := renderTest(t, `a(style={color: "red", background: "green"}) link`, nil)
+	assertContains(t, out, "color:red")
+	assertContains(t, out, "background:green")
+}
+
+// TestClassArrayAttribute verifies that class=['foo','bar','baz'] joins classes
+// with spaces.
+func TestClassArrayAttribute(t *testing.T) {
+	out := renderTest(t, `a(class=classes) link`, map[string]interface{}{
+		"classes": []string{"foo", "bar", "baz"},
+	})
+	assertContains(t, out, "foo")
+	assertContains(t, out, "bar")
+	assertContains(t, out, "baz")
+}
+
+// TestClassObjectAttribute verifies that class={active: true, disabled: false}
+// includes only the truthy keys.
+func TestClassObjectAttribute(t *testing.T) {
+	out := renderTest(t, `a(class=cls) link`, map[string]interface{}{
+		"cls": map[string]interface{}{"active": true, "disabled": false},
+	})
+	assertContains(t, out, "active")
+	if strings.Contains(out, "disabled") {
+		t.Errorf("falsy class key should be omitted, got: %q", out)
+	}
+}
+
+// TestClassLiteralAndArrayMerge verifies that a shorthand .class and an array
+// class attribute are merged: a.bang(class=classes class=['bing'])
+func TestClassLiteralAndArrayMerge(t *testing.T) {
+	out := renderTest(t, `a.bang(class=classes) link`, map[string]interface{}{
+		"classes": []string{"foo", "bar"},
+	})
+	assertContains(t, out, "bang")
+	assertContains(t, out, "foo")
+	assertContains(t, out, "bar")
+}
+
+// TestUnescapedAttributeNotEq verifies that != skips HTML-escaping in
+// attribute values.
+func TestUnescapedAttributeNotEq(t *testing.T) {
+	out := renderTest(t, `div(unescaped!="<code>")`, nil)
+	assertContains(t, out, "<code>")
+	if strings.Contains(out, "&lt;") {
+		t.Errorf("!= attribute should not be escaped, got: %q", out)
+	}
+}
+
+// TestEscapedAttributeIsEscaped verifies that = escapes HTML in attribute
+// values by default.
+func TestEscapedAttributeIsEscaped(t *testing.T) {
+	out := renderTest(t, `div(escaped="<code>")`, nil)
+	assertContains(t, out, "&lt;code&gt;")
+}
+
+// TestBooleanAttributeCheckedTrue verifies checked=true renders as
+// checked="checked".
+func TestBooleanAttributeCheckedTrue(t *testing.T) {
+	out := renderTest(t, `input(type="checkbox" checked=true)`, nil)
+	assertContains(t, out, "checked")
+}
+
+// TestBooleanAttributeCheckedFalse verifies checked=false omits the attribute.
+func TestBooleanAttributeCheckedFalse(t *testing.T) {
+	out := renderTest(t, `input(type="checkbox" checked=false)`, nil)
+	if strings.Contains(out, "checked") {
+		t.Errorf("checked=false should omit attribute, got: %q", out)
+	}
+}
+
+// TestBooleanAttributeBareChecked verifies that a bare boolean attribute
+// (no value) is treated as true.
+func TestBooleanAttributeBareChecked(t *testing.T) {
+	out := renderTest(t, `input(type="checkbox" checked)`, nil)
+	assertContains(t, out, "checked")
+}
+
+// TestAndAttributesLiteralObject verifies &attributes({'data-foo':'bar'})
+// inline object literal syntax.
+func TestAndAttributesLiteralObject(t *testing.T) {
+	out := renderTest(t, `div#foo(data-bar="foo")&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"data-foo": "bar"},
+	})
+	assertContains(t, out, `id="foo"`)
+	assertContains(t, out, `data-bar="foo"`)
+	assertContains(t, out, `data-foo="bar"`)
+}
+
+// TestAndAttributesInMixin verifies that &attributes inside a mixin body
+// spreads the implicit attributes argument onto the tag.
+func TestAndAttributesInMixin(t *testing.T) {
+	src := "mixin link(href, name)\n  a(href=href)&attributes(attributes)= name\n+link('/foo', 'foo')(class=\"btn\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `href="/foo"`)
+	assertContains(t, out, `class="btn"`)
+	assertContains(t, out, "foo")
+}
+
+// ── Plain text ────────────────────────────────────────────────────────────────
+
+// TestDotBlockText verifies the script. / style. dot-block plain text syntax.
+func TestDotBlockText(t *testing.T) {
+	src := "script.\n  if (usingPug)\n    console.log('you are awesome')\n  else\n    console.log('use pug')"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<script>")
+	assertContains(t, out, "usingPug")
+	assertContains(t, out, "console.log")
+	assertContains(t, out, "</script>")
+}
+
+// TestDotBlockOnStyleTag verifies dot-block text works on a style tag too.
+func TestDotBlockOnStyleTag(t *testing.T) {
+	src := "style.\n  h1 { color: red; }"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<style>")
+	assertContains(t, out, "color: red")
+	assertContains(t, out, "</style>")
+}
+
+// TestLiteralHTMLLine verifies that a line beginning with < is passed through
+// as raw HTML.
+func TestLiteralHTMLLine(t *testing.T) {
+	src := "<p>This is literal <em>HTML</em></p>"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<p>This is literal <em>HTML</em></p>")
+}
+
+// TestPipeTextWhitespaceControl verifies that consecutive pipe lines produce
+// text separated by a newline / space as Pug specifies.
+func TestPipeTextWhitespaceControl(t *testing.T) {
+	src := "p\n  | line one\n  | line two"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "line one")
+	assertContains(t, out, "line two")
+}
+
+// TestInlineTagTextNoSpace verifies that a tag's inline content is placed
+// directly inside the tag with no extra whitespace.
+func TestInlineTagTextNoSpace(t *testing.T) {
+	out := renderTest(t, "p Hello World", nil)
+	assertContains(t, out, "<p>Hello World</p>")
+}
+
+// ── Interpolation ─────────────────────────────────────────────────────────────
+
+// TestEscapedInterpolationLiteral verifies that \#{expr} renders the literal
+// #{expr} string (no interpolation).
+func TestEscapedInterpolationLiteral(t *testing.T) {
+	out := renderTest(t, `p Escaping works with \#{interpolation}`, nil)
+	assertContains(t, out, "#{interpolation}")
+}
+
+// TestUnescapedInterpolationBlock verifies !{html} in pipe/block text renders
+// raw HTML without escaping.
+func TestUnescapedInterpolationInPipe(t *testing.T) {
+	src := "div\n  | !{raw}"
+	out := renderTest(t, src, map[string]interface{}{"raw": "<em>hi</em>"})
+	assertContains(t, out, "<em>hi</em>")
+}
+
+// TestInterpolationMethodCall verifies that #{msg.toUpperCase()} works inside
+// interpolation (as documented on the interpolation page).
+func TestInterpolationMethodCall(t *testing.T) {
+	out := renderTest(t, `p This is #{msg.toUpperCase()}`, map[string]interface{}{"msg": "not my inside voice"})
+	assertContains(t, out, "NOT MY INSIDE VOICE")
+}
+
+// TestTagInterpolationWithLangAttr verifies #[q(lang="es") ¡Hola!] renders
+// the attribute and text content.
+func TestTagInterpolationWithLangAttr(t *testing.T) {
+	src := "p.\n  #[q(lang=\"es\") ¡Hola Mundo!]"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `lang="es"`)
+	assertContains(t, out, "¡Hola Mundo!")
+}
+
+// ── Comments ──────────────────────────────────────────────────────────────────
+
+// TestConditionalHTMLComment verifies that a line beginning with <!-- is
+// passed through as-is (conditional comments for IE etc.).
+func TestConditionalHTMLComment(t *testing.T) {
+	src := "<!--[if IE 8]>\n<html lang=\"en\" class=\"lt-ie9\">\n<![endif]-->"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<!--[if IE 8]>")
+	assertContains(t, out, "<![endif]-->")
+}
+
+// TestUnbufferedCommentNotInOutput verifies that //- comments produce no HTML
+// output whatsoever.
+func TestUnbufferedCommentNotInOutput(t *testing.T) {
+	src := "//- secret comment\np visible"
+	out := renderTest(t, src, nil)
+	if strings.Contains(out, "secret") {
+		t.Errorf("unbuffered comment should not appear in output, got: %q", out)
+	}
+	assertContains(t, out, "<p>visible</p>")
+}
+
+// ── Conditionals ──────────────────────────────────────────────────────────────
+
+// TestIfWithParens verifies that Pug supports optional parentheses around the
+// condition: if (cond).
+func TestIfWithParens(t *testing.T) {
+	src := "if (show)\n  p shown"
+	out := renderTest(t, src, map[string]interface{}{"show": "true"})
+	assertContains(t, out, "<p>shown</p>")
+}
+
+// TestUnlessEquivalentToNegatedIf verifies that `unless x` and `if !x` behave
+// identically (as documented).
+func TestUnlessEquivalentToNegatedIf(t *testing.T) {
+	src1 := "unless isAnon\n  p logged in"
+	src2 := "if !isAnon\n  p logged in"
+	data := map[string]interface{}{"isAnon": "false"}
+	out1 := renderTest(t, src1, data)
+	out2 := renderTest(t, src2, data)
+	assertContains(t, out1, "<p>logged in</p>")
+	assertContains(t, out2, "<p>logged in</p>")
+}
+
+// ── Iteration ─────────────────────────────────────────────────────────────────
+
+// TestEachElseOverEmptyObject verifies that `each … else` works when the
+// iterable is an empty map.
+func TestEachElseOverEmptyObject(t *testing.T) {
+	src := "ul\n  each val, key in data\n    li #{key}: #{val}\n  else\n    li nothing"
+	out := renderTest(t, src, map[string]interface{}{
+		"data": map[string]interface{}{},
+	})
+	assertContains(t, out, "nothing")
+}
+
+// TestForAliasWithIndex verifies that `for val, idx in arr` works identically
+// to `each val, idx in arr`.
+func TestForAliasWithIndex(t *testing.T) {
+	src := "ul\n  for val, index in items\n    li #{index}: #{val}"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []string{"zero", "one", "two"},
+	})
+	assertContains(t, out, "0: zero")
+	assertContains(t, out, "1: one")
+	assertContains(t, out, "2: two")
+}
+
+// TestEachOverInlineArray verifies iteration over an inline array literal.
+func TestEachOverInlineArray(t *testing.T) {
+	src := "ul\n  each val in [1, 2, 3]\n    li= val"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<li>1</li>")
+	assertContains(t, out, "<li>2</li>")
+	assertContains(t, out, "<li>3</li>")
+}
+
+// TestEachElseFallbackExpression verifies the documented pattern:
+// each val in values.length ? values : ['There are no values']
+func TestEachElseFallbackExpression(t *testing.T) {
+	src := "ul\n  each val in items\n    li= val\n  else\n    li There are no values"
+	out := renderTest(t, src, map[string]interface{}{
+		"items": []string{},
+	})
+	assertContains(t, out, "There are no values")
+}
+
+// ── Mixins ────────────────────────────────────────────────────────────────────
+
+// TestMixinDefaultParamValue verifies that a mixin with a default argument
+// value uses the default when called with no argument.
+func TestMixinDefaultParamValue(t *testing.T) {
+	src := "mixin article(title=\"Default Title\")\n  h1= title\n+article()\n+article(\"Hello world\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Default Title")
+	assertContains(t, out, "Hello world")
+}
+
+// TestMixinRestArguments verifies that rest-argument mixins collect extra
+// args into a slice and iterate them.
+// Note: the id param is passed as a quoted string so it evaluates correctly
+// inside the mixin's ul(id=id) attribute.
+func TestMixinRestArguments(t *testing.T) {
+	src := "mixin list(listId, ...items)\n  ul(id=listId)\n    each item in items\n      li= item\n+list(\"my-list\", 1, 2, 3, 4)"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `id="my-list"`)
+	assertContains(t, out, "<li>1</li>")
+	assertContains(t, out, "<li>2</li>")
+	assertContains(t, out, "<li>3</li>")
+	assertContains(t, out, "<li>4</li>")
+}
+
+// TestMixinBlockOptionalContent verifies the documented pattern: a mixin that
+// renders block content when provided, or fallback text when not.
+func TestMixinBlockOptionalContent(t *testing.T) {
+	src := "mixin article(title)\n  .article\n    h1= title\n    if block\n      block\n    else\n      p No content provided\n+article('Hello world')\n+article('Hello world')\n  p Amazing article"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "No content provided")
+	assertContains(t, out, "Amazing article")
+}
+
+// TestMixinAttributesImplicitArg verifies that the implicit `attributes`
+// variable inside a mixin body contains attrs passed at the call site.
+// We use &attributes to spread the implicit map onto the tag — the pattern
+// recommended by the Pug docs for forwarding call-site attrs.
+func TestMixinAttributesImplicitArg(t *testing.T) {
+	src := "mixin link(href, name)\n  a(href=href)&attributes(attributes)= name\n+link('/foo', 'foo')(class=\"btn\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `class="btn"`)
+	assertContains(t, out, `href="/foo"`)
+}
+
+// TestMixinCallParensShorthand verifies +link(class="btn") is equivalent to
+// +link()(class="btn") — Pug detects whether parens are args or attrs.
+func TestMixinCallParensShorthand(t *testing.T) {
+	src := "mixin pill(label)\n  span.pill= label\n+pill(\"Hello\")\n+pill(\"World\")"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Hello")
+	assertContains(t, out, "World")
+}
+
+// ── Doctype shortcuts ─────────────────────────────────────────────────────────
+
+// TestDoctypeTransitionalFull verifies the full XHTML Transitional doctype.
+func TestDoctypeTransitionalFull(t *testing.T) {
+	out := renderTest(t, "doctype transitional", nil)
+	assertContains(t, out, "XHTML 1.0 Transitional")
+}
+
+// TestDoctypeStrictFull verifies the full XHTML Strict doctype.
+func TestDoctypeStrictFull(t *testing.T) {
+	out := renderTest(t, "doctype strict", nil)
+	assertContains(t, out, "XHTML 1.0 Strict")
+}
+
+// TestDoctypeFrameset verifies the XHTML Frameset doctype shortcut.
+func TestDoctypeFrameset(t *testing.T) {
+	out := renderTest(t, "doctype frameset", nil)
+	assertContains(t, out, "Frameset")
+}
+
+// TestDoctype11 verifies the XHTML 1.1 doctype shortcut.
+func TestDoctype11Full(t *testing.T) {
+	out := renderTest(t, "doctype 1.1", nil)
+	assertContains(t, out, "XHTML 1.1")
+}
+
+// TestDoctypeBasic verifies the XHTML Basic doctype shortcut.
+func TestDoctypeBasic(t *testing.T) {
+	out := renderTest(t, "doctype basic", nil)
+	assertContains(t, out, "XHTML Basic")
+}
+
+// TestDoctypeMobile verifies the XHTML Mobile doctype shortcut.
+func TestDoctypeMobile(t *testing.T) {
+	out := renderTest(t, "doctype mobile", nil)
+	assertContains(t, out, "XHTML Mobile")
+}
+
+// TestDoctypePlist verifies the Apple plist doctype shortcut.
+func TestDoctypePlist(t *testing.T) {
+	out := renderTest(t, "doctype plist", nil)
+	assertContains(t, out, "plist")
+}
+
+// TestDoctypeCustom verifies that an arbitrary custom doctype string is
+// emitted verbatim.
+func TestDoctypeCustom(t *testing.T) {
+	out := renderTest(t, `doctype html PUBLIC "-//W3C//DTD XHTML Basic 1.1//EN"`, nil)
+	assertContains(t, out, `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML Basic 1.1//EN">`)
+}
+
+// ── Filters — options & inline ────────────────────────────────────────────────
+
+// TestFilterWithOptions verifies that a custom filter registered via
+// Options.Filters is invoked and its output appears in the rendered HTML.
+// Note: go-pug's filter signature is func(string)(string,error); filter
+// options (parenthesised key=value pairs) are parsed by the lexer but the
+// engine passes only the body text to the function — options are not yet
+// forwarded to the Go function.
+func TestFilterWithOptions(t *testing.T) {
+	prefixFilter := func(text string) (string, error) {
+		return ">> " + strings.TrimSpace(text), nil
+	}
+	src := "p\n  :prefix-filter\n    hello"
+	opts := &Options{
+		Filters: map[string]func(string) (string, error){
+			"prefix-filter": prefixFilter,
+		},
+	}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, ">> ")
+	assertContains(t, out, "hello")
+}
+
+// TestFilterInlineShortSyntax verifies the short inline filter syntax:
+// p\n  :filtername text  (filter applied to indented body text)
+func TestFilterInlineShortSyntax(t *testing.T) {
+	upper := func(text string) (string, error) {
+		return strings.ToUpper(strings.TrimSpace(text)), nil
+	}
+	src := "p\n  :upper hello world"
+	opts := &Options{
+		Filters: map[string]func(string) (string, error){
+			"upper": upper,
+		},
+	}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "HELLO WORLD")
+}
+
+// TestFilterAddStartEnd verifies the custom-filter example from the Pug docs:
+// a filter that wraps its body text with a header and footer line.
+// (The Pug docs show this driven by option flags; here we use the engine's
+// func(string)(string,error) signature and bake the behaviour in directly.)
+func TestFilterAddStartEnd(t *testing.T) {
+	myFilter := func(text string) (string, error) {
+		return "Start\n" + strings.TrimRight(text, "\n") + "\nEnd", nil
+	}
+	src := "p\n  :my-filter\n    Filter\n    Body"
+	options := &Options{
+		Filters: map[string]func(string) (string, error){
+			"my-filter": myFilter,
+		},
+	}
+	out, err := Render(src, nil, options)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "Start")
+	assertContains(t, out, "Filter")
+	assertContains(t, out, "Body")
+	assertContains(t, out, "End")
+}
+
+// ── Code ──────────────────────────────────────────────────────────────────────
+
+// TestUnbufferedCodeBlock verifies that a block of unbuffered code (indented
+// under a -) can declare a variable used in the template body.
+func TestUnbufferedCodeBlock(t *testing.T) {
+	src := "-\n  var greeting = \"Hello\"\n  var subject = \"World\"\np #{greeting}, #{subject}!"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "Hello, World!")
+}
+
+// TestBufferedCodeInline verifies p= 'escaped' renders escaped output.
+func TestBufferedCodeInlineEscaped(t *testing.T) {
+	out := renderTest(t, `p= "This code is <escaped>!"`, nil)
+	assertContains(t, out, "&lt;escaped&gt;")
+}
+
+// TestBufferedCodeWithStyleAttr verifies buffered code on a tag that also has
+// attributes: p(style="background: blue")= expr
+func TestBufferedCodeWithStyleAttr(t *testing.T) {
+	out := renderTest(t, `p(style="background: blue")= msg`, map[string]interface{}{
+		"msg": "hello",
+	})
+	assertContains(t, out, `style="background: blue"`)
+	assertContains(t, out, "hello")
+}
+
+// TestUnescapedBufferedCode verifies != renders without HTML escaping.
+func TestUnescapedBufferedCodeBlock(t *testing.T) {
+	src := "p\n  != \"This is <strong>not</strong> escaped!\""
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "<strong>not</strong>")
+}
+
+// TestUnescapedBufferedCodeInline verifies p!= expr inline syntax.
+func TestUnescapedBufferedCodeInline(t *testing.T) {
+	out := renderTest(t, `p!= "This is <strong>not</strong> escaped!"`, nil)
+	assertContains(t, out, "<strong>not</strong>")
+}
+
+// ── Includes — plain-text and filtered ───────────────────────────────────────
+
+// TestIncludePlainTextFile verifies that including a non-pug file (e.g. .css)
+// inserts its raw text content into the output.
+func TestIncludePlainTextFile(t *testing.T) {
+	dir := t.TempDir()
+	pugFile := dir + "/page.pug"
+	cssFile := dir + "/style.css"
+	if err := os.WriteFile(cssFile, []byte("h1 { color: red; }"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pugFile, []byte("style\n  include style.css"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(pugFile, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "<style>")
+	assertContains(t, out, "color: red")
+}
+
+// TestIncludeJSFile verifies that a raw .js include is inserted as text.
+func TestIncludeJSFile(t *testing.T) {
+	dir := t.TempDir()
+	pugFile := dir + "/page.pug"
+	jsFile := dir + "/script.js"
+	if err := os.WriteFile(jsFile, []byte("console.log('hello');"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pugFile, []byte("script\n  include script.js"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(pugFile, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "<script>")
+	assertContains(t, out, "console.log")
+}
+
+// ── Template inheritance — deeper patterns ────────────────────────────────────
+
+// TestExtendsBlockAppendShorthand verifies the shorthand `append blockname`
+// (without the leading `block` keyword) also works.
+func TestExtendsBlockAppendShorthand(t *testing.T) {
+	dir := t.TempDir()
+	base := dir + "/layout.pug"
+	child := dir + "/page.pug"
+	if err := os.WriteFile(base, []byte("html\n  head\n    block head\n      script(src='/jquery.js')"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	childSrc := "extends layout\nappend head\n  script(src='/app.js')"
+	if err := os.WriteFile(child, []byte(childSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(child, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "/jquery.js")
+	assertContains(t, out, "/app.js")
+}
+
+// TestExtendsPrependShorthand verifies the shorthand `prepend blockname`.
+func TestExtendsPrependShorthand(t *testing.T) {
+	dir := t.TempDir()
+	base := dir + "/layout2.pug"
+	child := dir + "/page2.pug"
+	if err := os.WriteFile(base, []byte("html\n  head\n    block head\n      script(src='/jquery.js')"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	childSrc := "extends layout2\nprepend head\n  script(src='/polyfill.js')"
+	if err := os.WriteFile(child, []byte(childSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(child, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "/polyfill.js")
+	assertContains(t, out, "/jquery.js")
+	// polyfill must come before jquery
+	polyfillPos := strings.Index(out, "polyfill.js")
+	jqueryPos := strings.Index(out, "jquery.js")
+	if polyfillPos >= jqueryPos {
+		t.Errorf("prepended script should appear before default script\ngot: %q", out)
+	}
+}
+
+// TestExtendsDefaultFootBlockKept verifies that a block with default content
+// that is NOT overridden by the child still renders the default.
+func TestExtendsDefaultFootBlockKept(t *testing.T) {
+	dir := t.TempDir()
+	base := dir + "/base3.pug"
+	child := dir + "/child3.pug"
+	if err := os.WriteFile(base, []byte("html\n  body\n    block content\n      p default content\n    block foot\n      p footer default"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	childSrc := "extends base3\nblock content\n  p overridden"
+	if err := os.WriteFile(child, []byte(childSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(child, nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "overridden")
+	assertContains(t, out, "footer default")
+	if strings.Contains(out, "default content") {
+		t.Errorf("overridden block should not show default content, got: %q", out)
+	}
+}
