@@ -327,10 +327,14 @@ func (l *Lexer) scanFilter() error {
 		return l.errorf("expected filter name after ':'")
 	}
 
+	// Remember the indentation depth of the filter header line so we can
+	// recognise which subsequent lines belong to the filter body.
+	filterDepth := l.depth
+
 	l.addToken(TokenFilter, name)
 
-	// Check for nested filter :subfilter
-	if l.peek() == ':' {
+	// Check for chained subfilters  :outer:inner  (may repeat)
+	for l.peek() == ':' {
 		l.advance()
 		sub := l.scanIdentifier()
 		if sub != "" {
@@ -338,7 +342,70 @@ func (l *Lexer) scanFilter() error {
 		}
 	}
 
+	// Capture any same-line inline content after the filter name(s).
+	// e.g.  :uppercase Hello World
+	//               filter^  ^inline text
+	l.skipSpaces()
+	inline := ""
+	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+		inline += string(l.advance())
+	}
+	if inline != "" {
+		// Emit inline content as a single TokenText — no further body lines.
+		l.addToken(TokenText, strings.TrimRight(inline, " \t"))
+		l.skipToNewline()
+		return nil
+	}
+
+	// No inline content — consume the newline that ends the filter header,
+	// then eagerly collect all indented body lines as verbatim TokenText
+	// tokens (one per line).  This prevents the main scanLine dispatcher
+	// from re-interpreting filter body content as Pug tags/keywords/etc.
+	//
+	// Depth comparison uses raw space counts throughout:
+	//   filterDepth = l.depth  (raw spaces, set by scanLine before calling us)
+	//   bodyIndent             (raw spaces counted below)
+	// A body line must have strictly MORE leading spaces than the filter header.
 	l.skipToNewline()
+
+	for l.pos < len(l.input) {
+		// Peek at the indentation of the next line without committing.
+		savedPos := l.pos
+		savedLine := l.line
+		savedCol := l.col
+
+		// Count leading spaces/tabs (raw count, not divided by 2).
+		bodyIndent := 0
+		for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
+			l.advance()
+			bodyIndent++
+		}
+
+		// Blank line — skip it and keep going (may be inside the block).
+		if l.peek() == '\n' || l.peek() == '\r' || l.isEOF() {
+			l.skipToNewline()
+			continue
+		}
+
+		// If this line is not indented strictly deeper than the filter header
+		// (using the same raw-space count stored in filterDepth), it does not
+		// belong to the filter body — restore the scanner position and stop.
+		if bodyIndent <= filterDepth {
+			l.pos = savedPos
+			l.line = savedLine
+			l.col = savedCol
+			break
+		}
+
+		// This line belongs to the filter body — read it verbatim.
+		lineContent := ""
+		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+			lineContent += string(l.advance())
+		}
+		l.addToken(TokenText, lineContent)
+		l.skipToNewline()
+	}
+
 	return nil
 }
 

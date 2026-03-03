@@ -993,19 +993,47 @@ func (p *Parser) parseExtends() (*ExtendsNode, error) {
 }
 
 // parseInclude parses include directives.
+//
+// Supported forms:
+//
+//	include path/to/file.pug       — normal Pug include
+//	include path/to/file.md        — raw file include
+//	include :filtername path       — raw file include with filter applied
+//
+// The lexer emits a single TokenInclude whose Value is the entire rest of the
+// line after the "include" keyword.  When that value starts with ":" we split
+// it into a filter name and a path here in the parser.
 func (p *Parser) parseInclude() (*IncludeNode, error) {
-	path := p.cur.Value
+	raw := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
 	p.advance()
 
 	include := &IncludeNode{
-		Path: path,
 		Line: line,
 		Col:  col,
 	}
 
-	// Check for filter
+	// "include :filtername path" — the value starts with ":"
+	if strings.HasPrefix(raw, ":") {
+		// Strip the leading colon and split on the first whitespace.
+		rest := raw[1:]
+		if idx := strings.IndexAny(rest, " \t"); idx >= 0 {
+			include.Filter = strings.TrimSpace(rest[:idx])
+			include.Path = strings.TrimSpace(rest[idx+1:])
+		} else {
+			// No space — the whole thing is the filter name with no path.
+			// Treat it as a filter name with an empty path; the runtime will
+			// error with a helpful message.
+			include.Filter = rest
+			include.Path = ""
+		}
+	} else {
+		include.Path = raw
+	}
+
+	// Legacy: if the NEXT token is TokenFilter, it was emitted by an older
+	// lexer variant — consume it for backwards compatibility.
 	if p.cur.Type == TokenFilter {
 		include.Filter = p.cur.Value
 		p.advance()
@@ -1016,39 +1044,66 @@ func (p *Parser) parseInclude() (*IncludeNode, error) {
 }
 
 // parseFilter parses filter blocks.
+//
+// Supported forms:
+//
+//	:filtername               — block filter; indented body lines follow
+//	:filtername inline text   — inline filter; content on the same line
+//	:outer:inner              — chained subfilter; inner applied first
+//
+// The lexer now eagerly collects filter body lines as consecutive TokenText
+// tokens (one per body line) so the parser never sees Pug tag/keyword tokens
+// inside the filter body.  For inline filters the lexer emits a single
+// TokenText with the same-line content.
+//
+// Token stream produced by the lexer:
+//
+//	TokenFilter{"name"}        — primary filter name
+//	TokenFilterColon{"sub"}    — optional chained subfilter (may repeat)
+//	TokenText{"line..."}...    — body lines (one token per line) OR single
+//	                             inline-content token
 func (p *Parser) parseFilter() (*FilterNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
+	// The filter token's depth is the reference depth.  Body TokenText tokens
+	// emitted by the lexer carry a greater depth, but since the lexer now
+	// handles ALL body collection internally we only need to gather the
+	// consecutive TokenText tokens that immediately follow the filter header.
+	filterDepth := p.cur.Depth
 	p.advance()
 
 	filter := &FilterNode{
-		Name:    name,
-		Args:    "",
-		Content: "",
-		Line:    line,
-		Col:     col,
+		Name: name,
+		Line: line,
+		Col:  col,
 	}
 
-	// Check for subfilter
-	if p.cur.Type == TokenFilterColon {
-		filter.Subfilter = p.cur.Value
+	// Collect any chained subfilter names (:outer:inner → Subfilter chain).
+	// Accumulated as a colon-separated string so the runtime can split and
+	// apply them in order (innermost first).
+	var subfilters []string
+	for p.cur.Type == TokenFilterColon {
+		subfilters = append(subfilters, p.cur.Value)
 		p.advance()
 	}
+	if len(subfilters) > 0 {
+		filter.Subfilter = strings.Join(subfilters, ":")
+	}
 
-	currentDepth := p.cur.Depth
+	// Collect consecutive TokenText tokens emitted by the lexer for this
+	// filter (both inline single-token form and multi-line block form).
+	// We only consume tokens whose depth is greater than the filter header's
+	// depth, or that sit at the same depth immediately after the header (the
+	// inline case where the lexer emits TokenText at the same depth level).
+	var lines []string
+	for p.cur.Type == TokenText && p.cur.Depth >= filterDepth {
+		lines = append(lines, p.cur.Value)
+		p.advance()
+	}
+	filter.Content = strings.Join(lines, "\n")
+
 	p.skipNewlines()
-
-	// Collect filter body text
-	content := ""
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-		if p.cur.Type == TokenText || p.cur.Type == TokenPipe {
-			content += p.cur.Value + "\n"
-		}
-		p.advance()
-	}
-	filter.Content = strings.TrimSpace(content)
-
 	return filter, nil
 }
 

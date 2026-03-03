@@ -1333,3 +1333,173 @@ func TestExtendsCycleDetection(t *testing.T) {
 		t.Errorf("expected 'cycle' in error, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Filters
+// ---------------------------------------------------------------------------
+
+// uppercaseFilter is a simple test filter that uppercases its input.
+func uppercaseFilter(s string) (string, error) {
+	return strings.ToUpper(s), nil
+}
+
+// wrapFilter wraps content in square brackets.
+func wrapFilter(s string) (string, error) {
+	return "[" + s + "]", nil
+}
+
+// exclaim appends "!" to each line.
+func exclaimFilter(s string) (string, error) {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = l + "!"
+		}
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func filterOpts() *Options {
+	return &Options{
+		Filters: map[string]func(string) (string, error){
+			"uppercase": uppercaseFilter,
+			"wrap":      wrapFilter,
+			"exclaim":   exclaimFilter,
+		},
+	}
+}
+
+// TestFilterBlockBasic verifies that a block filter applies the registered
+// filter function to its indented body content.
+func TestFilterBlockBasic(t *testing.T) {
+	src := ":uppercase\n  hello world"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertEqual(t, out, "HELLO WORLD")
+}
+
+// TestFilterBlockMultiLine verifies that a block filter receives all indented
+// lines joined by newlines.
+func TestFilterBlockMultiLine(t *testing.T) {
+	src := ":exclaim\n  line one\n  line two\n  line three"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "line one!")
+	assertContains(t, out, "line two!")
+	assertContains(t, out, "line three!")
+}
+
+// TestFilterInline verifies that a filter with same-line inline content works.
+func TestFilterInline(t *testing.T) {
+	src := ":uppercase hello inline"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertEqual(t, out, "HELLO INLINE")
+}
+
+// TestFilterSubchain verifies that chained filters (:outer:inner) apply inner
+// first, then outer.
+func TestFilterSubchain(t *testing.T) {
+	// :wrap:uppercase content → uppercase("content") → wrap("CONTENT") → "[CONTENT]"
+	src := ":wrap:uppercase\n  content"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertEqual(t, out, "[CONTENT]")
+}
+
+// TestFilterSubchainInline verifies that inline chained filters work.
+func TestFilterSubchainInline(t *testing.T) {
+	src := ":wrap:uppercase hello"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertEqual(t, out, "[HELLO]")
+}
+
+// TestFilterInsideTag verifies that a filter nested inside a tag renders its
+// output as the tag's content.
+func TestFilterInsideTag(t *testing.T) {
+	src := "div\n  :uppercase\n    inside a div"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<div>")
+	assertContains(t, out, "INSIDE A DIV")
+	assertContains(t, out, "</div>")
+}
+
+// TestFilterUnregistered verifies that using an unregistered filter returns a
+// descriptive error rather than silently doing nothing.
+func TestFilterUnregistered(t *testing.T) {
+	src := ":nonexistent\n  body"
+	_, err := Render(src, nil, &Options{})
+	if err == nil {
+		t.Error("expected error for unregistered filter, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("expected filter name in error message, got: %v", err)
+	}
+}
+
+// TestFilterNilOptions verifies that using a filter with nil Options returns
+// a descriptive error.
+func TestFilterNilOptions(t *testing.T) {
+	src := ":uppercase\n  text"
+	_, err := Render(src, nil, nil)
+	if err == nil {
+		t.Error("expected error when no filters registered, got nil")
+	}
+}
+
+// TestFilterIncludeRawWithFilter verifies that "include :filter path" reads
+// the raw file and applies the named filter to its content.
+func TestFilterIncludeRawWithFilter(t *testing.T) {
+	src := "include :uppercase testdata/article.txt"
+	opts := &Options{
+		Basedir: ".",
+		Filters: map[string]func(string) (string, error){
+			"uppercase": uppercaseFilter,
+		},
+	}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "HELLO FROM A TEXT FILE.")
+	assertContains(t, out, "THIS IS LINE TWO.")
+}
+
+// TestFilterIncludeUnregistered verifies that "include :filter path" with an
+// unregistered filter returns a descriptive error.
+func TestFilterIncludeUnregistered(t *testing.T) {
+	src := "include :nofilter testdata/article.txt"
+	opts := &Options{Basedir: "."}
+	_, err := Render(src, nil, opts)
+	if err == nil {
+		t.Error("expected error for unregistered include filter, got nil")
+	}
+	if !strings.Contains(err.Error(), "nofilter") {
+		t.Errorf("expected filter name in error message, got: %v", err)
+	}
+}
+
+// TestFilterViaGlobals verifies that filters work when accessed via Options
+// even when the template data is nil.
+func TestFilterViaGlobals(t *testing.T) {
+	src := ":wrap\n  global test"
+	out, err := Render(src, nil, filterOpts())
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertEqual(t, out, "[global test]")
+}

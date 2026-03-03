@@ -965,11 +965,26 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 		return nil
 	}
 
-	// Non-Pug file — read raw and write directly.
+	// Non-Pug file — read raw, optionally apply a filter, then write.
 	raw, err := os.ReadFile(abs)
 	if err != nil {
 		return fmt.Errorf("include: cannot read %q: %w", abs, err)
 	}
+
+	if inc.Filter != "" {
+		// Apply the named filter to the raw file content.
+		fn, ok := r.lookupFilter(inc.Filter)
+		if !ok {
+			return fmt.Errorf("include: filter %q is not registered; register it via Options.Filters", inc.Filter)
+		}
+		result, err := fn(string(raw))
+		if err != nil {
+			return fmt.Errorf("include: filter %q error on %q: %w", inc.Filter, abs, err)
+		}
+		r.buf.WriteString(result)
+		return nil
+	}
+
 	r.buf.Write(raw)
 	return nil
 }
@@ -1070,12 +1085,64 @@ func (r *Runtime) renderMixinBlockSlot() error {
 	return nil
 }
 
-// renderFilter renders filter blocks (placeholder for now).
+// renderFilter applies a named filter to its content and writes the result.
+//
+// Filter lookup order:
+//  1. r.opts.Filters (user-registered filters supplied via Options)
+//
+// Subfilter chaining: filter.Subfilter is a colon-separated list of filter
+// names (e.g. "inner" for :outer:inner). The innermost filter is applied
+// first, then each outer filter in turn, matching Pug semantics.
+//
+//	:outer:inner
+//	  content
+//
+// is equivalent to: outer(inner(content))
 func (r *Runtime) renderFilter(filter *FilterNode) error {
-	// Filters are typically applied at compile time.
-	// For now, just output the content as-is.
-	r.buf.WriteString(filter.Content)
+	content := filter.Content
+
+	// Build the ordered list of filters to apply: innermost first.
+	// filter.Name is the outermost; filter.Subfilter is a colon-separated
+	// chain of inner filters (may be empty).
+	var chain []string
+	if filter.Subfilter != "" {
+		// Subfilter string is already colon-separated innermost→outermost order
+		// as stored by the parser; split and reverse so we apply inner-first.
+		parts := strings.Split(filter.Subfilter, ":")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if parts[i] != "" {
+				chain = append(chain, parts[i])
+			}
+		}
+	}
+	// Outermost filter is always last to be applied.
+	chain = append(chain, filter.Name)
+
+	// Apply each filter in the chain.
+	for _, name := range chain {
+		fn, ok := r.lookupFilter(name)
+		if !ok {
+			return fmt.Errorf("filter %q is not registered; register it via Options.Filters", name)
+		}
+		result, err := fn(content)
+		if err != nil {
+			return fmt.Errorf("filter %q error: %w", name, err)
+		}
+		content = result
+	}
+
+	r.buf.WriteString(content)
 	return nil
+}
+
+// lookupFilter finds a filter function by name. It checks Options.Filters.
+func (r *Runtime) lookupFilter(name string) (func(string) (string, error), bool) {
+	if r.opts != nil && r.opts.Filters != nil {
+		if fn, ok := r.opts.Filters[name]; ok {
+			return fn, true
+		}
+	}
+	return nil, false
 }
 
 // evaluateExpr evaluates a simple expression against the current scope.
