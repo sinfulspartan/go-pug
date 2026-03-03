@@ -575,30 +575,37 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 					// The parser may also have produced a merged string like
 					// `"bang" classes` (shorthand + variable). We need to split
 					// on spaces, evaluate each token, and rejoin.
-					raw := r.evaluateExprRaw(rawValExpr)
-					if raw != nil {
-						rv := reflect.ValueOf(raw)
-						switch rv.Kind() {
-						case reflect.Slice, reflect.Array:
-							// []string or []interface{} → join with spaces
-							parts := make([]string, rv.Len())
-							for i := 0; i < rv.Len(); i++ {
-								parts[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
-							}
-							evaluated = strings.Join(parts, " ")
-						case reflect.Map:
-							// map[string]interface{}{active:true} → truthy keys
-							var activeClasses []string
-							for _, mk := range rv.MapKeys() {
-								mv := rv.MapIndex(mk).Interface()
-								mvStr := fmt.Sprintf("%v", mv)
-								if r.isTruthy(mvStr) {
-									activeClasses = append(activeClasses, fmt.Sprintf("%v", mk.Interface()))
+					//
+					// However, if the expression contains top-level operators
+					// (ternary ?, logical ||/&&, comparisons, concatenation +)
+					// evaluate it as a whole first — word-splitting would break it.
+					if isOperatorExpr(rawValExpr) {
+						evaluated, _ = r.evaluateExpr(rawValExpr)
+					} else {
+						raw := r.evaluateExprRaw(rawValExpr)
+						if raw != nil {
+							rv := reflect.ValueOf(raw)
+							switch rv.Kind() {
+							case reflect.Slice, reflect.Array:
+								// []string or []interface{} → join with spaces
+								parts := make([]string, rv.Len())
+								for i := 0; i < rv.Len(); i++ {
+									parts[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
 								}
-							}
-							sort.Strings(activeClasses)
-							evaluated = strings.Join(activeClasses, " ")
-						default:
+								evaluated = strings.Join(parts, " ")
+							case reflect.Map:
+								// map[string]interface{}{active:true} → truthy keys
+								var activeClasses []string
+								for _, mk := range rv.MapKeys() {
+									mv := rv.MapIndex(mk).Interface()
+									mvStr := fmt.Sprintf("%v", mv)
+									if r.isTruthy(mvStr) {
+										activeClasses = append(activeClasses, fmt.Sprintf("%v", mk.Interface()))
+									}
+								}
+								sort.Strings(activeClasses)
+								evaluated = strings.Join(activeClasses, " ")
+							default:
 								// String or other scalar. The parser may have merged a
 								// shorthand literal with a variable name by producing a
 								// quoted string like `"bang classes"` where "bang" is a
@@ -676,6 +683,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 								evaluated, _ = r.evaluateExpr(rawValExpr)
 							}
 						}
+					}
 				}
 			} else {
 				var err error
@@ -759,9 +767,98 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	return nil
 }
 
+// htmlEscapeText escapes only the characters that must be escaped in HTML
+// text content: <, >, and bare & (i.e. & not already part of a valid HTML
+// entity reference like &copy; or &#169;).  Single and double quotes are
+// left as-is because they are safe in text nodes.
+func htmlEscapeText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch c {
+		case '<':
+			b.WriteString("&lt;")
+			i++
+		case '>':
+			b.WriteString("&gt;")
+			i++
+		case '&':
+			// Pass through if this looks like a valid entity reference:
+			//   named:   &word;   e.g. &copy; &amp; &nbsp;
+			//   numeric: &#NNN;  or &#xHH;
+			// Otherwise escape to &amp;.
+			if end := entityEnd(s, i); end > i {
+				b.WriteString(s[i:end])
+				i = end
+			} else {
+				b.WriteString("&amp;")
+				i++
+			}
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// entityEnd returns the index just past the closing ';' if s[start:] begins
+// a valid HTML entity reference (&name; or &#digits; or &#xhex;).
+// Returns start if no valid entity is found.
+func entityEnd(s string, start int) int {
+	if start >= len(s) || s[start] != '&' {
+		return start
+	}
+	i := start + 1
+	if i >= len(s) {
+		return start
+	}
+	if s[i] == '#' {
+		// Numeric entity: &#[x]digits;
+		i++
+		if i < len(s) && (s[i] == 'x' || s[i] == 'X') {
+			i++ // hex
+			start2 := i
+			for i < len(s) && isHexDigit(s[i]) {
+				i++
+			}
+			if i > start2 && i < len(s) && s[i] == ';' {
+				return i + 1
+			}
+		} else {
+			start2 := i
+			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+				i++
+			}
+			if i > start2 && i < len(s) && s[i] == ';' {
+				return i + 1
+			}
+		}
+		return start
+	}
+	// Named entity: &[a-zA-Z][a-zA-Z0-9]*;
+	if !isLetter(s[i]) {
+		return start
+	}
+	for i < len(s) && isAlphaNum(s[i]) {
+		i++
+	}
+	if i < len(s) && s[i] == ';' {
+		return i + 1
+	}
+	return start
+}
+
+func isLetter(c byte) bool  { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+func isAlphaNum(c byte) bool { return isLetter(c) || (c >= '0' && c <= '9') }
+
 // renderText renders plain text (escaped by default).
 func (r *Runtime) renderText(text *TextNode) error {
-	r.buf.WriteString(html.EscapeString(text.Content))
+	r.buf.WriteString(htmlEscapeText(text.Content))
 	return nil
 }
 
@@ -1163,7 +1260,7 @@ func (r *Runtime) renderDoctype(dt *DoctypeNode) error {
 // renderPipe renders piped text.
 func (r *Runtime) renderPipe(pipe *PipeNode) error {
 	r.prettyNewline()
-	r.buf.WriteString(html.EscapeString(pipe.Content))
+	r.buf.WriteString(htmlEscapeText(pipe.Content))
 	return nil
 }
 
@@ -1182,14 +1279,14 @@ func (r *Runtime) renderBlockText(block *BlockTextNode) error {
 	for _, tok := range lx.tokens {
 		switch tok.Type {
 		case TokenText:
-			r.buf.WriteString(html.EscapeString(tok.Value))
+			r.buf.WriteString(htmlEscapeText(tok.Value))
 
 		case TokenInterpolation:
 			val, err := r.evaluateExpr(tok.Value)
 			if err != nil {
 				val = tok.Value
 			}
-			r.buf.WriteString(html.EscapeString(val))
+			r.buf.WriteString(htmlEscapeText(val))
 
 		case TokenInterpolationUnescape:
 			val, err := r.evaluateExpr(tok.Value)
@@ -1234,10 +1331,10 @@ func (r *Runtime) renderLiteralHTML(lit *LiteralHTMLNode) error {
 
 // renderBlockExpansion renders block expansion (tag: child).
 func (r *Runtime) renderBlockExpansion(exp *BlockExpansionNode) error {
-	if err := r.renderTag(exp.Parent); err != nil {
-		return err
-	}
-	return r.renderNode(exp.Child)
+	// Attach the child as a child of the parent tag so it is rendered nested
+	// inside the parent's opening and closing tags, not as a sibling.
+	exp.Parent.Children = append(exp.Parent.Children, exp.Child)
+	return r.renderTag(exp.Parent)
 }
 
 // renderInclude resolves and renders an include directive.
@@ -1539,7 +1636,24 @@ func (r *Runtime) renderFilter(filter *FilterNode) error {
 		content = result
 	}
 
-	r.buf.WriteString(content)
+	// Filter output is treated as trusted/raw — the filter function is
+	// responsible for HTML-escaping its own output (just like Pug.js).
+	// If the output contains newlines, strip a single trailing newline (a
+	// common artifact of text-processing filters) and replace the remaining
+	// interior newlines with <br> so browsers preserve the visual line breaks
+	// without forcing monospace <pre> formatting.
+	content = strings.TrimRight(content, "\n")
+	if strings.Contains(content, "\n") {
+		lines := strings.Split(content, "\n")
+		for i, line := range lines {
+			if i > 0 {
+				r.buf.WriteString("<br>")
+			}
+			r.buf.WriteString(line)
+		}
+	} else {
+		r.buf.WriteString(content)
+	}
 	return nil
 }
 
@@ -1715,10 +1829,12 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		q := rune(expr[0])
 		if q == '"' || q == '\'' {
 			// Walk forward looking for the matching closing quote.
+			// Use range to iterate over runes (not bytes) so that multi-byte
+			// UTF-8 characters (e.g. …, emoji) are handled correctly.
 			escaped := false
 			closeIdx := -1
-			for i := 1; i < len(expr); i++ {
-				ch := rune(expr[i])
+			for byteIdx, ch := range expr[1:] {
+				realIdx := byteIdx + 1 // offset back into expr
 				if escaped {
 					escaped = false
 					continue
@@ -1728,7 +1844,7 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 					continue
 				}
 				if ch == q {
-					closeIdx = i
+					closeIdx = realIdx
 					break
 				}
 			}
@@ -1786,6 +1902,37 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return "", nil
 	}
 
+	// Arithmetic operators — evaluated in ascending precedence order so that
+	// lower-precedence operators are split first (correct left-associativity).
+	//
+	// Precedence (low → high):
+	//   +  -   (additive)
+	//   *  /  %  (multiplicative)
+	//
+	// We find the RIGHTMOST top-level occurrence of each additive operator so
+	// that e.g. "1 - 2 - 3" splits as "(1-2)-3" not "1-(2-3)".
+	// For multiplicative we do the same after additive has had a chance to split.
+
+	// Subtraction: a - b
+	// Use rightmost top-level '-' that is not a unary minus (i.e. has a
+	// non-operator character to its left).
+	if idx := findSubtraction(expr); idx >= 0 {
+		left, err := r.evaluateExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return "", err
+		}
+		right, err := r.evaluateExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return "", err
+		}
+		lf, lok := toFloat(left)
+		rf, rok := toFloat(right)
+		if lok && rok {
+			return strconv.FormatFloat(lf-rf, 'f', -1, 64), nil
+		}
+		return "", nil
+	}
+
 	// Addition / string concatenation: a + b
 	// Use findBinaryOp so we don't split inside quoted strings or parens.
 	if idx := findBinaryOp(expr, "+"); idx >= 0 {
@@ -1805,6 +1952,66 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 			return strconv.FormatFloat(result, 'f', -1, 64), nil
 		}
 		return left + right, nil
+	}
+
+	// Multiplication: a * b
+	if idx := findRightmostOp(expr, '*'); idx >= 0 {
+		left, err := r.evaluateExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return "", err
+		}
+		right, err := r.evaluateExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return "", err
+		}
+		lf, lok := toFloat(left)
+		rf, rok := toFloat(right)
+		if lok && rok {
+			return strconv.FormatFloat(lf*rf, 'f', -1, 64), nil
+		}
+		return "", nil
+	}
+
+	// Division: a / b
+	if idx := findRightmostOp(expr, '/'); idx >= 0 {
+		left, err := r.evaluateExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return "", err
+		}
+		right, err := r.evaluateExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return "", err
+		}
+		lf, lok := toFloat(left)
+		rf, rok := toFloat(right)
+		if lok && rok {
+			if rf == 0 {
+				return "", fmt.Errorf("division by zero")
+			}
+			return strconv.FormatFloat(lf/rf, 'f', -1, 64), nil
+		}
+		return "", nil
+	}
+
+	// Modulo: a % b
+	if idx := findRightmostOp(expr, '%'); idx >= 0 {
+		left, err := r.evaluateExpr(strings.TrimSpace(expr[:idx]))
+		if err != nil {
+			return "", err
+		}
+		right, err := r.evaluateExpr(strings.TrimSpace(expr[idx+1:]))
+		if err != nil {
+			return "", err
+		}
+		lf, lok := toFloat(left)
+		rf, rok := toFloat(right)
+		if lok && rok {
+			if rf == 0 {
+				return "", fmt.Errorf("modulo by zero")
+			}
+			return strconv.FormatFloat(float64(int64(lf)%int64(rf)), 'f', -1, 64), nil
+		}
+		return "", nil
 	}
 
 	// Array/map index access: expr[key]
@@ -1893,9 +2100,10 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 			return objVal, nil
 
 		case "split":
-			// split(sep) — when used in buffered code output, return a
-			// bracket-free joined string; when used as an each collection,
-			// evaluateExprRaw returns a real []interface{} instead.
+			// split(sep) — when used in buffered code output, split the string
+			// and rejoin with a single space so the result is a readable string.
+			// When the result is needed as a real slice (e.g. for each or .join),
+			// evaluateExprRaw returns the actual []interface{} instead.
 			sep := ""
 			if argsStr != "" {
 				sep, _ = r.evaluateExpr(argsStr)
@@ -1906,10 +2114,14 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 				}
 			}
 			parts := strings.Split(objVal, sep)
-			return strings.Join(parts, sep), nil
+			return strings.Join(parts, " "), nil
 
 		case "join":
-			// join(sep) — joins a slice-like string representation.
+			// join(sep) — joins a slice into a string using the given separator.
+			// The receiver (objExpr) may be a simple variable OR a chained
+			// expression such as words.split(" "), so we use evaluateExprRaw
+			// to obtain the actual []interface{} slice rather than a lookup by
+			// name alone.
 			sep := ""
 			if argsStr != "" {
 				sep, _ = r.evaluateExpr(argsStr)
@@ -1919,8 +2131,9 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 					sep = sep[1 : len(sep)-1]
 				}
 			}
-			// If the object is a real slice in the scope, join it.
-			if rawObj, ok := r.lookup(objExpr); ok {
+			// Try evaluateExprRaw first — handles both plain variables and
+			// chained expressions like words.split(" ").
+			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
 				rv := reflect.ValueOf(rawObj)
 				if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
 					parts := make([]string, rv.Len())
@@ -2078,6 +2291,160 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 
 	// Unrecognised expression — return empty rather than error for now
 	return "", nil
+}
+
+// isOperatorExpr reports whether expr contains a top-level operator that
+// means it must be evaluated as a whole expression rather than split on
+// spaces.  We check for: ternary (?), logical (||, &&), comparison
+// (===, !==, ==, !=, <=, >=, <, >), and concatenation (+).
+func isOperatorExpr(expr string) bool {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		switch ch {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '?', '+':
+			if depth == 0 {
+				return true
+			}
+		case '|':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '|' {
+				return true
+			}
+		case '&':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '&' {
+				return true
+			}
+		case '=':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '=' {
+				return true
+			}
+		case '!':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '=' {
+				return true
+			}
+		case '<', '>':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findSubtraction finds the rightmost top-level '-' that is a binary subtraction
+// operator (not a unary minus).  A '-' is considered unary when it appears at
+// the start of the expression or is immediately preceded by another operator
+// character (+, -, *, /, %, (, [, ,).
+func findSubtraction(expr string) int {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	result := -1
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '(' || ch == '[' || ch == '{' {
+			depth++
+			continue
+		}
+		if ch == ')' || ch == ']' || ch == '}' {
+			depth--
+			continue
+		}
+		if depth == 0 && ch == '-' {
+			// Determine whether this is a unary minus by looking at the previous
+			// non-space character.
+			prev := byte(0)
+			for j := i - 1; j >= 0; j-- {
+				if expr[j] != ' ' && expr[j] != '\t' {
+					prev = expr[j]
+					break
+				}
+			}
+			isBinary := prev != 0 &&
+				prev != '+' && prev != '-' && prev != '*' &&
+				prev != '/' && prev != '%' && prev != '(' &&
+				prev != '[' && prev != ','
+			if isBinary {
+				result = i // keep going to find rightmost
+			}
+		}
+	}
+	return result
+}
+
+// findRightmostOp finds the rightmost top-level occurrence of a single-byte
+// operator character (*, /, %) that is not inside quotes or brackets.
+func findRightmostOp(expr string, op byte) int {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	result := -1
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '(' || ch == '[' || ch == '{' {
+			depth++
+			continue
+		}
+		if ch == ')' || ch == ']' || ch == '}' {
+			depth--
+			continue
+		}
+		if depth == 0 && ch == op {
+			result = i // keep going to find rightmost
+		}
+	}
+	return result
 }
 
 // findTernary locates the top-level ? operator for ternary expressions.
