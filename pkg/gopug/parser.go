@@ -225,7 +225,11 @@ func (p *Parser) parseTag() (Node, error) {
 		} else if len(nodes) > 1 {
 			tag.Children = append(tag.Children, &TextRunNode{Nodes: nodes, Line: line, Col: col})
 		}
-		return tag, nil
+		// Only fall through to the child-collection loop if there are tokens
+		// at a deeper depth — otherwise return now to avoid consuming siblings.
+		if p.cur.Depth <= currentDepth {
+			return tag, nil
+		}
 	}
 
 	// Inline buffered code: p= expr
@@ -454,6 +458,12 @@ func (p *Parser) collectTextRun(depth int) []Node {
 		case TokenInterpolationUnescape:
 			nodes = append(nodes, &InterpolationNode{Expression: p.cur.Value, Unescaped: true, Line: p.cur.Line, Col: p.cur.Col})
 			p.advance()
+		case TokenTagInterpolationStart:
+			tagInterp, err := p.parseTagInterpolation()
+			if err != nil {
+				goto done
+			}
+			nodes = append(nodes, tagInterp)
 		default:
 			goto done
 		}
@@ -487,11 +497,17 @@ func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 		return nil, fmt.Errorf("tag interpolation parse error: %w", err)
 	}
 
-	// Expect exactly one TagNode at the top level.
+	// Expect exactly one TagNode at the top level, followed by optional
+	// sibling text/tag-interpolation nodes that belong inside it.
+	// e.g. "span.badge #[strong ★] Featured" parses as:
+	//   TagNode{span.badge}, TagInterpolationNode{strong ★}, TextNode{" Featured"}
+	// The siblings after the tag must be promoted to children of the tag.
 	var tag *TagNode
-	for _, node := range doc.Children {
+	tagIdx := -1
+	for i, node := range doc.Children {
 		if t, ok := node.(*TagNode); ok {
 			tag = t
+			tagIdx = i
 			break
 		}
 	}
@@ -502,6 +518,9 @@ func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 			Attributes: make(map[string]*AttributeValue),
 			Children:   doc.Children,
 		}
+	} else if tagIdx >= 0 && tagIdx < len(doc.Children)-1 {
+		// Attach any nodes that follow the tag as its children.
+		tag.Children = append(tag.Children, doc.Children[tagIdx+1:]...)
 	}
 
 	return &TagInterpolationNode{Tag: tag, Line: line, Col: col}, nil
@@ -1269,14 +1288,19 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 	// Collect any chained subfilter names (:outer:inner → Subfilter chain).
 	// Accumulated as a colon-separated string so the runtime can split and
 	// apply them in order (innermost first).
+	// Subfilters may appear before OR after the options block, matching the
+	// lexer which also scans both positions:
+	//   :outer:inner(opts)     — subfilters before options
+	//   :outer(opts):inner     — subfilters after options
 	var subfilters []string
-	for p.cur.Type == TokenFilterColon {
-		subfilters = append(subfilters, p.cur.Value)
-		p.advance()
+	collectSubfilters := func() {
+		for p.cur.Type == TokenFilterColon {
+			subfilters = append(subfilters, p.cur.Value)
+			p.advance()
+		}
 	}
-	if len(subfilters) > 0 {
-		filter.Subfilter = strings.Join(subfilters, ":")
-	}
+
+	collectSubfilters() // subfilters before the options block
 
 	// Parse optional filter options from a TokenFilterOptions token.
 	// The token value contains the raw content inside the parentheses, e.g.
@@ -1285,6 +1309,12 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 	if p.cur.Type == TokenFilterOptions {
 		filter.Options = parseFilterOptions(p.cur.Value)
 		p.advance()
+	}
+
+	collectSubfilters() // subfilters after the options block (e.g. :outer(opts):inner)
+
+	if len(subfilters) > 0 {
+		filter.Subfilter = strings.Join(subfilters, ":")
 	}
 
 	// Collect consecutive TokenText tokens emitted by the lexer for this
