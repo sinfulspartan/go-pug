@@ -792,65 +792,11 @@ GitHub Actions runs on every push to `main` and on pull requests:
 
 ## Known Limitations
 
-### Unquoted attribute values containing spaces
-
-When multiple attributes are separated by spaces (no comma) and the value is unquoted, the lexer reads everything after `=` or `!=` up to the closing `)` as a single value token. The second attribute is never seen.
-
-```pug
-//- ✗ Broken — href=href is swallowed into the value of class
-a(class!=myClass href=myHref) Link
-
-//- ✓ Fix 1 — separate with a comma
-a(class!=myClass, href=myHref) Link
-
-//- ✓ Fix 2 — quote the first value
-a(class!="myClass" href=myHref) Link
-
-//- ✓ Fix 3 — use &attributes
-a&attributes({class: myClass, href: myHref}) Link
-```
-
-### Ternary in `each` collection
-
-The `each` collection expression only supports a plain variable name or an inline array literal. A ternary expression in that position is not evaluated correctly.
-
-```pug
-//- ✗ Broken — ternary in collection is not supported
-each v in useAlt ? altList : mainList
-  li= v
-
-//- ✓ Fix — resolve the collection in an unbuffered code line first
-- var list = useAlt ? altList : mainList
-each v in list
-  li= v
-
-//- ✓ Also fine — inline array literal works
-each v in ["apple", "banana", "cherry"]
-  li= v
-```
-
-### Filter output escaping
-
-Filter functions receive and return raw strings. The runtime writes the return value directly to the HTML output without escaping. If a filter returns user-controlled plain text, it must escape it before returning.
-
-```go
-// ✗ Risky — plain text containing < or & will be written unescaped
-opts.Filters["note"] = func(s string, _ map[string]string) (string, error) {
-    return s, nil
-}
-
-// ✓ Safe — escape plain text before returning
-import "html"
-
-opts.Filters["note"] = func(s string, _ map[string]string) (string, error) {
-    return html.EscapeString(s), nil
-}
-
-// ✓ Also fine — returning real HTML markup is intentional and needs no escaping
-opts.Filters["bold"] = func(s string, _ map[string]string) (string, error) {
-    return "<strong>" + html.EscapeString(s) + "</strong>", nil
-}
-```
+| Area                                        | Detail                                                                                                                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unquoted attribute values containing spaces | e.g. `class!=attributes.class href=href` is mis-lexed as a single token. Workaround: quote the value or use `&attributes`.                                              |
+| Ternary in `each` collection                | `each v in cond ? list : [fallback]` is not supported. Only a plain variable or an inline array literal `[a, b, c]` works as the collection expression.                 |
+| Filter output escaping                      | Filter output is always written raw. Filters that return plain text must escape it themselves (e.g. with `html.EscapeString`) if the text may contain `<`, `>`, or `&`. |
 
 ---
 
