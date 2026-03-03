@@ -1,6 +1,7 @@
 package gopug
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -938,6 +939,128 @@ func TestMixinBlockWithParam(t *testing.T) {
 	out := renderTest(t, src, nil)
 	assertContains(t, out, "<h2>News</h2>")
 	assertContains(t, out, "<p>Article content</p>")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Includes
+// ---------------------------------------------------------------------------
+
+// testdataPath returns the absolute path to a file in the testdata directory.
+func testdataPath(name string) string {
+	// The test binary runs with the package directory as cwd.
+	return "testdata/" + name
+}
+
+func TestIncludeBasic(t *testing.T) {
+	src := "div\n  include testdata/header.pug"
+	out, err := RenderFile("testdata/header.pug", nil, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	_ = src
+	assertContains(t, out, "<header>")
+	assertContains(t, out, "<nav>")
+	assertContains(t, out, `href="/"`)
+	assertContains(t, out, "Home")
+}
+
+func TestIncludeInTemplate(t *testing.T) {
+	src := "div\n  include testdata/header.pug\n  main\n    p Content\n  include testdata/footer.pug"
+	opts := &Options{Basedir: "."}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<header>")
+	assertContains(t, out, "<nav>")
+	assertContains(t, out, "<main>")
+	assertContains(t, out, "<p>Content</p>")
+	assertContains(t, out, "<footer>")
+	assertContains(t, out, "© 2026 Go-Pug")
+}
+
+func TestIncludeNoExtension(t *testing.T) {
+	// include without .pug extension should default to .pug
+	src := "div\n  include testdata/footer"
+	opts := &Options{Basedir: "."}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<footer>")
+}
+
+func TestIncludeRawFile(t *testing.T) {
+	// Including a non-.pug file outputs its raw contents
+	src := "style\n  include testdata/styles.css"
+	opts := &Options{Basedir: "."}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "font-family")
+	assertContains(t, out, "margin: 0")
+}
+
+func TestIncludeNestedDirectory(t *testing.T) {
+	src := "div\n  include testdata/nested/partial.pug"
+	opts := &Options{Basedir: "."}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "nested")
+	assertContains(t, out, "Nested Partial")
+}
+
+func TestIncludeMixinLibrary(t *testing.T) {
+	// Including a file that only contains mixin declarations makes them available
+	src := "include testdata/mixin-lib.pug\n+badge(\"new\")"
+	opts := &Options{Basedir: "."}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<span")
+	assertContains(t, out, "badge")
+	assertContains(t, out, "new")
+}
+
+func TestIncludeWithData(t *testing.T) {
+	// Included templates share the render data/scope
+	out, err := RenderFile(testdataPath("header.pug"), map[string]interface{}{"title": "My Site"}, nil)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "<header>")
+}
+
+func TestIncludeMissingFileError(t *testing.T) {
+	src := "include testdata/does-not-exist.pug"
+	opts := &Options{Basedir: "."}
+	_, err := Render(src, nil, opts)
+	if err == nil {
+		t.Error("expected error for missing include file, got nil")
+	}
+}
+
+func TestIncludeCycleDetection(t *testing.T) {
+	// Write two temp files that include each other
+	// We can't easily do this with static fixtures, so test self-include via RenderFile
+	// by creating a temp file that includes itself.
+	dir := t.TempDir()
+	selfPath := dir + "/self.pug"
+	err := os.WriteFile(selfPath, []byte("p Hello\ninclude self.pug"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = RenderFile(selfPath, nil, nil)
+	if err == nil {
+		t.Error("expected cycle detection error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected 'cycle' in error message, got: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

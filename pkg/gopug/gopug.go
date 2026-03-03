@@ -108,7 +108,7 @@ func (t *Template) Render(data map[string]interface{}) (string, error) {
 	}
 
 	// Create runtime and render
-	rt := NewRuntime(t.ast, data)
+	rt := NewRuntimeWithOptions(t.ast, data, t.opts)
 	return rt.Render()
 }
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,30 +14,43 @@ import (
 
 // Runtime renders an AST to HTML.
 type Runtime struct {
-	ast     *DocumentNode
-	data    map[string]interface{}
-	globals map[string]interface{}
-	out     io.Writer
-	buf     *bytes.Buffer
-	scope   []map[string]interface{} // stack of scopes for loops, conditionals, etc.
-	doctype string
-	mixins  map[string]*MixinDeclNode // collected mixin declarations
-	// mixinBlock holds the block nodes passed by the current mixin call,
-	// so that "block" nodes inside a mixin body can render them.
-	mixinBlock []Node
+	ast          *DocumentNode
+	data         map[string]interface{}
+	globals      map[string]interface{}
+	out          io.Writer
+	buf          *bytes.Buffer
+	scope        []map[string]interface{} // stack of scopes for loops, conditionals, etc.
+	doctype      string
+	mixins       map[string]*MixinDeclNode // collected mixin declarations
+	mixinBlock   []Node                    // block nodes passed by the current mixin call
+	opts         *Options                  // compilation options (Basedir, Globals, Filters)
+	basedir      string                    // resolved base directory for includes
+	includedPaths []string                 // stack of currently-rendering paths for cycle detection
 }
 
 // NewRuntime creates a new runtime for rendering.
 func NewRuntime(ast *DocumentNode, data map[string]interface{}) *Runtime {
-	return &Runtime{
-		ast:     ast,
-		data:    data,
-		globals: make(map[string]interface{}),
-		buf:     &bytes.Buffer{},
-		scope:   make([]map[string]interface{}, 1),
-		doctype: "html",
-		mixins:  make(map[string]*MixinDeclNode),
+	return NewRuntimeWithOptions(ast, data, nil)
+}
+
+// NewRuntimeWithOptions creates a new runtime with explicit Options (used for
+// includes so that Basedir and Globals are available during rendering).
+func NewRuntimeWithOptions(ast *DocumentNode, data map[string]interface{}, opts *Options) *Runtime {
+	r := &Runtime{
+		ast:           ast,
+		data:          data,
+		globals:       make(map[string]interface{}),
+		buf:           &bytes.Buffer{},
+		scope:         make([]map[string]interface{}, 1),
+		doctype:       "html",
+		mixins:        make(map[string]*MixinDeclNode),
+		opts:          opts,
+		includedPaths: make([]string, 0),
 	}
+	if opts != nil && opts.Basedir != "" {
+		r.basedir = opts.Basedir
+	}
+	return r
 }
 
 // Render renders the AST to a string.
@@ -110,8 +125,7 @@ func (r *Runtime) renderNode(node Node) error {
 		// Extends is resolved at compile time, skip rendering
 		return nil
 	case *IncludeNode:
-		// Includes are resolved at compile time, skip rendering
-		return nil
+		return r.renderInclude(n)
 	default:
 		return fmt.Errorf("unknown node type: %T", node)
 	}
@@ -585,6 +599,115 @@ func (r *Runtime) renderBlockExpansion(exp *BlockExpansionNode) error {
 		return err
 	}
 	return r.renderNode(exp.Child)
+}
+
+// renderInclude resolves and renders an include directive.
+//
+// Resolution order:
+//  1. If the path starts with / it is resolved relative to r.basedir.
+//  2. Otherwise it is resolved relative to the directory of the currently
+//     rendering file (tracked via r.includedPaths), falling back to r.basedir.
+//
+// File handling:
+//   - .pug (or no extension) → lex → parse → render into current buffer.
+//   - Any other extension    → read raw and write directly into the buffer.
+//
+// Cycle detection: if the resolved absolute path is already in
+// r.includedPaths we return an error to prevent infinite recursion.
+func (r *Runtime) renderInclude(inc *IncludeNode) error {
+	inclPath := inc.Path
+
+	// Strip surrounding quotes if present (lexer may keep them)
+	if len(inclPath) >= 2 &&
+		((inclPath[0] == '"' && inclPath[len(inclPath)-1] == '"') ||
+			(inclPath[0] == '\'' && inclPath[len(inclPath)-1] == '\'')) {
+		inclPath = inclPath[1 : len(inclPath)-1]
+	}
+
+	// Resolve the path.
+	var resolved string
+	if filepath.IsAbs(inclPath) {
+		// Absolute path — anchor to basedir if set, otherwise use as-is.
+		if r.basedir != "" {
+			resolved = filepath.Join(r.basedir, inclPath)
+		} else {
+			resolved = inclPath
+		}
+	} else {
+		// Relative path — resolve relative to the directory of the currently
+		// included file, or basedir if we are at the top level.
+		base := r.basedir
+		if len(r.includedPaths) > 0 {
+			base = filepath.Dir(r.includedPaths[len(r.includedPaths)-1])
+		}
+		if base == "" {
+			base = "."
+		}
+		resolved = filepath.Join(base, inclPath)
+	}
+
+	// Normalise and make absolute so cycle detection is reliable.
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return fmt.Errorf("include: cannot resolve path %q: %w", inclPath, err)
+	}
+
+	// Cycle detection.
+	for _, p := range r.includedPaths {
+		if p == abs {
+			return fmt.Errorf("include: cycle detected — %q includes itself", abs)
+		}
+	}
+
+	// Add extension if missing (default to .pug).
+	if filepath.Ext(abs) == "" {
+		abs += ".pug"
+	}
+
+	ext := strings.ToLower(filepath.Ext(abs))
+
+	// Push onto the include stack.
+	r.includedPaths = append(r.includedPaths, abs)
+	defer func() { r.includedPaths = r.includedPaths[:len(r.includedPaths)-1] }()
+
+	if ext == ".pug" {
+		// Read, lex, parse and render the included Pug file.
+		src, err := os.ReadFile(abs)
+		if err != nil {
+			return fmt.Errorf("include: cannot read %q: %w", abs, err)
+		}
+
+		lexer := NewLexer(string(src))
+		tokens, err := lexer.Lex()
+		if err != nil {
+			return fmt.Errorf("include: lex error in %q: %w", abs, err)
+		}
+
+		parser := NewParser(tokens)
+		ast, err := parser.Parse()
+		if err != nil {
+			return fmt.Errorf("include: parse error in %q: %w", abs, err)
+		}
+
+		// Collect mixins declared in the included file.
+		r.collectMixins(ast.Children)
+
+		// Render the included AST into the current buffer.
+		for _, node := range ast.Children {
+			if err := r.renderNode(node); err != nil {
+				return fmt.Errorf("include: render error in %q: %w", abs, err)
+			}
+		}
+		return nil
+	}
+
+	// Non-Pug file — read raw and write directly.
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		return fmt.Errorf("include: cannot read %q: %w", abs, err)
+	}
+	r.buf.Write(raw)
+	return nil
 }
 
 // renderTextRun renders a mixed sequence of text and interpolation nodes.
