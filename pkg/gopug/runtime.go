@@ -876,6 +876,44 @@ func (r *Runtime) executeStatement(stmt string) error {
 		return nil
 	}
 
+	if strings.Contains(stmt, "+=") {
+		if idx := strings.Index(stmt, "+="); idx > 0 {
+			varName := strings.TrimSpace(stmt[:idx])
+			rhsExpr := strings.TrimSpace(stmt[idx+2:])
+			cur, _ := r.lookup(varName)
+			curF, _ := toFloat(cur)
+			rhs, err := r.evaluateExpr(rhsExpr)
+			if err != nil {
+				return err
+			}
+			rhsF, ok := toFloat(rhs)
+			if ok {
+				r.setVar(varName, curF+rhsF)
+			} else {
+				r.setVar(varName, fmt.Sprintf("%v", cur)+rhs)
+			}
+			return nil
+		}
+	}
+
+	if strings.Contains(stmt, "-=") {
+		if idx := strings.Index(stmt, "-="); idx > 0 {
+			varName := strings.TrimSpace(stmt[:idx])
+			rhsExpr := strings.TrimSpace(stmt[idx+2:])
+			cur, _ := r.lookup(varName)
+			curF, _ := toFloat(cur)
+			rhs, err := r.evaluateExpr(rhsExpr)
+			if err != nil {
+				return err
+			}
+			rhsF, ok := toFloat(rhs)
+			if ok {
+				r.setVar(varName, curF-rhsF)
+			}
+			return nil
+		}
+	}
+
 	if idx := findAssignOp(stmt); idx >= 0 {
 		varName := strings.TrimSpace(stmt[:idx])
 		rhsExpr := strings.TrimSpace(stmt[idx+1:])
@@ -918,13 +956,14 @@ func (r *Runtime) setVar(name string, val any) {
 }
 
 // findAssignOp finds the position of a simple = assignment operator that is
-// not part of ==, !=, <=, >=.  Returns -1 if not found.
+// not part of ==, !=, <=, >=, +=, -=.  Returns -1 if not found.
 func findAssignOp(stmt string) int {
 	for i := 0; i < len(stmt); i++ {
 		if stmt[i] == '=' {
 			if i > 0 {
 				prev := stmt[i-1]
-				if prev == '!' || prev == '<' || prev == '>' || prev == '=' {
+				if prev == '!' || prev == '<' || prev == '>' || prev == '=' ||
+					prev == '+' || prev == '-' {
 					continue
 				}
 			}

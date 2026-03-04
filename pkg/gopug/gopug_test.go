@@ -766,6 +766,30 @@ func TestVariableDecrement(t *testing.T) {
 	assertContains(t, out, "9")
 }
 
+func TestVariableCompoundAdd(t *testing.T) {
+	src := "- score = 0\n- score += 10\np= score"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "10")
+}
+
+func TestVariableCompoundSubtract(t *testing.T) {
+	src := "- score = 10\n- score -= 3\np= score"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "7")
+}
+
+func TestVariableCompoundAddChained(t *testing.T) {
+	src := "- n = 0\n- n += 5\n- n += 3\np= n"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "8")
+}
+
+func TestVariableCompoundSubtractToNegative(t *testing.T) {
+	src := "- n = 2\n- n -= 5\np= n"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "-3")
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 — each over map
 // ---------------------------------------------------------------------------
