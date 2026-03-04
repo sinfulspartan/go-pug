@@ -1,23 +1,8 @@
 # Makefile for github.com/sinfulspartan/go-pug
 #
-# Requires GNU Make.  On Windows, Git Bash must be installed so that
-# sh.exe is available at C:/Program Files/Git/usr/bin/sh.exe.
-# On Linux / macOS the system sh is used automatically.
-#
 # Usage:
 #   make              # default: vet + test + build
 #   make help         # list all targets
-
-# ---------------------------------------------------------------------------
-# Shell — must be set before any rules so every recipe runs under POSIX sh.
-# GNU Make uses SHELL + .SHELLFLAGS to invoke each recipe line.
-# ---------------------------------------------------------------------------
-ifeq ($(OS),Windows_NT)
-  SHELL     := C:/Program Files/Git/usr/bin/sh.exe
-else
-  SHELL     := /bin/sh
-endif
-.SHELLFLAGS := -c
 
 # ---------------------------------------------------------------------------
 # Variables
@@ -28,15 +13,6 @@ CMD      := ./cmd
 GO       := go
 BIN_DIR  := bin
 BINARY   := $(BIN_DIR)/go-pug
-
-# -- Test binary left behind by -cpuprofile / -memprofile ---------------------
-# go test writes a compiled test binary named after the package when profiling.
-# On Windows it gets a .exe suffix; on POSIX it has no suffix.
-ifeq ($(OS),Windows_NT)
-  TEST_BIN := gopug.test.exe
-else
-  TEST_BIN := gopug.test
-endif
 
 # -- Benchmark tunables -------------------------------------------------------
 # Override on the command line:  make bench BENCH=BenchmarkRender BENCHTIME=2s
@@ -55,7 +31,6 @@ BENCH_CSV  ?= benchmarks.csv
 BENCH2MD   := ./scripts/bench2md
 
 # -- Tooling detection --------------------------------------------------------
-# which is available inside Git Bash sh on Windows and on all POSIX systems.
 GOLANGCI_LINT := $(shell which golangci-lint 2>/dev/null)
 
 # ---------------------------------------------------------------------------
@@ -105,7 +80,7 @@ help:
 	@echo ""
 	@echo "  Coverage"
 	@echo "    cover          Generate coverage report (text + $(COVER_OUT))"
-	@echo "    cover-html     Open an HTML coverage report in your browser"
+	@echo "    cover-html     Generate HTML coverage report -> $(COVER_HTML)"
 	@echo ""
 	@echo "  Code quality"
 	@echo "    fmt            Format source files with gofmt -s"
@@ -165,10 +140,8 @@ test-race:
 # Benchmarks
 # ---------------------------------------------------------------------------
 
-# _BENCH_TMP is a scratch file used to capture raw benchmark output so it can
-# be both displayed to the terminal and fed to bench2md in a single run.
-# Using a temp file avoids process-substitution (bash-only) and keeps
-# recipes POSIX-sh compatible.
+# _BENCH_TMP captures raw benchmark output so it can be both displayed to the
+# terminal and fed to bench2md in a single run, without process substitution.
 _BENCH_TMP := bench_raw.txt
 
 bench:
@@ -205,7 +178,7 @@ bench-cpu:
 	           -cpuprofile cpu.prof \
 	           $(PKG) | tee $(_BENCH_TMP) ; \
 	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
-	rm -f $(_BENCH_TMP) $(TEST_BIN)
+	rm -f $(_BENCH_TMP)
 	@echo "-> cpu.prof written  (inspect with: go tool pprof cpu.prof)"
 	@echo "-> $(BENCH_MD) written"
 
@@ -219,7 +192,7 @@ bench-mem:
 	           -memprofile mem.prof \
 	           $(PKG) | tee $(_BENCH_TMP) ; \
 	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
-	rm -f $(_BENCH_TMP) $(TEST_BIN)
+	rm -f $(_BENCH_TMP)
 	@echo "-> mem.prof written  (inspect with: go tool pprof mem.prof)"
 	@echo "-> $(BENCH_MD) written"
 
@@ -269,11 +242,7 @@ cover:
 cover-html: cover
 	@echo "=> Generating HTML coverage report ($(COVER_HTML))"
 	$(GO) tool cover -html=$(COVER_OUT) -o $(COVER_HTML)
-	@echo "-> Opening $(COVER_HTML)"
-	@open "$(COVER_HTML)" 2>/dev/null \
-	  || xdg-open "$(COVER_HTML)" 2>/dev/null \
-	  || start "$(COVER_HTML)" 2>/dev/null \
-	  || echo "   Open $(COVER_HTML) in your browser"
+	@echo "-> $(COVER_HTML) written — open it in your browser"
 
 # ---------------------------------------------------------------------------
 # Code quality
@@ -315,5 +284,6 @@ mod:
 
 clean:
 	@echo "=> Cleaning build artifacts"
-	-rm -rf $(BIN_DIR) ; rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV) $(_BENCH_TMP) $(TEST_BIN) bench2md bench2md.exe
+	-rm -rf $(BIN_DIR)
+	-rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV) $(_BENCH_TMP)
 	@echo "-> Done"
