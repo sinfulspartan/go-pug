@@ -53,10 +53,10 @@ type Template struct {
 
 // Options configures template compilation and rendering behavior.
 type Options struct {
-	Basedir string                // root directory for absolute paths
-	Pretty  bool                  // pretty-print HTML output
-	Globals map[string]any        // data available to all renders
-	Filters map[string]FilterFunc // custom filters (receive body text + parsed options)
+	Basedir string
+	Pretty  bool
+	Globals map[string]any
+	Filters map[string]FilterFunc
 }
 
 // Render compiles a Pug template string and renders it with the given data.
