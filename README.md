@@ -174,6 +174,22 @@ input(type="checkbox", checked)
 input(type="checkbox", checked=false)
 ```
 
+> ⚠️ **Unquoted attribute values containing spaces** — when multiple attributes are listed without commas and the first value is unquoted, the lexer reads everything after `=` or `!=` up to the closing `)` as a single value token, swallowing the remaining attributes. Always separate attributes with commas, quote values that could be ambiguous, or use `&attributes`.
+>
+> ```pug
+> //- ✗ Broken — href=myHref is swallowed into the value of class
+> a(class!=myClass href=myHref) Link
+>
+> //- ✓ Fix 1 — separate with a comma
+> a(class!=myClass, href=myHref) Link
+>
+> //- ✓ Fix 2 — quote the first value
+> a(class!="myClass" href=myHref) Link
+>
+> //- ✓ Fix 3 — use &attributes
+> a&attributes({class: myClass, href: myHref}) Link
+> ```
+
 **Class and ID shorthand**
 
 ```pug
@@ -360,6 +376,19 @@ each color in ["red", "green", "blue"]
   span= color
 ```
 
+> ⚠️ **Ternary in the collection expression** — the `each` collection only supports a plain variable name or an inline array literal. A ternary expression in that position is not evaluated correctly. Resolve the collection into a variable first with an unbuffered code line.
+>
+> ```pug
+> //- ✗ Broken — ternary in collection is not supported
+> each v in useAlt ? altList : mainList
+>   li= v
+>
+> //- ✓ Fix — resolve the collection first
+> - var list = useAlt ? altList : mainList
+> each v in list
+>   li= v
+> ```
+
 **`while`**
 
 ```pug
@@ -423,6 +452,22 @@ mixin list(...items)
 
 +list("a", "b", "c")
 ```
+
+> ⚠️ **Mixin declarations must be at the top level** — `collectMixins` scans only top-level document nodes before rendering begins. A mixin declared inside an `if`, `each`, or any other block is never registered, so calls to it always fail — even when the enclosing condition evaluates to true at runtime.
+>
+> ```pug
+> //- ✗ Broken — mixin foo is never registered because it is not top-level
+> if true
+>   mixin foo
+>     p hello
+> +foo
+>
+> //- ✓ Fix — always declare mixins at the top level
+> mixin foo
+>   p hello
+> if true
+>   +foo
+> ```
 
 **Block content** — the caller passes a block; use `block` to render it and `if block` to test for its presence
 
@@ -508,15 +553,55 @@ include data.txt
 
 Files without a `.pug` extension are included verbatim. An included Pug file shares the current scope and any mixins declared in it become available to the including template.
 
+> ⚠️ **Only include plain partials** — a `.pug` file that begins with `extends` must be rendered at the top level (passed directly to `Render` / `RenderFile`). If you `include` it, the `extends` resolution runs against the top-level document's AST rather than the included file's, producing silently broken output with no error.
+>
+> ```pug
+> //- ✗ Broken — child.pug starts with "extends base.pug"; including it produces wrong output
+> include child.pug
+>
+> //- ✓ Fix — only include plain partials; render an extends-based file at the top level
+> ```
+
 **Include with a filter** — apply a registered filter to a raw file's content before inserting it
 
 ```pug
 include :uppercase README.txt
 ```
 
+> ⚠️ **`include:filter` only applies to non-Pug files** — if the path ends in `.pug`, the engine enters the Pug rendering branch first and returns before the filter is ever invoked. The filter name is silently ignored and the file is rendered as normal Pug.
+>
+> ```pug
+> //- ✗ Misleading — :uppercase is silently ignored; partial.pug is rendered as Pug
+> include :uppercase partial.pug
+>
+> //- ✓ Correct — filters only take effect on raw (non-Pug) files
+> include :uppercase content.txt
+> ```
+
 ### Filters
 
 Register Go functions as named filters via `Options.Filters`. Each `FilterFunc` receives the body text and a `map[string]string` of any parsed options. Filter output is written **raw** — the filter function is responsible for any HTML escaping it needs (this allows filters such as Markdown renderers to return real HTML tags).
+
+> ⚠️ **Filter output is not HTML-escaped** — the runtime writes the return value of your `FilterFunc` directly to the output buffer. If a filter returns user-controlled plain text, you must escape it before returning, otherwise characters like `<`, `>`, and `&` will be written verbatim.
+>
+> ```go
+> // ✗ Risky — plain text containing < or & is written unescaped
+> opts.Filters["note"] = func(s string, _ map[string]string) (string, error) {
+>     return s, nil
+> }
+>
+> // ✓ Safe — escape plain text before returning
+> import "html"
+>
+> opts.Filters["note"] = func(s string, _ map[string]string) (string, error) {
+>     return html.EscapeString(s), nil
+> }
+>
+> // ✓ Also fine — returning real HTML markup is intentional; escape the inner text only
+> opts.Filters["bold"] = func(s string, _ map[string]string) (string, error) {
+>     return "<strong>" + html.EscapeString(s) + "</strong>", nil
+> }
+> ```
 
 ```go
 opts := &gopug.Options{
@@ -617,6 +702,18 @@ html, err := gopug.RenderFile(path string, data map[string]interface{}, opts *go
 // Invalidate the entire compile cache.
 gopug.ClearCache()
 ```
+
+> ⚠️ **`CompileFile` caches by path only** — the cache key is the absolute file path. If you call `CompileFile` with the same path but different `Options` (e.g. different `Globals` or `Filters`), the cached `*Template` from the first call is returned with the new options shallow-copied in, but the AST is shared. Call `ClearCache()` before a second compile of the same file if you need a fresh result under different options.
+>
+> ```go
+> // ✗ The second call is a cache hit — opts2 is applied to the shared AST
+> t1, _ := gopug.CompileFile("page.pug", opts1)
+> t2, _ := gopug.CompileFile("page.pug", opts2)
+>
+> // ✓ Clear the cache first when different options require a fresh compile
+> gopug.ClearCache()
+> t2, _ = gopug.CompileFile("page.pug", opts2)
+> ```
 
 ### Template methods
 
@@ -792,121 +889,17 @@ GitHub Actions runs on every push to `main` and on pull requests:
 
 ## Known Limitations
 
-### Unquoted attribute values containing spaces
+The gotchas below are documented inline in the relevant reference sections. This index is here so they remain searchable.
 
-When multiple attributes are separated by spaces (no comma) and the value is unquoted, the lexer reads everything after `=` or `!=` up to the closing `)` as a single value token. The second attribute is never seen.
-
-```pug
-//- ✗ Broken — href=href is swallowed into the value of class
-a(class!=myClass href=myHref) Link
-
-//- ✓ Fix 1 — separate with a comma
-a(class!=myClass, href=myHref) Link
-
-//- ✓ Fix 2 — quote the first value
-a(class!="myClass" href=myHref) Link
-
-//- ✓ Fix 3 — use &attributes
-a&attributes({class: myClass, href: myHref}) Link
-```
-
-### Ternary in `each` collection
-
-The `each` collection expression only supports a plain variable name or an inline array literal. A ternary expression in that position is not evaluated correctly.
-
-```pug
-//- ✗ Broken — ternary in collection is not supported
-each v in useAlt ? altList : mainList
-  li= v
-
-//- ✓ Fix — resolve the collection in an unbuffered code line first
-- var list = useAlt ? altList : mainList
-each v in list
-  li= v
-
-//- ✓ Also fine — inline array literal works
-each v in ["apple", "banana", "cherry"]
-  li= v
-```
-
-### Filter output escaping
-
-Filter functions receive and return raw strings. The runtime writes the return value directly to the HTML output without escaping. If a filter returns user-controlled plain text, it must escape it before returning.
-
-```go
-// ✗ Risky — plain text containing < or & will be written unescaped
-opts.Filters["note"] = func(s string, _ map[string]string) (string, error) {
-    return s, nil
-}
-
-// ✓ Safe — escape plain text before returning
-import "html"
-
-opts.Filters["note"] = func(s string, _ map[string]string) (string, error) {
-    return html.EscapeString(s), nil
-}
-
-// ✓ Also fine — returning real HTML markup is intentional and needs no escaping
-opts.Filters["bold"] = func(s string, _ map[string]string) (string, error) {
-    return "<strong>" + html.EscapeString(s) + "</strong>", nil
-}
-```
-
-### `include:filter` on a `.pug` file silently ignores the filter
-
-The `include:filtername` syntax only applies the filter when the included file is a **non-Pug** file (`.txt`, `.css`, `.js`, etc.). If the path ends in `.pug`, the engine enters the Pug rendering branch first and returns before the filter is ever invoked — the filter name is silently ignored and the file is rendered as normal Pug.
-
-```pug
-//- ✗ Misleading — :uppercase is silently ignored, partial.pug is rendered as Pug
-include :uppercase partial.pug
-
-//- ✓ Correct usage — filter only makes sense on raw (non-Pug) files
-include :uppercase content.txt
-```
-
-### Including a file that itself uses `extends`
-
-A `.pug` file that starts with `extends` must be used as the **root** template (i.e. passed to `Render` / `RenderFile` directly). It cannot be `include`d from another template. If you do include it, `renderInclude` processes its nodes individually and the `ExtendsNode` dispatches to `renderExtends()`, which resolves inheritance against the **top-level document's AST** rather than the included file's. The result is silently broken output — no error, no `<html>` wrapper, missing content.
-
-```pug
-//- ✗ Broken — child.pug starts with "extends base", including it produces wrong output
-include child.pug
-
-//- ✓ Fix — only include plain partials; render an extends-based file at the top level
-```
-
-### Mixin declared inside a conditional is not callable
-
-`collectMixins` runs a single pass over **top-level** document nodes before rendering begins. A mixin declaration nested inside an `if`, `each`, or any other block is never registered, so any call to it always returns an error — even when the condition that wraps the declaration evaluates to true at runtime.
-
-```pug
-//- ✗ Broken — mixin foo is never registered because it is not at the top level
-if true
-  mixin foo
-    p hello
-+foo
-
-//- ✓ Fix — always declare mixins at the top level
-mixin foo
-  p hello
-if true
-  +foo
-```
-
-### `CompileFile` does not cache per `Options`
-
-`CompileFile` caches compiled templates in a `sync.Map` keyed by **absolute file path only**. If you call `CompileFile` with the same path but different `Options` (e.g. different `Globals` or `Filters`), the cached `*Template` from the first call is returned and the new options are shallow-copied in — but the AST is shared. It is not possible to maintain two independently compiled versions of the same file simultaneously. Call `ClearCache()` between calls if you need a fresh compile with different options.
-
-```go
-// ✗ The second call returns the cached template — opts2 filters are set on
-//   the returned value but the AST was compiled under opts1.
-t1, _ := gopug.CompileFile("page.pug", opts1)
-t2, _ := gopug.CompileFile("page.pug", opts2) // same path → cache hit
-
-// ✓ Clear the cache when you need a genuinely fresh compile.
-gopug.ClearCache()
-t2, _ = gopug.CompileFile("page.pug", opts2)
-```
+| Limitation                                          | Where to find the details               |
+| --------------------------------------------------- | --------------------------------------- |
+| Unquoted attribute values containing spaces         | [Attributes](#attributes)               |
+| Ternary expression in an `each` collection          | [Loops](#loops)                         |
+| Mixin declarations must be at the top level         | [Mixins](#mixins)                       |
+| `include:filter` silently ignored on `.pug` files   | [Includes](#includes)                   |
+| Including a file that itself uses `extends`         | [Includes](#includes)                   |
+| Filter output is not HTML-escaped by the runtime    | [Filters](#filters)                     |
+| `CompileFile` caches by path only, not by `Options` | [API Reference → Functions](#functions) |
 
 ---
 
