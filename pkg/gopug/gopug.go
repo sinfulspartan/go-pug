@@ -141,6 +141,7 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		return nil, err
 	}
 
+	// Store with default opts so the cache-hit branch can return a safe shallow copy for callers with custom opts.
 	compiledCache.Store(abs, tpl)
 	return tpl, nil
 }
