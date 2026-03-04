@@ -12,7 +12,7 @@ type Parser struct {
 	cur    Token
 }
 
-// NewParser creates a new parser for the given tokens.
+// NewParser creates a new Parser for the given token slice.
 func NewParser(tokens []Token) *Parser {
 	p := &Parser{
 		tokens: tokens,
@@ -24,7 +24,7 @@ func NewParser(tokens []Token) *Parser {
 	return p
 }
 
-// Parse parses the token stream and returns the document AST.
+// Parse consumes the token stream and returns the root DocumentNode.
 func (p *Parser) Parse() (*DocumentNode, error) {
 	doc := &DocumentNode{
 		Children: make([]Node, 0),
@@ -49,12 +49,13 @@ func (p *Parser) Parse() (*DocumentNode, error) {
 	return doc, nil
 }
 
-// parseNode parses a single node at the given indentation depth.
+// parseNode dispatches to the appropriate parse function based on the current
+// token type. expectedDepth is the minimum token depth required at this level;
+// a token with a smaller depth triggers a dedent error.
 func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 	tok := p.cur
 
-	// Enforce indentation
-	if tok.Type != TokenEOF && tok.Type != TokenNewline && tok.Depth < expectedDepth {
+	if tok.Type != TokenEOF && tok.Type != TokenNewline && tok.IndentDepth < expectedDepth {
 		return nil, fmt.Errorf("unexpected dedent at line %d", tok.Line)
 	}
 
@@ -117,7 +118,9 @@ func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 	}
 }
 
-// parseTag parses a tag, attributes, classes, IDs, and children.
+// parseTag parses a tag and everything that can follow it on the same line
+// (class/ID shorthands, attributes, block expansion, inline text, inline code)
+// plus any indented children.
 func (p *Parser) parseTag() (Node, error) {
 	tag := &TagNode{
 		Name:       "",
@@ -127,15 +130,13 @@ func (p *Parser) parseTag() (Node, error) {
 		Col:        p.cur.Col,
 	}
 
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth
 
-	// Collect tag name
 	if p.cur.Type == TokenTag {
 		tag.Name = p.cur.Value
 		p.advance()
 	} else if p.cur.Type == TokenClass || p.cur.Type == TokenID {
-		// Implicit div
-		tag.Name = "div"
+		tag.Name = "div" // implicit div
 	}
 
 	// Parse attributes, classes, IDs, and special characters
@@ -183,10 +184,8 @@ func (p *Parser) parseTag() (Node, error) {
 
 		case TokenDot:
 			p.advance()
-			// Block text indicator
 			p.skipNewlines()
-			if p.cur.Depth > currentDepth {
-				// Collect indented lines
+			if p.cur.IndentDepth > currentDepth {
 				blockText := p.parseBlockText(currentDepth + 1)
 				tag.Children = append(tag.Children, &BlockTextNode{Content: blockText, Line: p.cur.Line, Col: p.cur.Col})
 			}
@@ -213,9 +212,8 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 	}
 
-	// Inline text — may be followed by interpolation tokens on the same line,
-	// producing a mixed run: p Hello #{name} world
-	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.Depth == currentDepth {
+	// Inline text or interpolation run on the same line as the tag (e.g. p Hello #{name}).
+	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth {
 		line := p.cur.Line
 		col := p.cur.Col
 		nodes := p.collectTextRun(currentDepth)
@@ -227,13 +225,12 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 		// Only fall through to the child-collection loop if there are tokens
 		// at a deeper depth — otherwise return now to avoid consuming siblings.
-		if p.cur.Depth <= currentDepth {
+		if p.cur.IndentDepth <= currentDepth {
 			return tag, nil
 		}
 	}
 
-	// Inline buffered code: p= expr
-	if p.cur.Type == TokenCodeBuffered && p.cur.Depth == currentDepth {
+	if p.cur.Type == TokenCodeBuffered && p.cur.IndentDepth == currentDepth {
 		code := &CodeNode{Expression: p.cur.Value, Type: CodeBuffered, Line: p.cur.Line, Col: p.cur.Col}
 		p.advance()
 		p.skipNewlines()
@@ -241,8 +238,7 @@ func (p *Parser) parseTag() (Node, error) {
 		return tag, nil
 	}
 
-	// Inline unescaped code: p!= expr
-	if p.cur.Type == TokenCodeUnescaped && p.cur.Depth == currentDepth {
+	if p.cur.Type == TokenCodeUnescaped && p.cur.IndentDepth == currentDepth {
 		code := &CodeNode{Expression: p.cur.Value, Type: CodeUnescaped, Line: p.cur.Line, Col: p.cur.Col}
 		p.advance()
 		p.skipNewlines()
@@ -252,8 +248,7 @@ func (p *Parser) parseTag() (Node, error) {
 
 	p.skipNewlines()
 
-	// Parse children
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		child, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
@@ -267,26 +262,23 @@ func (p *Parser) parseTag() (Node, error) {
 	return tag, nil
 }
 
-// parseAttributes parses tag attributes inside ( ... )
+// parseAttributes parses the attribute list inside ( ... ) for the given tag.
+// For the "class" attribute, values from multiple sources (shorthand + explicit)
+// are merged rather than overwritten.
 func (p *Parser) parseAttributes(tag *TagNode) error {
 	for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
 		if p.cur.Type == TokenAttrName {
 			name := p.cur.Value
 			p.advance()
 
-			// Check for = or !=
 			if p.cur.Type == TokenAttrEqual || p.cur.Type == TokenAttrEqualUnescape {
 				unescaped := p.cur.Type == TokenAttrEqualUnescape
 				p.advance()
 
 				if p.cur.Type == TokenAttrValue {
 					value := p.cur.Value
-					// For the "class" attribute, merge with any existing value
-					// (e.g. from a prior .shorthand) instead of overwriting it.
 					if name == "class" {
 						if existing, ok := tag.Attributes["class"]; ok {
-							// Strip outer quotes from the existing value and the
-							// new value, join them, then re-quote.
 							existingInner := existing.Value
 							if len(existingInner) >= 2 &&
 								existingInner[0] == '"' &&
@@ -316,7 +308,7 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 			} else {
 				// Boolean attribute — no = was present; mark explicitly so the
 				// runtime can distinguish bare `checked` from `href=href`.
-				tag.Attributes[name] = &AttributeValue{Value: name, Unescaped: false, Boolean: true}
+				tag.Attributes[name] = &AttributeValue{Value: name, Unescaped: false, IsBare: true}
 			}
 		} else if p.cur.Type == TokenAttrComma {
 			p.advance()
@@ -332,7 +324,6 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 	return nil
 }
 
-// parseDoctype parses a doctype declaration.
 func (p *Parser) parseDoctype() (*DoctypeNode, error) {
 	line := p.cur.Line
 	col := p.cur.Col
@@ -345,23 +336,21 @@ func (p *Parser) parseDoctype() (*DoctypeNode, error) {
 	return &DoctypeNode{Value: value, Line: line, Col: col}, nil
 }
 
-// parseComment parses a comment.
+// parseComment drains the TokenText body lines the lexer eagerly collected
+// under the comment header and joins them into a single Content string.
 func (p *Parser) parseComment() (*CommentNode, error) {
 	buffered := p.cur.Type == TokenComment
 	content := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
-	commentDepth := p.cur.Depth
+	commentDepth := p.cur.IndentDepth
 	p.advance()
 
-	// Collect indented body lines emitted by the lexer as TokenText tokens.
-	// The lexer eagerly consumed all lines that are indented more deeply than
-	// the comment header, so we just need to drain them here.
 	var bodyLines []string
 	if content != "" {
 		bodyLines = append(bodyLines, content)
 	}
-	for p.cur.Type == TokenText && p.cur.Depth > commentDepth {
+	for p.cur.Type == TokenText && p.cur.IndentDepth > commentDepth {
 		bodyLines = append(bodyLines, p.cur.Value)
 		p.advance()
 	}
@@ -373,7 +362,6 @@ func (p *Parser) parseComment() (*CommentNode, error) {
 	return &CommentNode{Content: content, Buffered: buffered, Line: line, Col: col}, nil
 }
 
-// parseUnbufferedCode parses unbuffered code (-).
 func (p *Parser) parseUnbufferedCode() (*CodeNode, error) {
 	expr := p.cur.Value
 	line := p.cur.Line
@@ -383,7 +371,6 @@ func (p *Parser) parseUnbufferedCode() (*CodeNode, error) {
 	return &CodeNode{Expression: expr, Type: CodeUnbuffered, Line: line, Col: col}, nil
 }
 
-// parseBufferedCode parses buffered code (=).
 func (p *Parser) parseBufferedCode() (*CodeNode, error) {
 	expr := p.cur.Value
 	line := p.cur.Line
@@ -393,7 +380,6 @@ func (p *Parser) parseBufferedCode() (*CodeNode, error) {
 	return &CodeNode{Expression: expr, Type: CodeBuffered, Line: line, Col: col}, nil
 }
 
-// parseUnescapedCode parses unescaped code (!=).
 func (p *Parser) parseUnescapedCode() (*CodeNode, error) {
 	expr := p.cur.Value
 	line := p.cur.Line
@@ -403,24 +389,13 @@ func (p *Parser) parseUnescapedCode() (*CodeNode, error) {
 	return &CodeNode{Expression: expr, Type: CodeUnescaped, Line: line, Col: col}, nil
 }
 
-// parsePipedText parses piped text (|).
-// The lexer may have split the line into a run of TokenText /
-// TokenInterpolation / TokenInterpolationUnescape tokens at the same depth.
-// If there is only a single plain-text token we return a PipeNode for
-// back-compat; otherwise we wrap everything in a MixedTextNode via the
-// tag-children path — but since PipeNode is only used at top/child level and
-// the runtime just escapes its Content, we promote the whole run into the
-// parent as individual nodes by returning a synthetic wrapper.
-// Simplest correct approach: collect all same-depth text/interp tokens and
-// return them wrapped in a DocumentNode (the caller appends its Children).
-// Actually the cleanest approach that requires no new node type: collect the
-// run and return a *TextRunNode.  We already have InterpolationNode; we just
-// need to return multiple nodes.  Since parseNode returns a single Node we use
-// a lightweight *textRunNode that the runtime knows how to render.
+// parsePipedText collects a run of same-depth pipe/text/interpolation tokens
+// and returns either a single PipeNode (plain text only) or a TextRunNode
+// (mixed text and interpolations).
 func (p *Parser) parsePipedText() (Node, error) {
 	line := p.cur.Line
 	col := p.cur.Col
-	depth := p.cur.Depth
+	depth := p.cur.IndentDepth
 
 	nodes := p.collectTextRun(depth)
 	p.skipNewlines()
@@ -434,13 +409,12 @@ func (p *Parser) parsePipedText() (Node, error) {
 	return &TextRunNode{Nodes: nodes, Line: line, Col: col}, nil
 }
 
-// collectTextRun collects a consecutive run of TokenPipe, TokenText,
-// TokenInterpolation, and TokenInterpolationUnescape tokens at the given depth,
-// returning them as a slice of Nodes (PipeNode, TextNode, InterpolationNode).
+// collectTextRun collects a consecutive run of pipe/text/interpolation tokens
+// at the given depth, returning them as a slice of Nodes.
 func (p *Parser) collectTextRun(depth int) []Node {
 	var nodes []Node
 	for {
-		if p.cur.Depth != depth {
+		if p.cur.IndentDepth != depth {
 			break
 		}
 		switch p.cur.Type {
@@ -472,20 +446,17 @@ done:
 	return nodes
 }
 
-// parseTagInterpolation parses #[tag content] inline tag interpolation.
-// The token value contains the full inner content string (e.g. "strong Hello").
-// We re-lex and re-parse it as a mini document to produce a TagNode.
+// parseTagInterpolation re-lexes and re-parses the inner content of a #[...]
+// interpolation token to produce a TagInterpolationNode.
 func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 	inner := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
 	p.advance() // consume TokenTagInterpolationStart
-	// Consume the paired TokenTagInterpolationEnd if present
 	if p.cur.Type == TokenTagInterpolationEnd {
 		p.advance()
 	}
 
-	// Re-lex the inner content as a standalone Pug snippet.
 	lx := NewLexer(inner)
 	tokens, err := lx.Lex()
 	if err != nil {
@@ -497,11 +468,6 @@ func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 		return nil, fmt.Errorf("tag interpolation parse error: %w", err)
 	}
 
-	// Expect exactly one TagNode at the top level, followed by optional
-	// sibling text/tag-interpolation nodes that belong inside it.
-	// e.g. "span.badge #[strong ★] Featured" parses as:
-	//   TagNode{span.badge}, TagInterpolationNode{strong ★}, TextNode{" Featured"}
-	// The siblings after the tag must be promoted to children of the tag.
 	var tag *TagNode
 	tagIdx := -1
 	for i, node := range doc.Children {
@@ -512,21 +478,19 @@ func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 		}
 	}
 	if tag == nil {
-		// Fallback: wrap as a span if the inner content didn't parse to a tag.
+		// Inner content didn't parse to a tag — wrap in a span.
 		tag = &TagNode{
 			Name:       "span",
 			Attributes: make(map[string]*AttributeValue),
 			Children:   doc.Children,
 		}
 	} else if tagIdx >= 0 && tagIdx < len(doc.Children)-1 {
-		// Attach any nodes that follow the tag as its children.
 		tag.Children = append(tag.Children, doc.Children[tagIdx+1:]...)
 	}
 
 	return &TagInterpolationNode{Tag: tag, Line: line, Col: col}, nil
 }
 
-// parseInterpolationNode parses a standalone interpolation token.
 func (p *Parser) parseInterpolationNode(unescaped bool) (*InterpolationNode, error) {
 	node := &InterpolationNode{
 		Expression: p.cur.Value,
@@ -539,7 +503,6 @@ func (p *Parser) parseInterpolationNode(unescaped bool) (*InterpolationNode, err
 	return node, nil
 }
 
-// parseTextNode parses a bare text token as a TextNode.
 func (p *Parser) parseTextNode() (*TextNode, error) {
 	content := p.cur.Value
 	line := p.cur.Line
@@ -549,7 +512,6 @@ func (p *Parser) parseTextNode() (*TextNode, error) {
 	return &TextNode{Content: content, Line: line, Col: col}, nil
 }
 
-// parseLiteralHTML parses literal HTML.
 func (p *Parser) parseLiteralHTML() (*LiteralHTMLNode, error) {
 	content := p.cur.Value
 	line := p.cur.Line
@@ -566,7 +528,7 @@ func (p *Parser) parseLiteralHTML() (*LiteralHTMLNode, error) {
 // linked chain: each else-if is the *sole* element of its parent's Alternate
 // slice, so the runtime can walk the chain with a simple for loop.
 func (p *Parser) parseConditional() (*ConditionalNode, error) {
-	return p.parseConditionalWithCond(p.cur.Value, p.cur.Depth, p.cur.Line, p.cur.Col, false)
+	return p.parseConditionalWithCond(p.cur.Value, p.cur.IndentDepth, p.cur.Line, p.cur.Col, false)
 }
 
 // parseConditionalWithCond does the actual work. condition/depth/line/col are
@@ -595,8 +557,8 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 	// consumed the TokenElse and called skipNewlines).
 
 	// Parse consequent body
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-		if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
+		if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 			break
 		}
 		node, err := p.parseNode(currentDepth + 1)
@@ -611,7 +573,7 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 
 	// Parse else / else-if tail.
 	// There is at most one TokenElse at this depth; we handle it and stop.
-	if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 		elseToken := p.cur
 		p.advance() // consume TokenElse
 		p.skipNewlines()
@@ -627,7 +589,7 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 			cond.Alternate = append(cond.Alternate, child)
 		} else {
 			// bare else — collect body nodes directly into cond.Alternate
-			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+			for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 				node, err := p.parseNode(currentDepth + 1)
 				if err != nil {
 					return nil, err
@@ -643,7 +605,6 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 	return cond, nil
 }
 
-// parseUnless parses unless blocks, including an optional else clause.
 func (p *Parser) parseUnless() (*ConditionalNode, error) {
 	cond := &ConditionalNode{
 		Condition:  p.cur.Value,
@@ -654,13 +615,12 @@ func (p *Parser) parseUnless() (*ConditionalNode, error) {
 		Col:        p.cur.Col,
 	}
 
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth
 	p.advance()
 	p.skipNewlines()
 
-	// Parse consequent body
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-		if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
+		if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 			break
 		}
 		node, err := p.parseNode(currentDepth + 1)
@@ -673,11 +633,10 @@ func (p *Parser) parseUnless() (*ConditionalNode, error) {
 		p.skipNewlines()
 	}
 
-	// Optional else clause
-	if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 		p.advance() // consume TokenElse
 		p.skipNewlines()
-		for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+		for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 			node, err := p.parseNode(currentDepth + 1)
 			if err != nil {
 				return nil, err
@@ -692,13 +651,11 @@ func (p *Parser) parseUnless() (*ConditionalNode, error) {
 	return cond, nil
 }
 
-// parseEach parses each/for loops.
 func (p *Parser) parseEach() (*EachNode, error) {
 	expr := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
 
-	// Parse: each item in collection or each key, item in collection
 	parts := strings.Split(expr, " in ")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("malformed each expression at line %d: %s", line, expr)
@@ -707,8 +664,6 @@ func (p *Parser) parseEach() (*EachNode, error) {
 	itemPart := strings.TrimSpace(parts[0])
 	collectionPart := strings.TrimSpace(parts[1])
 
-	// Pug syntax: each value, key in collection
-	// kv[0] is the value variable, kv[1] is the key/index variable
 	var item, key string
 	if strings.Contains(itemPart, ",") {
 		kv := strings.Split(itemPart, ",")
@@ -719,22 +674,21 @@ func (p *Parser) parseEach() (*EachNode, error) {
 	}
 
 	each := &EachNode{
-		Item:       item,
-		Key:        key,
-		Collection: collectionPart,
-		Body:       make([]Node, 0),
-		ElseBody:   make([]Node, 0),
-		Line:       line,
-		Col:        col,
+		ItemVar:        item,
+		IndexVar:       key,
+		CollectionExpr: collectionPart,
+		Body:           make([]Node, 0),
+		EmptyBody:      make([]Node, 0),
+		Line:           line,
+		Col:            col,
 	}
 
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth
 	p.advance()
 	p.skipNewlines()
 
-	// Parse body
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
-		if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
+		if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 			break
 		}
 		node, err := p.parseNode(currentDepth + 1)
@@ -747,17 +701,16 @@ func (p *Parser) parseEach() (*EachNode, error) {
 		p.skipNewlines()
 	}
 
-	// Parse else
-	if p.cur.Type == TokenElse && p.cur.Depth == currentDepth {
+	if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 		p.advance()
 		p.skipNewlines()
-		for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+		for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 			node, err := p.parseNode(currentDepth + 1)
 			if err != nil {
 				return nil, err
 			}
 			if node != nil {
-				each.ElseBody = append(each.ElseBody, node)
+				each.EmptyBody = append(each.EmptyBody, node)
 			}
 			p.skipNewlines()
 		}
@@ -766,7 +719,6 @@ func (p *Parser) parseEach() (*EachNode, error) {
 	return each, nil
 }
 
-// parseWhile parses while loops.
 func (p *Parser) parseWhile() (*WhileNode, error) {
 	condition := p.cur.Value
 	line := p.cur.Line
@@ -779,11 +731,11 @@ func (p *Parser) parseWhile() (*WhileNode, error) {
 		Col:       col,
 	}
 
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth
 	p.advance()
 	p.skipNewlines()
 
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		node, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
@@ -797,7 +749,6 @@ func (p *Parser) parseWhile() (*WhileNode, error) {
 	return w, nil
 }
 
-// parseCase parses case/when/default statements.
 func (p *Parser) parseCase() (*CaseNode, error) {
 	expr := p.cur.Value
 	line := p.cur.Line
@@ -811,11 +762,11 @@ func (p *Parser) parseCase() (*CaseNode, error) {
 		Col:        col,
 	}
 
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth
 	p.advance()
 	p.skipNewlines()
 
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		if p.cur.Type == TokenWhen {
 			whenExpr := p.cur.Value
 			whenLine := p.cur.Line
@@ -830,7 +781,7 @@ func (p *Parser) parseCase() (*CaseNode, error) {
 				Col:        whenCol,
 			}
 
-			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth && p.cur.Type != TokenWhen && p.cur.Type != TokenDefault {
+			for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth && p.cur.Type != TokenWhen && p.cur.Type != TokenDefault {
 				node, err := p.parseNode(currentDepth + 1)
 				if err != nil {
 					return nil, err
@@ -846,7 +797,7 @@ func (p *Parser) parseCase() (*CaseNode, error) {
 			p.advance()
 			p.skipNewlines()
 
-			for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth && p.cur.Type != TokenWhen && p.cur.Type != TokenDefault {
+			for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth && p.cur.Type != TokenWhen && p.cur.Type != TokenDefault {
 				node, err := p.parseNode(currentDepth + 1)
 				if err != nil {
 					return nil, err
@@ -870,16 +821,14 @@ func (p *Parser) parseCase() (*CaseNode, error) {
 // keyword on the same line, e.g. "button(text, cls)" or "tag(name, ...attrs)".
 // We split that into the mixin name and an optional parameter list.
 func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
-	raw := p.cur.Value // e.g. "button(text, cls)"
+	raw := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
 
-	// Split name from optional parameter list.
 	mixinName := raw
 	paramStr := ""
 	if idx := strings.Index(raw, "("); idx >= 0 {
 		mixinName = strings.TrimSpace(raw[:idx])
-		// find matching closing paren
 		end := strings.LastIndex(raw, ")")
 		if end > idx {
 			paramStr = raw[idx+1 : end]
@@ -889,15 +838,12 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 	mixin := &MixinDeclNode{
 		Name:          mixinName,
 		Parameters:    make([]string, 0),
-		DefaultValues: make(map[string]string),
+		ParamDefaults: make(map[string]string),
 		Body:          make([]Node, 0),
 		Line:          line,
 		Col:           col,
 	}
 
-	// Parse parameter list: "text, cls", "name, ...attrs", or
-	// "title=\"Default\"" (default values).
-	// We split on commas that are not inside quotes or parens.
 	if paramStr != "" {
 		for _, raw := range splitMixinParams(paramStr) {
 			param := strings.TrimSpace(raw)
@@ -905,24 +851,23 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 				continue
 			}
 			if strings.HasPrefix(param, "...") {
-				mixin.RestParam = strings.TrimSpace(strings.TrimPrefix(param, "..."))
+				mixin.RestParamName = strings.TrimSpace(strings.TrimPrefix(param, "..."))
 			} else if eqIdx := strings.Index(param, "="); eqIdx >= 0 {
-				// Default value: name=expr or name="Default"
 				paramName := strings.TrimSpace(param[:eqIdx])
 				defaultExpr := strings.TrimSpace(param[eqIdx+1:])
 				mixin.Parameters = append(mixin.Parameters, paramName)
-				mixin.DefaultValues[paramName] = defaultExpr
+				mixin.ParamDefaults[paramName] = defaultExpr
 			} else {
 				mixin.Parameters = append(mixin.Parameters, param)
 			}
 		}
 	}
 
-	currentDepth := p.cur.Depth // capture depth from the TokenMixin token
+	currentDepth := p.cur.IndentDepth
 	p.advance()
 	p.skipNewlines()
 
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		node, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
@@ -977,23 +922,20 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
-	currentDepth := p.cur.Depth // capture depth from the TokenMixinCall token before advancing
+	currentDepth := p.cur.IndentDepth
 	p.advance()
 
 	call := &MixinCallNode{
 		Name:       name,
 		Arguments:  make([]string, 0),
 		Attributes: make(map[string]*AttributeValue),
-		Block:      make([]Node, 0),
+		BlockContent: make([]Node, 0),
 		Line:       line,
 		Col:        col,
 	}
 
-	// Collect arguments emitted as attribute tokens by scanTagRest.
-	// Each argument appears as AttrName (the value expression) with no AttrEqual
-	// following it, OR as AttrName + AttrEqual + AttrValue for named attrs.
-	// We distinguish: if there is no AttrEqual it's a positional argument;
-	// if there is an AttrEqual it's a named HTML attribute for &attributes.
+	// First attribute group: positional arguments (no AttrEqual) and/or
+	// named HTML attributes (with AttrEqual) for &attributes forwarding.
 	if p.cur.Type == TokenAttrStart {
 		p.advance() // consume (
 		for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
@@ -1027,10 +969,8 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 		}
 	}
 
-	// A mixin call may be followed by a second attribute group for HTML
-	// attributes: +btn("OK")(class="primary").  Consume it and merge into
-	// call.Attributes (these become the implicit `attributes` map inside the
-	// mixin body).
+	// Optional second attribute group: +btn("OK")(class="primary").
+	// Merged into call.Attributes as the implicit `attributes` map.
 	if p.cur.Type == TokenAttrStart {
 		p.advance() // consume (
 		for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
@@ -1052,7 +992,7 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 					call.Attributes[attrName] = &AttributeValue{Value: val, Unescaped: unescaped}
 				} else {
 					// Boolean attribute (no value)
-					call.Attributes[attrName] = &AttributeValue{Value: attrName, Boolean: true}
+					call.Attributes[attrName] = &AttributeValue{Value: attrName, IsBare: true}
 				}
 				continue
 			}
@@ -1065,14 +1005,13 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 
 	p.skipNewlines()
 
-	// Collect indented block children
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		node, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
 		}
 		if node != nil {
-			call.Block = append(call.Block, node)
+			call.BlockContent = append(call.BlockContent, node)
 		}
 		p.skipNewlines()
 	}
@@ -1080,7 +1019,6 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 	return call, nil
 }
 
-// parseBlock parses named blocks for inheritance.
 func (p *Parser) parseBlock() (*BlockNode, error) {
 	var mode BlockMode
 	switch p.cur.Type {
@@ -1095,10 +1033,7 @@ func (p *Parser) parseBlock() (*BlockNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
-	// Capture the block's own indentation depth BEFORE advancing so that
-	// child nodes (which are at depth+1) are correctly collected into the
-	// block body instead of being treated as siblings.
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth // must be captured before advance
 	p.advance()
 
 	block := &BlockNode{
@@ -1111,7 +1046,7 @@ func (p *Parser) parseBlock() (*BlockNode, error) {
 
 	p.skipNewlines()
 
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		node, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
@@ -1143,14 +1078,10 @@ func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 		mode = BlockModePrepend
 	}
 
-	// The token's Value holds the block name directly (set by the lexer when
-	// it collects the rest of the keyword line as the value).
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
-	// Capture the modifier token's own depth BEFORE advancing so that child
-	// nodes (at depth+1) are correctly collected into the block body.
-	currentDepth := p.cur.Depth
+	currentDepth := p.cur.IndentDepth // must be captured before advance
 	p.advance()
 
 	// If the name is empty, the lexer may have emitted a separate TokenBlock
@@ -1160,7 +1091,7 @@ func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 			return nil, fmt.Errorf("expected block name after append/prepend at line %d", p.cur.Line)
 		}
 		name = p.cur.Value
-		currentDepth = p.cur.Depth
+		currentDepth = p.cur.IndentDepth
 		p.advance()
 	}
 
@@ -1174,7 +1105,7 @@ func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 
 	p.skipNewlines()
 
-	for p.cur.Type != TokenEOF && p.cur.Depth > currentDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		node, err := p.parseNode(currentDepth + 1)
 		if err != nil {
 			return nil, err
@@ -1188,7 +1119,6 @@ func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 	return block, nil
 }
 
-// parseExtends parses extends declarations.
 func (p *Parser) parseExtends() (*ExtendsNode, error) {
 	path := p.cur.Value
 	line := p.cur.Line
@@ -1198,17 +1128,11 @@ func (p *Parser) parseExtends() (*ExtendsNode, error) {
 	return &ExtendsNode{Path: path, Line: line, Col: col}, nil
 }
 
-// parseInclude parses include directives.
+// parseInclude handles all three include forms:
 //
-// Supported forms:
-//
-//	include path/to/file.pug       — normal Pug include
-//	include path/to/file.md        — raw file include
-//	include :filtername path       — raw file include with filter applied
-//
-// The lexer emits a single TokenInclude whose Value is the entire rest of the
-// line after the "include" keyword.  When that value starts with ":" we split
-// it into a filter name and a path here in the parser.
+//	include path/to/file.pug     — Pug include
+//	include path/to/file.txt     — raw file include
+//	include :filtername path     — raw file include with filter applied
 func (p *Parser) parseInclude() (*IncludeNode, error) {
 	raw := p.cur.Value
 	line := p.cur.Line
@@ -1220,18 +1144,14 @@ func (p *Parser) parseInclude() (*IncludeNode, error) {
 		Col:  col,
 	}
 
-	// "include :filtername path" — the value starts with ":"
 	if strings.HasPrefix(raw, ":") {
-		// Strip the leading colon and split on the first whitespace.
 		rest := raw[1:]
 		if idx := strings.IndexAny(rest, " \t"); idx >= 0 {
-			include.Filter = strings.TrimSpace(rest[:idx])
+			include.FilterName = strings.TrimSpace(rest[:idx])
 			include.Path = strings.TrimSpace(rest[idx+1:])
 		} else {
-			// No space — the whole thing is the filter name with no path.
-			// Treat it as a filter name with an empty path; the runtime will
-			// error with a helpful message.
-			include.Filter = rest
+			// No path — runtime will error with a helpful message.
+			include.FilterName = rest
 			include.Path = ""
 		}
 	} else {
@@ -1241,7 +1161,7 @@ func (p *Parser) parseInclude() (*IncludeNode, error) {
 	// Legacy: if the NEXT token is TokenFilter, it was emitted by an older
 	// lexer variant — consume it for backwards compatibility.
 	if p.cur.Type == TokenFilter {
-		include.Filter = p.cur.Value
+		include.FilterName = p.cur.Value
 		p.advance()
 	}
 
@@ -1249,34 +1169,19 @@ func (p *Parser) parseInclude() (*IncludeNode, error) {
 	return include, nil
 }
 
-// parseFilter parses filter blocks.
+// parseFilter consumes the token stream for a filter block. The lexer has
+// already eagerly collected body lines as consecutive TokenText tokens, so
+// the parser just drains them. Token sequence:
 //
-// Supported forms:
-//
-//	:filtername               — block filter; indented body lines follow
-//	:filtername inline text   — inline filter; content on the same line
-//	:outer:inner              — chained subfilter; inner applied first
-//
-// The lexer now eagerly collects filter body lines as consecutive TokenText
-// tokens (one per body line) so the parser never sees Pug tag/keyword tokens
-// inside the filter body.  For inline filters the lexer emits a single
-// TokenText with the same-line content.
-//
-// Token stream produced by the lexer:
-//
-//	TokenFilter{"name"}        — primary filter name
-//	TokenFilterColon{"sub"}    — optional chained subfilter (may repeat)
-//	TokenText{"line..."}...    — body lines (one token per line) OR single
-//	                             inline-content token
+//	TokenFilter{"name"}
+//	TokenFilterColon{"sub"}  — repeated for each chained subfilter
+//	TokenFilterOptions{...}  — optional (key=val) options block
+//	TokenText{...}           — one per body line, or single inline token
 func (p *Parser) parseFilter() (*FilterNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
 	col := p.cur.Col
-	// The filter token's depth is the reference depth.  Body TokenText tokens
-	// emitted by the lexer carry a greater depth, but since the lexer now
-	// handles ALL body collection internally we only need to gather the
-	// consecutive TokenText tokens that immediately follow the filter header.
-	filterDepth := p.cur.Depth
+	filterDepth := p.cur.IndentDepth
 	p.advance()
 
 	filter := &FilterNode{
@@ -1285,13 +1190,7 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 		Col:  col,
 	}
 
-	// Collect any chained subfilter names (:outer:inner → Subfilter chain).
-	// Accumulated as a colon-separated string so the runtime can split and
-	// apply them in order (innermost first).
-	// Subfilters may appear before OR after the options block, matching the
-	// lexer which also scans both positions:
-	//   :outer:inner(opts)     — subfilters before options
-	//   :outer(opts):inner     — subfilters after options
+	// Subfilters may appear before or after the options block.
 	var subfilters []string
 	collectSubfilters := func() {
 		for p.cur.Type == TokenFilterColon {
@@ -1300,30 +1199,21 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 		}
 	}
 
-	collectSubfilters() // subfilters before the options block
+	collectSubfilters()
 
-	// Parse optional filter options from a TokenFilterOptions token.
-	// The token value contains the raw content inside the parentheses, e.g.
-	// for ":markdown(flavor="gfm" pretty=true)" the value is
-	// `flavor="gfm" pretty=true`.  We decode that into a map[string]string.
 	if p.cur.Type == TokenFilterOptions {
 		filter.Options = parseFilterOptions(p.cur.Value)
 		p.advance()
 	}
 
-	collectSubfilters() // subfilters after the options block (e.g. :outer(opts):inner)
+	collectSubfilters()
 
 	if len(subfilters) > 0 {
 		filter.Subfilter = strings.Join(subfilters, ":")
 	}
 
-	// Collect consecutive TokenText tokens emitted by the lexer for this
-	// filter (both inline single-token form and multi-line block form).
-	// We only consume tokens whose depth is greater than the filter header's
-	// depth, or that sit at the same depth immediately after the header (the
-	// inline case where the lexer emits TokenText at the same depth level).
 	var lines []string
-	for p.cur.Type == TokenText && p.cur.Depth >= filterDepth {
+	for p.cur.Type == TokenText && p.cur.IndentDepth >= filterDepth {
 		lines = append(lines, p.cur.Value)
 		p.advance()
 	}
@@ -1333,24 +1223,17 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 	return filter, nil
 }
 
-// parseFilterOptions decodes a raw options string of the form
-//
-//	key=value key2="quoted value" flag
-//
-// into a map[string]string.  Values may be bare identifiers/numbers or
-// single/double-quoted strings.  A bare key without = is stored with value
-// "true" so it can be treated as a boolean flag.
+// parseFilterOptions decodes the raw (key=value ...) options string into a
+// map[string]string. Bare keys without a value are stored as "true".
 func parseFilterOptions(raw string) map[string]string {
 	opts := make(map[string]string)
 	s := strings.TrimSpace(raw)
 	for s != "" {
-		// Skip commas and whitespace between pairs.
 		s = strings.TrimLeft(s, " \t,")
 		if s == "" {
 			break
 		}
 
-		// Read the key (identifier).
 		end := 0
 		for end < len(s) && s[end] != '=' && s[end] != ' ' && s[end] != '\t' && s[end] != ',' {
 			end++
@@ -1364,34 +1247,30 @@ func parseFilterOptions(raw string) map[string]string {
 
 		s = strings.TrimLeft(s, " \t")
 		if !strings.HasPrefix(s, "=") {
-			// Boolean flag — no value.
 			opts[key] = "true"
 			continue
 		}
-		// Consume the '='.
 		s = s[1:]
 		s = strings.TrimLeft(s, " \t")
 
 		var value string
 		if len(s) > 0 && (s[0] == '"' || s[0] == '\'') {
-			// Quoted value.
 			quote := rune(s[0])
 			s = s[1:]
 			i := 0
 			for i < len(s) && rune(s[i]) != quote {
 				if s[i] == '\\' && i+1 < len(s) {
-					i++ // skip escaped char
+					i++
 				}
 				i++
 			}
 			value = s[:i]
 			if i < len(s) {
-				s = s[i+1:] // consume closing quote
+				s = s[i+1:]
 			} else {
 				s = ""
 			}
 		} else {
-			// Bare value: read until whitespace or comma.
 			end = 0
 			for end < len(s) && s[end] != ' ' && s[end] != '\t' && s[end] != ',' {
 				end++
@@ -1404,10 +1283,9 @@ func parseFilterOptions(raw string) map[string]string {
 	return opts
 }
 
-// parseBlockText collects indented lines as block text.
 func (p *Parser) parseBlockText(expectedDepth int) string {
 	var lines []string
-	for p.cur.Type != TokenEOF && p.cur.Depth >= expectedDepth {
+	for p.cur.Type != TokenEOF && p.cur.IndentDepth >= expectedDepth {
 		if p.cur.Type == TokenText {
 			lines = append(lines, p.cur.Value)
 		} else if p.cur.Type == TokenPipe {
@@ -1420,14 +1298,12 @@ func (p *Parser) parseBlockText(expectedDepth int) string {
 	return strings.Join(lines, "\n")
 }
 
-// skipNewlines skips newline tokens.
 func (p *Parser) skipNewlines() {
 	for p.cur.Type == TokenNewline {
 		p.advance()
 	}
 }
 
-// advance moves to the next token.
 func (p *Parser) advance() {
 	if p.pos < len(p.tokens)-1 {
 		p.pos++

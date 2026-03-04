@@ -92,17 +92,17 @@ const (
 
 // Token represents a single lexical token.
 type Token struct {
-	Type  TokenType
-	Value string
-	Line  int
-	Col   int
-	Depth int // indentation depth for this token
+	Type        TokenType
+	Value       string
+	Line        int
+	Col         int
+	IndentDepth int
 }
 
 // String returns a human-readable representation of the token.
 func (t Token) String() string {
-	return fmt.Sprintf("Token{Type: %s, Value: %q, Line: %d, Col: %d, Depth: %d}",
-		tokenTypeName(t.Type), t.Value, t.Line, t.Col, t.Depth)
+	return fmt.Sprintf("Token{Type: %s, Value: %q, Line: %d, Col: %d, IndentDepth: %d}",
+		tokenTypeName(t.Type), t.Value, t.Line, t.Col, t.IndentDepth)
 }
 
 // tokenTypeName returns the name of a TokenType.

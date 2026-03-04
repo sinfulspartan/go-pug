@@ -2,13 +2,14 @@ package gopug
 
 import "fmt"
 
-// Node represents a node in the abstract syntax tree.
+// Node is implemented by every AST node type. The unexported node() method
+// seals the interface so that only types defined in this package can satisfy
+// it, keeping the runtime's type-switch exhaustive.
 type Node interface {
 	node()
 	String() string
 }
 
-// DocumentNode is the root node containing all parsed content.
 type DocumentNode struct {
 	Children []Node
 }
@@ -18,7 +19,6 @@ func (n *DocumentNode) String() string {
 	return fmt.Sprintf("DocumentNode{Children: %d}", len(n.Children))
 }
 
-// TagNode represents an HTML tag with attributes and children.
 type TagNode struct {
 	Name       string
 	Attributes map[string]*AttributeValue
@@ -33,14 +33,15 @@ func (n *TagNode) String() string {
 	return fmt.Sprintf("TagNode{Name: %s, Children: %d, SelfClose: %v}", n.Name, len(n.Children), n.SelfClose)
 }
 
-// AttributeValue represents the value of an attribute (can be a literal or an expression).
+// AttributeValue holds the raw string form of an attribute's value as it
+// appeared in the Pug source (which may be a variable name, an expression, or
+// a quoted literal). The runtime evaluates Value at render time.
 type AttributeValue struct {
 	Value     string
 	Unescaped bool
-	Boolean   bool // true when the attribute was written without = (bare: checked, disabled)
+	IsBare    bool // attribute with no value (e.g. checked, disabled)
 }
 
-// TextNode represents plain text content.
 type TextNode struct {
 	Content string
 	Line    int
@@ -52,7 +53,8 @@ func (n *TextNode) String() string {
 	return fmt.Sprintf("TextNode{Content: %q}", n.Content)
 }
 
-// InterpolationNode represents #{...} or !{...} interpolation.
+// InterpolationNode represents an inline expression: #{expr} (escaped) or
+// !{expr} (unescaped).
 type InterpolationNode struct {
 	Expression string
 	Unescaped  bool
@@ -65,7 +67,6 @@ func (n *InterpolationNode) String() string {
 	return fmt.Sprintf("InterpolationNode{Expr: %q, Unescaped: %v}", n.Expression, n.Unescaped)
 }
 
-// TagInterpolationNode represents #[tag content] inline tag interpolation.
 type TagInterpolationNode struct {
 	Tag  *TagNode
 	Line int
@@ -77,10 +78,11 @@ func (n *TagInterpolationNode) String() string {
 	return fmt.Sprintf("TagInterpolationNode{Tag: %s}", n.Tag.Name)
 }
 
-// CommentNode represents an HTML comment or unbuffered comment.
+// CommentNode represents either a buffered HTML comment (// — rendered as
+// <!-- -->) or an unbuffered silent comment (//- — stripped from output).
 type CommentNode struct {
 	Content  string
-	Buffered bool // true for <!-- -->, false for silent comment
+	Buffered bool
 	Line     int
 	Col      int
 }
@@ -90,7 +92,15 @@ func (n *CommentNode) String() string {
 	return fmt.Sprintf("CommentNode{Buffered: %v, Content: %q}", n.Buffered, n.Content)
 }
 
-// CodeNode represents unbuffered, buffered, or unescaped code.
+// CodeType describes how a code expression is handled at render time.
+type CodeType int
+
+const (
+	CodeUnbuffered CodeType = iota // - expr  — executed, output discarded
+	CodeBuffered                   // = expr  — evaluated and HTML-escaped into output
+	CodeUnescaped                  // != expr — evaluated and written raw into output
+)
+
 type CodeNode struct {
 	Expression string
 	Type       CodeType
@@ -98,24 +108,18 @@ type CodeNode struct {
 	Col        int
 }
 
-type CodeType int
-
-const (
-	CodeUnbuffered CodeType = iota
-	CodeBuffered
-	CodeUnescaped
-)
-
 func (n *CodeNode) node() {}
 func (n *CodeNode) String() string {
 	return fmt.Sprintf("CodeNode{Type: %d, Expr: %q}", n.Type, n.Expression)
 }
 
-// ConditionalNode represents if/else if/else blocks.
+// ConditionalNode represents an if / unless / else-if / else chain.
+// Consequent holds the if-branch body. Alternate holds the else or else-if
+// branch; when IsElseIf is true, Alternate contains a single ConditionalNode.
 type ConditionalNode struct {
 	Condition  string
 	Consequent []Node
-	Alternate  []Node // else or else if
+	Alternate  []Node
 	IsElseIf   bool
 	IsUnless   bool
 	Line       int
@@ -127,23 +131,21 @@ func (n *ConditionalNode) String() string {
 	return fmt.Sprintf("ConditionalNode{Cond: %q, IsUnless: %v}", n.Condition, n.IsUnless)
 }
 
-// EachNode represents an each/for loop.
 type EachNode struct {
-	Item       string // variable name
-	Key        string // optional key variable
-	Collection string // expression
-	Body       []Node
-	ElseBody   []Node
-	Line       int
-	Col        int
+	ItemVar        string
+	IndexVar       string
+	CollectionExpr string
+	Body           []Node
+	EmptyBody      []Node
+	Line           int
+	Col            int
 }
 
 func (n *EachNode) node() {}
 func (n *EachNode) String() string {
-	return fmt.Sprintf("EachNode{Item: %s, Key: %s, Collection: %q}", n.Item, n.Key, n.Collection)
+	return fmt.Sprintf("EachNode{Item: %s, Index: %s, Collection: %q}", n.ItemVar, n.IndexVar, n.CollectionExpr)
 }
 
-// WhileNode represents a while loop.
 type WhileNode struct {
 	Condition string
 	Body      []Node
@@ -156,7 +158,8 @@ func (n *WhileNode) String() string {
 	return fmt.Sprintf("WhileNode{Cond: %q}", n.Condition)
 }
 
-// CaseNode represents a case/switch statement.
+// CaseNode represents a case/when switch. Cases holds the ordered when
+// clauses; Default holds the body of the default clause (may be nil).
 type CaseNode struct {
 	Expression string
 	Cases      []*WhenNode
@@ -170,7 +173,6 @@ func (n *CaseNode) String() string {
 	return fmt.Sprintf("CaseNode{Expr: %q, Cases: %d}", n.Expression, len(n.Cases))
 }
 
-// WhenNode represents a when clause within a case.
 type WhenNode struct {
 	Expression string
 	Body       []Node
@@ -183,12 +185,11 @@ func (n *WhenNode) String() string {
 	return fmt.Sprintf("WhenNode{Expr: %q}", n.Expression)
 }
 
-// MixinDeclNode represents a mixin declaration.
 type MixinDeclNode struct {
 	Name          string
 	Parameters    []string
-	DefaultValues map[string]string // param name -> default expression
-	RestParam     string            // for ...args
+	ParamDefaults map[string]string // param name → default expression
+	RestParamName string            // name of the ...rest parameter; empty if none
 	Body          []Node
 	Line          int
 	Col           int
@@ -199,14 +200,15 @@ func (n *MixinDeclNode) String() string {
 	return fmt.Sprintf("MixinDeclNode{Name: %s, Params: %v}", n.Name, n.Parameters)
 }
 
-// MixinCallNode represents a mixin call (+name).
+// MixinCallNode represents a mixin invocation (+name(args)).
+// BlockContent holds any indented content passed to the mixin's block slot.
 type MixinCallNode struct {
-	Name       string
-	Arguments  []string
-	Attributes map[string]*AttributeValue
-	Block      []Node // content passed to mixin
-	Line       int
-	Col        int
+	Name         string
+	Arguments    []string
+	Attributes   map[string]*AttributeValue
+	BlockContent []Node
+	Line         int
+	Col          int
 }
 
 func (n *MixinCallNode) node() {}
@@ -214,7 +216,18 @@ func (n *MixinCallNode) String() string {
 	return fmt.Sprintf("MixinCallNode{Name: %s, Args: %v}", n.Name, n.Arguments)
 }
 
-// BlockNode represents a named block (for template inheritance).
+// BlockMode describes how a child block interacts with the parent block body.
+type BlockMode int
+
+const (
+	BlockModeReplace BlockMode = iota // block name         — replaces the parent body
+	BlockModeAppend                   // block append name  — appended after the parent body
+	BlockModePrepend                  // block prepend name — prepended before the parent body
+)
+
+// BlockNode represents a named block used in template inheritance. Mode
+// controls whether the child's content replaces, appends to, or prepends to
+// the parent block's default body.
 type BlockNode struct {
 	Name string
 	Body []Node
@@ -223,20 +236,11 @@ type BlockNode struct {
 	Col  int
 }
 
-type BlockMode int
-
-const (
-	BlockModeReplace BlockMode = iota
-	BlockModeAppend
-	BlockModePrepend
-)
-
 func (n *BlockNode) node() {}
 func (n *BlockNode) String() string {
 	return fmt.Sprintf("BlockNode{Name: %s, Mode: %d}", n.Name, n.Mode)
 }
 
-// ExtendsNode represents an extends declaration.
 type ExtendsNode struct {
 	Path string
 	Line int
@@ -248,38 +252,40 @@ func (n *ExtendsNode) String() string {
 	return fmt.Sprintf("ExtendsNode{Path: %q}", n.Path)
 }
 
-// IncludeNode represents an include directive.
+// IncludeNode represents an include directive. FilterName is non-empty when
+// the include uses a filter (include:filtername path).
 type IncludeNode struct {
-	Path   string
-	Filter string // optional filter name
-	Line   int
-	Col    int
+	Path       string
+	FilterName string
+	Line       int
+	Col        int
 }
 
 func (n *IncludeNode) node() {}
 func (n *IncludeNode) String() string {
-	return fmt.Sprintf("IncludeNode{Path: %q, Filter: %q}", n.Path, n.Filter)
+	return fmt.Sprintf("IncludeNode{Path: %q, Filter: %q}", n.Path, n.FilterName)
 }
 
-// FilterNode represents a filtered block (:markdown-it, etc).
+// FilterNode represents a filter block (:filtername). Content holds the raw
+// body text passed to the filter. Subfilter is non-empty for chained filters
+// (:outer:inner); the runtime applies the innermost filter first. Options
+// holds any key=value pairs parsed from the parenthesised argument list.
 type FilterNode struct {
 	Name      string
-	Args      string
 	Content   string
 	Subfilter string
-	Options   map[string]string // parsed from (key=val, ...) after filter name
+	Options   map[string]string
 	Line      int
 	Col       int
 }
 
 func (n *FilterNode) node() {}
 func (n *FilterNode) String() string {
-	return fmt.Sprintf("FilterNode{Name: %s, Args: %q}", n.Name, n.Args)
+	return fmt.Sprintf("FilterNode{Name: %s, Content: %q}", n.Name, n.Content)
 }
 
-// DoctypeNode represents a doctype declaration.
 type DoctypeNode struct {
-	Value string // e.g., "html", "xml", "transitional"
+	Value string
 	Line  int
 	Col   int
 }
@@ -289,7 +295,8 @@ func (n *DoctypeNode) String() string {
 	return fmt.Sprintf("DoctypeNode{Value: %q}", n.Value)
 }
 
-// PipeNode represents piped text (plain text block).
+// PipeNode represents a piped text line (| text). Unlike TextNode it is
+// produced at the top level of the document rather than as a tag child.
 type PipeNode struct {
 	Content string
 	Line    int
@@ -301,7 +308,8 @@ func (n *PipeNode) String() string {
 	return fmt.Sprintf("PipeNode{Content: %q}", n.Content)
 }
 
-// BlockTextNode represents block text (indented text after .).
+// BlockTextNode represents the body of a dot-block (tag.) — an indented
+// block of text passed through verbatim as the tag's text content.
 type BlockTextNode struct {
 	Content string
 	Line    int
@@ -313,7 +321,8 @@ func (n *BlockTextNode) String() string {
 	return fmt.Sprintf("BlockTextNode{Content: %q}", n.Content)
 }
 
-// LiteralHTMLNode represents literal HTML (line starting with <).
+// LiteralHTMLNode represents a line of literal HTML (any line starting with
+// <). It is written to output without any escaping or processing.
 type LiteralHTMLNode struct {
 	Content string
 	Line    int
@@ -325,7 +334,8 @@ func (n *LiteralHTMLNode) String() string {
 	return fmt.Sprintf("LiteralHTMLNode{Content: %q}", n.Content)
 }
 
-// BlockExpansionNode represents inline nested tag (tag: nested).
+// BlockExpansionNode represents a block-expansion shorthand (tag: child),
+// where a parent tag has exactly one inline child tag.
 type BlockExpansionNode struct {
 	Parent *TagNode
 	Child  Node
@@ -338,10 +348,10 @@ func (n *BlockExpansionNode) String() string {
 	return fmt.Sprintf("BlockExpansionNode{Parent: %s}", n.Parent.Name)
 }
 
-// TextRunNode holds a mixed sequence of TextNode, PipeNode, and
-// InterpolationNode values produced when a single line contains both plain
-// text and #{...} / !{...} interpolations.  The runtime renders each child
-// node in order.
+// TextRunNode holds a mixed sequence of TextNode, InterpolationNode, and
+// TagInterpolationNode values produced when a single line contains both plain
+// text and #{...} / !{...} / #[...] interpolations. The runtime renders each
+// child node in order.
 type TextRunNode struct {
 	Nodes []Node
 	Line  int
