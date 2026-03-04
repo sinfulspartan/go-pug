@@ -485,30 +485,71 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	}
 
 	// Start with a copy of tag.Attributes, expanding &attributes spreads.
+	// Pass 1: copy all non-&attributes entries first so that class merging
+	// below can append to any shorthand classes already on the tag.
 	merged := make(map[string]*AttributeValue)
 	for k, v := range tag.Attributes {
-		if k == "&attributes" {
-			// Evaluate the expression — expect a map[string]interface{} or similar.
-			raw, ok := r.lookup(v.Value)
-			if !ok {
-				// Try evaluating as an expression (e.g. a variable name)
-				if ev, err := r.evaluateExpr(v.Value); err == nil {
-					raw, ok = r.lookup(ev)
-				}
-			}
-			if ok && raw != nil {
-				rv := reflect.ValueOf(raw)
-				if rv.Kind() == reflect.Map {
-					for _, mk := range rv.MapKeys() {
-						attrKey := fmt.Sprintf("%v", mk.Interface())
-						attrVal := fmt.Sprintf("%v", rv.MapIndex(mk).Interface())
-						merged[attrKey] = &AttributeValue{Value: `"` + attrVal + `"`, Unescaped: false}
-					}
-				}
-			}
+		if k != "&attributes" {
+			merged[k] = v
+		}
+	}
+
+	// Pass 2: expand &attributes spreads and merge into the map.
+	for k, v := range tag.Attributes {
+		if k != "&attributes" {
 			continue
 		}
-		merged[k] = v
+
+		expr := strings.TrimSpace(v.Value)
+
+		// Build a flat map[string]interface{} from the spread expression.
+		// Supported forms:
+		//   1. A variable name resolving to map[string]interface{}
+		//   2. An inline object literal {key: val, ...}
+		spreadMap := map[string]interface{}{}
+
+		if raw, ok := r.lookup(expr); ok && raw != nil {
+			rv := reflect.ValueOf(raw)
+			if rv.Kind() == reflect.Map {
+				for _, mk := range rv.MapKeys() {
+					spreadMap[fmt.Sprintf("%v", mk.Interface())] = rv.MapIndex(mk).Interface()
+				}
+			}
+		} else if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
+			// Inline object literal — parse key/value pairs.
+			// parseInlineObject already strips quotes from both keys and values,
+			// so values are plain strings (e.g. "Edit" not "\"Edit\"").
+			// We still evaluate non-quoted tokens so variable references work.
+			obj := parseInlineObject(expr)
+			for key, val := range obj {
+				spreadMap[key] = val
+			}
+		}
+
+		// Merge the spread map into the merged attribute map.
+		for attrKey, attrVal := range spreadMap {
+			valStr := fmt.Sprintf("%v", attrVal)
+
+			switch attrKey {
+			case "class":
+				// Merge: append spread class to any existing class value.
+				if existing, ok := merged["class"]; ok {
+					existingVal := strings.Trim(existing.Value, `"`)
+					merged["class"] = &AttributeValue{Value: `"` + existingVal + " " + valStr + `"`}
+				} else {
+					merged["class"] = &AttributeValue{Value: `"` + valStr + `"`}
+				}
+			default:
+				// Boolean detection: true → boolean attr, false → suppress.
+				if valStr == "true" {
+					merged[attrKey] = &AttributeValue{Boolean: true}
+				} else if valStr == "false" {
+					delete(merged, attrKey)
+				} else {
+					merged[attrKey] = &AttributeValue{Value: `"` + valStr + `"`}
+				}
+			}
+		}
 	}
 
 	// Collect and sort attribute names for deterministic output:
@@ -2841,6 +2882,12 @@ func parseInlineObject(s string) map[string]string {
 		}
 		key := strings.TrimSpace(pair[:colonIdx])
 		val := strings.TrimSpace(pair[colonIdx+1:])
+		// Strip surrounding quotes from key (e.g. "aria-label" → aria-label)
+		if len(key) >= 2 &&
+			((key[0] == '"' && key[len(key)-1] == '"') ||
+				(key[0] == '\'' && key[len(key)-1] == '\'')) {
+			key = key[1 : len(key)-1]
+		}
 		// Strip surrounding quotes from value
 		if len(val) >= 2 &&
 			((val[0] == '"' && val[len(val)-1] == '"') ||

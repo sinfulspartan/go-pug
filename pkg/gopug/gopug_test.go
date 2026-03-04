@@ -2848,6 +2848,60 @@ func TestAndAttributesLiteralObject(t *testing.T) {
 	assertContains(t, out, `data-foo="bar"`)
 }
 
+// TestAndAttributesClassMerge verifies that &attributes merges the spread
+// class with an existing shorthand class rather than overwriting it.
+func TestAndAttributesClassMerge(t *testing.T) {
+	out := renderTest(t, `button.btn-lg&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"class": "btn-primary"},
+	})
+	assertContains(t, out, `btn-lg`)
+	assertContains(t, out, `btn-primary`)
+}
+
+// TestAndAttributesBooleanTrue verifies that a spread value of true renders
+// as a boolean attribute with no value.
+func TestAndAttributesBooleanTrue(t *testing.T) {
+	out := renderTest(t, `button&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"disabled": true},
+	})
+	assertContains(t, out, `disabled`)
+	if strings.Contains(out, `disabled="`) {
+		t.Errorf("disabled=true should render as boolean attr, got: %q", out)
+	}
+}
+
+// TestAndAttributesBooleanFalse verifies that a spread value of false
+// suppresses the attribute entirely.
+func TestAndAttributesBooleanFalse(t *testing.T) {
+	out := renderTest(t, `button&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"disabled": false},
+	})
+	if strings.Contains(out, `disabled`) {
+		t.Errorf("disabled=false should omit attribute, got: %q", out)
+	}
+}
+
+// TestAndAttributesDataAttrs verifies that data-* attributes from a variable
+// map are spread onto the tag correctly.
+func TestAndAttributesDataAttrs(t *testing.T) {
+	out := renderTest(t, `button&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{
+			"data-id":     "42",
+			"data-action": "submit",
+		},
+	})
+	assertContains(t, out, `data-id="42"`)
+	assertContains(t, out, `data-action="submit"`)
+}
+
+// TestAndAttributesInlineObjectClassMerge verifies that an inline object
+// literal spread merges its class with an existing shorthand class.
+func TestAndAttributesInlineObjectClassMerge(t *testing.T) {
+	out := renderTest(t, `button.icon-btn&attributes({"aria-label": "Edit"})`, nil)
+	assertContains(t, out, `icon-btn`)
+	assertContains(t, out, `aria-label="Edit"`)
+}
+
 // TestAndAttributesInMixin verifies that &attributes inside a mixin body
 // spreads the implicit attributes argument onto the tag.
 func TestAndAttributesInMixin(t *testing.T) {
