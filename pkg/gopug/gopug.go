@@ -36,8 +36,6 @@ func SimpleFilter(fn func(string) (string, error)) FilterFunc {
 
 var compiledCache sync.Map
 
-// ClearCache removes all cached compiled templates, forcing the next
-// CompileFile call for each path to re-read and re-parse the file.
 func ClearCache() {
 	compiledCache.Range(func(k, _ any) bool {
 		compiledCache.Delete(k)
@@ -45,13 +43,11 @@ func ClearCache() {
 	})
 }
 
-// Template represents a compiled Pug template ready for rendering.
 type Template struct {
 	ast  *DocumentNode
 	opts *Options
 }
 
-// Options configures template compilation and rendering behavior.
 type Options struct {
 	Basedir string
 	Pretty  bool
@@ -59,7 +55,6 @@ type Options struct {
 	Filters map[string]FilterFunc
 }
 
-// Render compiles a Pug template string and renders it with the given data.
 func Render(src string, data map[string]any, opts *Options) (string, error) {
 	tpl, err := Compile(src, opts)
 	if err != nil {
@@ -68,7 +63,6 @@ func Render(src string, data map[string]any, opts *Options) (string, error) {
 	return tpl.Render(data)
 }
 
-// RenderFile reads a .pug file, compiles it, and renders it with the given data.
 func RenderFile(path string, data map[string]any, opts *Options) (string, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -85,8 +79,6 @@ func RenderFile(path string, data map[string]any, opts *Options) (string, error)
 	return Render(string(src), data, opts)
 }
 
-// Compile parses a Pug template string and returns a compiled Template.
-// The template can be rendered multiple times with different data.
 func Compile(src string, opts *Options) (*Template, error) {
 	if opts == nil {
 		opts = &Options{}
@@ -155,7 +147,6 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 	return tpl, nil
 }
 
-// Render renders the template with the provided data and returns HTML.
 func (t *Template) Render(data map[string]any) (string, error) {
 	if data == nil {
 		data = make(map[string]any)
@@ -173,7 +164,6 @@ func (t *Template) Render(data map[string]any) (string, error) {
 	return rt.Render()
 }
 
-// RenderToWriter renders the template with the provided data and writes to w.
 func (t *Template) RenderToWriter(w io.Writer, data map[string]any) error {
 	html, err := t.Render(data)
 	if err != nil {
