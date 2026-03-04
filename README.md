@@ -106,7 +106,7 @@ import (
 )
 
 func main() {
-    data := map[string]interface{}{
+    data := map[string]any{
         "page": map[string]string{
             "Title":   "My Page",
             "Heading": "Hello, Go-Pug!",
@@ -691,13 +691,13 @@ Multi-line comments indent their body:
 tpl, err := gopug.Compile(src string, opts *gopug.Options) (*gopug.Template, error)
 
 // Render a template string in one step (compile + render).
-html, err := gopug.Render(src string, data map[string]interface{}, opts *gopug.Options) (string, error)
+html, err := gopug.Render(src string, data map[string]any, opts *gopug.Options) (string, error)
 
 // Compile a .pug file; result is cached by absolute path.
 tpl, err := gopug.CompileFile(path string, opts *gopug.Options) (*gopug.Template, error)
 
 // Render a .pug file in one step (read + compile + render).
-html, err := gopug.RenderFile(path string, data map[string]interface{}, opts *gopug.Options) (string, error)
+html, err := gopug.RenderFile(path string, data map[string]any, opts *gopug.Options) (string, error)
 
 // Invalidate the entire compile cache.
 gopug.ClearCache()
@@ -719,20 +719,20 @@ gopug.ClearCache()
 
 ```go
 // Render with a data map; returns the HTML string.
-html, err := tpl.Render(data map[string]interface{}) (string, error)
+html, err := tpl.Render(data map[string]any) (string, error)
 
 // Render directly into an io.Writer.
-err := tpl.RenderToWriter(w io.Writer, data map[string]interface{}) error
+err := tpl.RenderToWriter(w io.Writer, data map[string]any) error
 ```
 
 ### Options
 
 ```go
 type Options struct {
-    Basedir string                // root directory for absolute include / extends paths
-    Pretty  bool                  // emit indented HTML
-    Globals map[string]interface{} // variables visible to every render of this template
-    Filters map[string]FilterFunc  // named filter functions
+    Basedir string                // root directory for absolute paths
+    Pretty  bool                  // pretty-print HTML output
+    Globals map[string]any        // data available to all renders
+    Filters map[string]FilterFunc // custom filters (receive body text + parsed options)
 }
 ```
 
