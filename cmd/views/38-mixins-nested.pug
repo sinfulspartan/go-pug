@@ -1,0 +1,34 @@
+mixin icon(name)
+  span.icon= name
+
+mixin button(label, style="default")
+  button.btn(class="btn-" + style)
+    +icon("›")
+    |  #{label}
+
+mixin card(title, style="default")
+  .card
+    h3.card-title= title
+    if block
+      block
+    else
+      p (no content)
+
+mixin toolbar
+  .toolbar
+    if block
+      block
+
++button("Save", "primary")
++button("Delete", "danger")
+
++card("Welcome")
+  p This card has body content.
+  +button("Learn more", "default")
+
++card("Empty card")
+
++toolbar
+  +button("New", "primary")
+  +button("Edit", "default")
+  +button("Delete", "danger")

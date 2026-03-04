@@ -201,6 +201,8 @@ var registry = map[string]meta{
 	"35-includes.pug": {title: "Includes"},
 	"36-extends.pug":  {title: "Template inheritance — extends & block"},
 	"37-expressions.pug": {title: "Expressions — arithmetic, comparison, logic, ternary"},
+	"38-mixins-nested.pug":        {title: "Mixins — nested calls"},
+	"39-and-attributes-dynamic.pug": {title: "&attributes — dynamic spread"},
 }
 
 // extractViewsToTemp writes all embedded views/*.pug files to a temp

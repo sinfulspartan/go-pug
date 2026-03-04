@@ -1,0 +1,22 @@
+- var base = {class: "btn", type: "button"}
+- var primary = {class: "btn btn-primary", "aria-label": "Primary action"}
+- var danger = {class: "btn btn-danger", disabled: true}
+- var withData = {class: "btn", "data-id": "42", "data-action": "submit"}
+
+p Base attributes:
+button&attributes(base) Click me
+
+p Merged with existing attribute:
+button.btn-lg&attributes(primary) Primary
+
+p Disabled state from object:
+button&attributes(danger) Delete
+
+p Data attributes:
+button&attributes(withData) Submit
+
+p Inline object:
+button&attributes({class: "btn btn-success", type: "submit"}) Save
+
+p Existing attr + spread (class merges):
+button.icon-btn(title="Edit")&attributes({class: "btn", "aria-label": "Edit item"}) Edit
