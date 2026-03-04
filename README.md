@@ -271,6 +271,10 @@ p.
 - items = ["a", "b"]
 ```
 
+> **Difference from JS Pug:** the idiomatic form is `- x = 0` (no declaration keyword).
+> `var`, `let`, and `const` are accepted for compatibility but the keyword is silently
+> ignored — there is no block/function scoping distinction in go-pug.
+
 Multi-line unbuffered block:
 
 ```pug
