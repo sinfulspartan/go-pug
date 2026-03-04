@@ -1,0 +1,25 @@
+mixin section(title)
+  .section
+    h3= title
+    if block
+      block
+    else
+      p.empty (no content provided)
+
+mixin callout(type)
+  .callout(class=type)
+    if block
+      block
+    else
+      p.empty (empty callout)
+
++section("With block content")
+  p This content is passed into the mixin block slot.
+  p A second paragraph inside the block.
+
++section("Without block content")
+
++callout("info")
+  p This is an info callout with block content.
+
++callout("warning")

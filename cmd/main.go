@@ -201,6 +201,12 @@ var registry = map[string]meta{
 	"37-expressions.pug":            {title: "Expressions — arithmetic, comparison, logic, ternary"},
 	"38-mixins-nested.pug":          {title: "Mixins — nested calls"},
 	"39-and-attributes-dynamic.pug": {title: "&attributes — dynamic spread"},
+	"40-increment-decrement.pug":    {title: "Variable increment & decrement"},
+	"41-mixins-block-keyword.pug":   {title: "Mixins — block keyword (if block)"},
+	"42-pretty-vs-compact.pug": {
+		title: "Pretty-print vs compact",
+		opts:  &gopug.Options{Pretty: true},
+	},
 }
 
 // extractViewsToTemp writes all embedded views/*.pug files to a temp

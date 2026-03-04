@@ -1,0 +1,30 @@
+nav
+  ul
+    li
+      a(href="/") Home
+    li
+      a(href="/about") About
+    li
+      a(href="/contact") Contact
+
+main
+  h1 Pretty-print vs Compact
+  p
+    | In compact mode (default) all output is on one line.
+    | Enable pretty-print via #[code Options{Pretty: true}].
+
+  section
+    h2 Compact mode
+    p This card is rendered in compact mode — no newlines or indentation in the HTML source.
+
+  section
+    h2 Pretty mode
+    p When #[code Pretty: true] is set the HTML source gains newlines and two-space indentation per nesting level.
+
+  ul
+    li Inline elements (#[code a], #[code span], #[code strong], etc.) stay on one line even in pretty mode.
+    li Void elements (#[code br], #[code hr], #[code input]) never get a closing tag.
+    li The doctype line always gets its own line in pretty mode.
+
+footer
+  p Pretty-print affects HTML source readability only — rendered output is identical.
