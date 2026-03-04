@@ -112,7 +112,7 @@ help:
 
 build:
 	@echo "=> Building $(BINARY)"
-	@mkdir -p $(BIN_DIR) && $(GO) build -v -o $(BINARY) $(CMD)
+	$(GO) build -v -o $(BINARY) $(CMD)
 	@echo "-> $(BINARY) ready"
 	@echo ""
 
