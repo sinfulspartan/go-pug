@@ -1794,6 +1794,31 @@ func TestExtendsCycleDetection(t *testing.T) {
 	}
 }
 
+// TestExtendsThreeHopCycleDetection verifies that a three-file extends cycle
+// (A extends B extends C extends A) is caught before infinite recursion.
+func TestExtendsThreeHopCycleDetection(t *testing.T) {
+	dir := t.TempDir()
+	aPath := dir + "/a.pug"
+	bPath := dir + "/b.pug"
+	cPath := dir + "/c.pug"
+	if err := os.WriteFile(aPath, []byte("extends b\nblock content\n  p A"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("extends c\nblock content\n  p B"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cPath, []byte("extends a\nblock content\n  p C"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RenderFile(aPath, nil, nil)
+	if err == nil {
+		t.Error("expected cycle detection error for A→B→C→A extends, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected 'cycle' in error, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Phase 7 — Filters
 // ---------------------------------------------------------------------------
