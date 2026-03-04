@@ -5,14 +5,15 @@ import (
 	"strings"
 )
 
-// emitTextWithInterpolations splits a raw text string on #{...} and !{...}
-// interpolation markers and emits the appropriate tokens (TokenText,
-// TokenInterpolation, TokenInterpolationUnescape).  Plain text segments are
-// emitted as TokenText; interpolated expressions are emitted as
-// TokenInterpolation (escaped) or TokenInterpolationUnescape (!{}).
+// emitTextWithInterpolations splits a raw text string on #{...}, !{...}, and
+// #[...] markers and emits the appropriate tokens. Plain text segments become
+// TokenText; #{expr} becomes TokenInterpolation; !{expr} becomes
+// TokenInterpolationUnescape; #[tag] becomes a TokenTagInterpolationStart /
+// TokenTagInterpolationEnd pair. A backslash before #{ is treated as an
+// escape: \#{ emits a literal "#{" TokenText rather than an interpolation.
 func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
-	savedDepth := l.depth
-	l.depth = depth
+	savedDepth := l.indentDepth
+	l.indentDepth = depth
 
 	for len(text) > 0 {
 		// Find the earliest interpolation marker: #{expr}, !{expr}, or #[tag]
@@ -52,11 +53,11 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 			}
 		}
 
-		// Determine which marker comes first (treat -1 as "not found" / infinity)
+		// Determine which marker comes first (treat -1 as "not found" / infinity).
 		type marker struct {
-			pos         int
-			kind        string // "expr", "unescape", "taginterp"
-			markerLen   int
+			pos       int
+			kind      string // "expr", "unescape", "taginterp"
+			markerLen int
 		}
 		candidates := []marker{}
 		if hashBraceIdx >= 0 {
@@ -70,14 +71,12 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 		}
 
 		if len(candidates) == 0 {
-			// No more interpolations — emit remaining text as-is
 			if text != "" {
 				l.addToken(TokenText, text)
 			}
 			break
 		}
 
-		// Pick the earliest marker
 		best := candidates[0]
 		for _, c := range candidates[1:] {
 			if c.pos < best.pos {
@@ -85,7 +84,6 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 			}
 		}
 
-		// Emit any plain text before the marker
 		if best.pos > 0 {
 			l.addToken(TokenText, text[:best.pos])
 		}
@@ -94,7 +92,6 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 
 		switch best.kind {
 		case "expr":
-			// #{expr} — scan balanced braces
 			expr, remaining, ok := scanBalancedBraces(rest)
 			if !ok {
 				l.addToken(TokenText, text[best.pos:])
@@ -105,7 +102,6 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 			text = remaining
 
 		case "unescape":
-			// !{expr} — scan balanced braces
 			expr, remaining, ok := scanBalancedBraces(rest)
 			if !ok {
 				l.addToken(TokenText, text[best.pos:])
@@ -116,27 +112,24 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 			text = remaining
 
 		case "taginterp":
-			// #[tag content] — scan balanced brackets
 			inner, remaining, ok := scanBalancedBrackets(rest)
 			if !ok {
-				// Malformed — treat as plain text
 				l.addToken(TokenText, text[best.pos:])
 				text = ""
 				break
 			}
-			// Emit start/content/end tokens for the inline tag
 			l.addToken(TokenTagInterpolationStart, inner)
 			l.addToken(TokenTagInterpolationEnd, "")
 			text = remaining
 		}
 	}
 
-	l.depth = savedDepth
+	l.indentDepth = savedDepth
 }
 
 // scanBalancedBraces reads characters from s up to (but not including) the
 // matching closing brace, handling nested braces and quoted strings.
-// Returns (expr, remaining, ok).  remaining starts after the closing }.
+// Returns (expr, remaining, ok); remaining starts after the closing }.
 func scanBalancedBraces(s string) (string, string, bool) {
 	depth := 0
 	inDouble := false
@@ -169,7 +162,7 @@ func scanBalancedBraces(s string) (string, string, bool) {
 
 // scanBalancedBrackets reads characters from s up to (but not including) the
 // matching closing bracket ], handling nested brackets and quoted strings.
-// Returns (inner, remaining, ok).  remaining starts after the closing ].
+// Returns (inner, remaining, ok); remaining starts after the closing ].
 func scanBalancedBrackets(s string) (string, string, bool) {
 	depth := 0
 	inDouble := false
@@ -202,16 +195,15 @@ func scanBalancedBrackets(s string) (string, string, bool) {
 
 // Lexer tokenizes Pug source code.
 type Lexer struct {
-	input  string
-	pos    int
-	line   int
-	col    int
-	start  int
-	tokens []Token
-	depth  int // current indentation depth
+	input       string
+	pos         int
+	line        int
+	col         int
+	tokens      []Token
+	indentDepth int
 }
 
-// NewLexer creates a new lexer for the given input.
+// NewLexer creates a new Lexer for the given Pug source string.
 func NewLexer(input string) *Lexer {
 	return &Lexer{
 		input: input,
@@ -220,10 +212,9 @@ func NewLexer(input string) *Lexer {
 	}
 }
 
-// Lex tokenizes the entire input and returns a slice of tokens.
+// Lex tokenizes the entire input and returns the token slice.
 func (l *Lexer) Lex() ([]Token, error) {
 	for l.pos < len(l.input) {
-		l.start = l.pos
 		if err := l.scanLine(); err != nil {
 			return nil, err
 		}
@@ -232,19 +223,15 @@ func (l *Lexer) Lex() ([]Token, error) {
 	return l.tokens, nil
 }
 
-// scanLine processes a single line.
 func (l *Lexer) scanLine() error {
-	// Scan indentation
 	indent := l.scanIndentation()
 	if l.peek() == '\n' || l.peek() == '\r' || l.isEOF() {
-		// Empty line
 		l.skipToNewline()
 		return nil
 	}
 
-	l.depth = indent
+	l.indentDepth = indent
 
-	// Determine what kind of line this is
 	ch := l.peek()
 
 	switch {
@@ -275,7 +262,6 @@ func (l *Lexer) scanLine() error {
 	}
 }
 
-// scanIndentation counts leading spaces/tabs and returns the depth.
 func (l *Lexer) scanIndentation() int {
 	depth := 0
 	for l.pos < len(l.input) {
@@ -295,28 +281,20 @@ func (l *Lexer) scanIndentation() int {
 	return depth
 }
 
-// scanComment handles // and //-
 func (l *Lexer) scanComment() error {
 	l.advance() // consume first /
 	if !l.match('/') {
 		return l.errorf("expected '/' after first '/'")
 	}
 
-	// Check for unbuffered comment //-
-	unbuffered := false
-	if l.match('-') {
-		unbuffered = true
-	}
+	unbuffered := l.match('-')
+	commentDepth := l.indentDepth
 
-	// Remember the depth of the comment header line.
-	commentDepth := l.depth
-
-	// Capture any inline text on the same line as the comment marker.
-	text := ""
+	var textB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		text += l.advanceStr()
+		l.advanceInto(&textB)
 	}
-	text = strings.TrimSpace(text)
+	text := strings.TrimSpace(textB.String())
 
 	if unbuffered {
 		l.addToken(TokenCommentUnbuffered, text)
@@ -334,21 +312,17 @@ func (l *Lexer) scanComment() error {
 		savedLine := l.line
 		savedCol := l.col
 
-		// Count leading whitespace (raw space/tab count).
 		bodyIndent := 0
 		for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
 			l.advance()
 			bodyIndent++
 		}
 
-		// Blank or EOF line — skip and continue (may be inside the block).
 		if l.isEOF() || l.peek() == '\n' || l.peek() == '\r' {
 			l.skipToNewline()
 			continue
 		}
 
-		// If this line is not indented strictly deeper than the comment header,
-		// it does not belong to the comment body — restore position and stop.
 		if bodyIndent <= commentDepth {
 			l.pos = savedPos
 			l.line = savedLine
@@ -356,38 +330,34 @@ func (l *Lexer) scanComment() error {
 			break
 		}
 
-		// Update l.depth so addToken records the correct depth for the parser.
-		l.depth = bodyIndent
-		// This line belongs to the comment body — read it verbatim.
-		lineContent := ""
+		l.indentDepth = bodyIndent
+		var lineContentB strings.Builder
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			lineContent += l.advanceStr()
+			l.advanceInto(&lineContentB)
 		}
-		l.addToken(TokenText, lineContent)
+		l.addToken(TokenText, lineContentB.String())
 		l.skipToNewline()
 	}
 
 	return nil
 }
 
-// scanUnbufferedCode handles - (unbuffered code block)
 func (l *Lexer) scanUnbufferedCode() error {
 	l.advance() // consume -
 	l.skipSpaces()
 
-	// Collect rest of line as code
-	code := ""
+	var codeB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		code += l.advanceStr()
+		l.advanceInto(&codeB)
 	}
 
-	headerDepth := l.depth
-	trimmed := strings.TrimSpace(code)
+	headerDepth := l.indentDepth
+	trimmed := strings.TrimSpace(codeB.String())
 	l.skipToNewline()
 
-	// If the - line has no inline code (bare "-"), consume indented lines as
-	// individual code statements — emitting one TokenCode per line.
-	// Example:
+	// A bare "-" line introduces an indented block of code statements —
+	// one TokenCode per line.
+	//
 	//   -
 	//     var x = 1
 	//     var y = 2
@@ -415,11 +385,11 @@ func (l *Lexer) scanUnbufferedCode() error {
 				break
 			}
 
-			lineContent := ""
+			var lineContentB strings.Builder
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				lineContent += l.advanceStr()
+				l.advanceInto(&lineContentB)
 			}
-			stmt := strings.TrimSpace(lineContent)
+			stmt := strings.TrimSpace(lineContentB.String())
 			if stmt != "" {
 				l.addToken(TokenCode, stmt)
 			}
@@ -432,22 +402,20 @@ func (l *Lexer) scanUnbufferedCode() error {
 	return nil
 }
 
-// scanBufferedCode handles = (buffered code output)
 func (l *Lexer) scanBufferedCode() error {
 	l.advance() // consume =
 	l.skipSpaces()
 
-	code := ""
+	var codeB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		code += l.advanceStr()
+		l.advanceInto(&codeB)
 	}
 
-	l.addToken(TokenCodeBuffered, strings.TrimSpace(code))
+	l.addToken(TokenCodeBuffered, strings.TrimSpace(codeB.String()))
 	l.skipToNewline()
 	return nil
 }
 
-// scanExclamation handles ! (unescaped code or !=)
 func (l *Lexer) scanExclamation() error {
 	l.advance() // consume !
 	if !l.match('=') {
@@ -455,47 +423,43 @@ func (l *Lexer) scanExclamation() error {
 	}
 	l.skipSpaces()
 
-	code := ""
+	var codeB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		code += l.advanceStr()
+		l.advanceInto(&codeB)
 	}
 
-	l.addToken(TokenCodeUnescaped, strings.TrimSpace(code))
+	l.addToken(TokenCodeUnescaped, strings.TrimSpace(codeB.String()))
 	l.skipToNewline()
 	return nil
 }
 
-// scanPipedText handles | (piped text)
 func (l *Lexer) scanPipedText() error {
 	l.advance() // consume |
 	if l.peek() == ' ' {
 		l.advance()
 	}
 
-	text := ""
+	var textB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		text += l.advanceStr()
+		l.advanceInto(&textB)
 	}
 
-	// Split on #{} / !{} interpolations
-	l.emitTextWithInterpolations(text, l.depth)
+	l.emitTextWithInterpolations(textB.String(), l.indentDepth)
 	l.skipToNewline()
 	return nil
 }
 
-// scanLiteralHTML handles < (literal HTML)
 func (l *Lexer) scanLiteralHTML() error {
-	html := ""
+	var htmlB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		html += l.advanceStr()
+		l.advanceInto(&htmlB)
 	}
 
-	l.addToken(TokenHTMLLiteral, html)
+	l.addToken(TokenHTMLLiteral, htmlB.String())
 	l.skipToNewline()
 	return nil
 }
 
-// scanMixinCall handles + (mixin call)
 func (l *Lexer) scanMixinCall() error {
 	l.advance() // consume +
 	l.skipSpaces()
@@ -509,7 +473,11 @@ func (l *Lexer) scanMixinCall() error {
 	return l.scanTagRest()
 }
 
-// scanFilter handles : (filter)
+// scanFilter handles a filter line starting with ':'. It emits TokenFilter for
+// the filter name, optional TokenFilterColon tokens for chained subfilters
+// (:outer:inner), and a TokenFilterOptions token for any (key=val) options
+// block. Body lines indented deeper than the filter header are eagerly consumed
+// as TokenText so the main scanLine dispatcher never re-interprets them as Pug.
 func (l *Lexer) scanFilter() error {
 	l.advance() // consume :
 	name := l.scanIdentifier()
@@ -517,18 +485,13 @@ func (l *Lexer) scanFilter() error {
 		return l.errorf("expected filter name after ':'")
 	}
 
-	// Remember the indentation depth of the filter header line so we can
-	// recognise which subsequent lines belong to the filter body.
-	filterDepth := l.depth
-
+	filterDepth := l.indentDepth
 	l.addToken(TokenFilter, name)
 
-	// Check for chained subfilters  :outer:inner  (may repeat).
-	// Subfilters may appear before OR after the options block, so we scan
-	// both positions:
-	//   :outer:inner(opts)        — subfilter before options
-	//   :outer(opts):inner        — subfilter after options
-	//   :outer:mid(opts):inner    — mixed (uncommon but possible)
+	// Subfilters may appear before OR after the options block:
+	//   :outer:inner(opts)      — subfilter before options
+	//   :outer(opts):inner      — subfilter after options
+	//   :outer:mid(opts):inner  — mixed
 	scanSubfilters := func() {
 		for l.peek() == ':' {
 			l.advance()
@@ -539,16 +502,13 @@ func (l *Lexer) scanFilter() error {
 		}
 	}
 
-	scanSubfilters() // subfilters before the options block
+	scanSubfilters()
 
-	// Check for optional filter options in parentheses:
-	//   :filtername(key=val, key2="val2") body…
-	// We capture the raw content inside the parens as a TokenFilterOptions
-	// token so the parser can decode the key=value pairs.
+	// Capture raw (key=val, ...) options as a single TokenFilterOptions token.
 	l.skipSpaces()
 	if l.peek() == '(' {
 		l.advance() // consume '('
-		raw := ""
+		var rawB strings.Builder
 		depth := 1
 		for l.pos < len(l.input) && depth > 0 {
 			ch := l.peek()
@@ -561,61 +521,47 @@ func (l *Lexer) scanFilter() error {
 					break
 				}
 			}
-			raw += l.advanceStr()
+			l.advanceInto(&rawB)
 		}
-		l.addToken(TokenFilterOptions, strings.TrimSpace(raw))
+		l.addToken(TokenFilterOptions, strings.TrimSpace(rawB.String()))
 		l.skipSpaces()
 	}
 
-	scanSubfilters() // subfilters after the options block (e.g. :outer(opts):inner)
+	scanSubfilters()
 
-	// Capture any same-line inline content after the filter name(s) / options.
-	// e.g.  :uppercase Hello World
-	//               filter^  ^inline text
-	inline := ""
+	// Same-line inline content (e.g. ":uppercase Hello World").
+	var inlineB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-		inline += l.advanceStr()
+		l.advanceInto(&inlineB)
 	}
+	inline := inlineB.String()
 	if inline != "" {
-		// Emit inline content as a single TokenText — no further body lines.
 		l.addToken(TokenText, strings.TrimRight(inline, " \t"))
 		l.skipToNewline()
 		return nil
 	}
 
-	// No inline content — consume the newline that ends the filter header,
-	// then eagerly collect all indented body lines as verbatim TokenText
-	// tokens (one per line).  This prevents the main scanLine dispatcher
-	// from re-interpreting filter body content as Pug tags/keywords/etc.
-	//
-	// Depth comparison uses raw space counts throughout:
-	//   filterDepth = l.depth  (raw spaces, set by scanLine before calling us)
-	//   bodyIndent             (raw spaces counted below)
+	// No inline content — eagerly collect indented body lines.
 	// A body line must have strictly MORE leading spaces than the filter header.
+	// filterDepth uses the same raw space count set by scanLine before calling us.
 	l.skipToNewline()
 
 	for l.pos < len(l.input) {
-		// Peek at the indentation of the next line without committing.
 		savedPos := l.pos
 		savedLine := l.line
 		savedCol := l.col
 
-		// Count leading spaces/tabs (raw count, not divided by 2).
 		bodyIndent := 0
 		for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
 			l.advance()
 			bodyIndent++
 		}
 
-		// Blank line — skip it and keep going (may be inside the block).
 		if l.peek() == '\n' || l.peek() == '\r' || l.isEOF() {
 			l.skipToNewline()
 			continue
 		}
 
-		// If this line is not indented strictly deeper than the filter header
-		// (using the same raw-space count stored in filterDepth), it does not
-		// belong to the filter body — restore the scanner position and stop.
 		if bodyIndent <= filterDepth {
 			l.pos = savedPos
 			l.line = savedLine
@@ -623,29 +569,25 @@ func (l *Lexer) scanFilter() error {
 			break
 		}
 
-		// This line belongs to the filter body — read it verbatim.
-		lineContent := ""
+		var lineContentB strings.Builder
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			lineContent += l.advanceStr()
+			l.advanceInto(&lineContentB)
 		}
-		l.addToken(TokenText, lineContent)
+		l.addToken(TokenText, lineContentB.String())
 		l.skipToNewline()
 	}
 
 	return nil
 }
 
-// scanDotStart handles . at line start (implicit div with class or block text)
 func (l *Lexer) scanDotStart() error {
 	l.advance() // consume .
 	className := l.scanIdentifier()
 
 	if className == "" {
-		// Standalone dot = block text indicator for a div
 		l.addToken(TokenTag, "div")
 		l.addToken(TokenDot, ".")
 	} else {
-		// .classname = implicit div with class
 		l.addToken(TokenTag, "div")
 		l.addToken(TokenClass, className)
 	}
@@ -653,7 +595,6 @@ func (l *Lexer) scanDotStart() error {
 	return l.scanTagRest()
 }
 
-// scanHashStart handles # at line start (implicit div with ID or inline ID)
 func (l *Lexer) scanHashStart() error {
 	l.advance() // consume #
 	idName := l.scanIdentifier()
@@ -666,26 +607,22 @@ func (l *Lexer) scanHashStart() error {
 	return l.scanTagRest()
 }
 
-// scanTagOrKeyword handles tag names and keywords
 func (l *Lexer) scanTagOrKeyword() error {
 	name := l.scanIdentifier()
 	if name == "" {
 		return l.errorf("expected identifier")
 	}
 
-	// Check if it's a keyword
 	if tt, isKeyword := Keywords[name]; isKeyword {
-		// Keywords often have arguments on the same line
 		l.skipSpaces()
 		if name == "doctype" {
 			l.addToken(tt, name)
-			// Doctype has an optional argument
-			arg := ""
+			var argB strings.Builder
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				arg += l.advanceStr()
+				l.advanceInto(&argB)
 			}
+			arg := argB.String()
 			if arg != "" {
-				// Update last token with the full doctype value
 				if len(l.tokens) > 0 {
 					l.tokens[len(l.tokens)-1].Value = strings.TrimSpace(arg)
 				}
@@ -694,10 +631,10 @@ func (l *Lexer) scanTagOrKeyword() error {
 			return nil
 		}
 		if name == "block" {
-			// "block" may be followed by "append" or "prepend" modifier:
-			//   block append <name>   → TokenBlockAppend{value: <name>}
-			//   block prepend <name>  → TokenBlockPrepend{value: <name>}
-			//   block <name>          → TokenBlock{value: <name>}
+			// "block" may be followed by "append" or "prepend":
+			//   block append <name>  → TokenBlockAppend{value: <name>}
+			//   block prepend <name> → TokenBlockPrepend{value: <name>}
+			//   block <name>         → TokenBlock{value: <name>}
 			modifier := l.scanIdentifier()
 			l.skipSpaces()
 			switch modifier {
@@ -715,11 +652,13 @@ func (l *Lexer) scanTagOrKeyword() error {
 			return nil
 		}
 		l.addToken(tt, name)
-		// For other keywords (if, each, etc.), collect the rest as the condition
-		cond := ""
+		// For other keywords (if, each, while, …) the rest of the line is the
+		// condition/expression — fold it into the token value.
+		var condB strings.Builder
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			cond += l.advanceStr()
+			l.advanceInto(&condB)
 		}
+		cond := condB.String()
 		if cond != "" {
 			l.tokens[len(l.tokens)-1].Value = strings.TrimSpace(cond)
 		}
@@ -727,16 +666,14 @@ func (l *Lexer) scanTagOrKeyword() error {
 		return nil
 	}
 
-	// It's a tag name
 	l.addToken(TokenTag, name)
 	return l.scanTagRest()
 }
 
-// scanTagRest handles everything after a tag name: classes, IDs, attributes, text, etc.
-// scanBlockTextBody eagerly consumes all lines that are indented more deeply
-// than headerDepth, emitting each as a TokenText token.  This is used after a
-// block-text dot (p.) so that the main scanLine dispatcher never tries to
-// re-parse the literal text lines as Pug tags or keywords.
+// scanBlockTextBody eagerly consumes all lines indented more deeply than
+// headerDepth, emitting each as a TokenText token. It is called after a
+// block-text dot (p.) so the main scanLine dispatcher never tries to
+// re-parse the literal body lines as Pug tags or keywords.
 func (l *Lexer) scanBlockTextBody(headerDepth int) {
 	l.skipToNewline()
 	for l.pos < len(l.input) {
@@ -762,13 +699,12 @@ func (l *Lexer) scanBlockTextBody(headerDepth int) {
 			break
 		}
 
-		// Update l.depth so addToken records the correct depth for the parser.
-		l.depth = bodyIndent
-		lineContent := ""
+		l.indentDepth = bodyIndent
+		var lineContentB strings.Builder
 		for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-			lineContent += l.advanceStr()
+			l.advanceInto(&lineContentB)
 		}
-		l.addToken(TokenText, lineContent)
+		l.addToken(TokenText, lineContentB.String())
 		l.skipToNewline()
 	}
 }
@@ -779,7 +715,6 @@ func (l *Lexer) scanTagRest() error {
 
 		switch ch {
 		case '(':
-			// Attributes
 			l.advance()
 			l.addToken(TokenAttrStart, "(")
 			if err := l.scanAttributes(); err != nil {
@@ -790,27 +725,23 @@ func (l *Lexer) scanTagRest() error {
 			l.advance()
 			className := l.scanIdentifier()
 			if className != "" {
-				// .classname — class shorthand
 				l.addToken(TokenClass, className)
 			} else {
-				// Standalone dot after a tag name — block text indicator.
-				// Eagerly consume all indented body lines as TokenText so the
-				// main scanLine dispatcher never re-parses them as Pug content.
+				// Standalone dot — block text indicator. Eagerly consume all
+				// indented body lines so the main dispatcher never re-parses them.
 				l.addToken(TokenDot, ".")
-				l.scanBlockTextBody(l.depth)
+				l.scanBlockTextBody(l.indentDepth)
 				return nil
 			}
 
 		case '&':
 			// &attributes(expr) — merge a map expression into the tag's attributes.
-			// We peek ahead to confirm it is exactly "&attributes(".
+			// Peek ahead to confirm it is exactly "&attributes(".
 			if strings.HasPrefix(l.input[l.pos:], "&attributes(") {
-				// Skip "&attributes("
 				for i := 0; i < len("&attributes("); i++ {
 					l.advance()
 				}
-				// Scan the expression inside the parens using balanced-paren logic.
-				expr := ""
+				var exprB strings.Builder
 				depth := 1
 				for l.pos < len(l.input) && depth > 0 {
 					ch := l.peek()
@@ -823,47 +754,43 @@ func (l *Lexer) scanTagRest() error {
 							break
 						}
 					}
-					expr += l.advanceStr()
+					l.advanceInto(&exprB)
 				}
+				expr := exprB.String()
 				l.addToken(TokenAttrName, "&attributes")
 				l.addToken(TokenAttrEqual, "=")
 				l.addToken(TokenAttrValue, expr)
 			} else {
-				// Unknown & sequence — skip to end of line
 				l.skipToNewline()
 				return nil
 			}
 
 		case '#':
 			// Distinguish #id shorthand from #{expr} tag-body interpolation.
-			// If the character after # is '{', it is an inline interpolation that
-			// belongs to the text content — collect the rest of the line as text
-			// and let emitTextWithInterpolations handle it.
+			// If the next character is '{', hand the rest of the line to
+			// emitTextWithInterpolations rather than treating it as an ID.
 			if l.pos+1 < len(l.input) && l.input[l.pos+1] == '{' {
-				// Collect from the current position to end of line as text
-				text := ""
+				var textB strings.Builder
 				for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-					text += l.advanceStr()
+					l.advanceInto(&textB)
 				}
-				l.emitTextWithInterpolations(text, l.depth)
+				l.emitTextWithInterpolations(textB.String(), l.indentDepth)
 				l.skipToNewline()
 				return nil
 			}
-			// ID shorthand
 			l.advance()
 			idName := l.scanIdentifier()
 			l.addToken(TokenID, idName)
 
 		case ':':
 			// Block expansion: tag: child
-			// We must scan the child tag immediately — still on the same
-			// logical line — so that all tokens it produces carry the
-			// correct l.depth (the parent's indentation level).  If we
-			// return here and let the Lex loop call scanLine again,
-			// scanLine would invoke scanIndentation which counts zero
-			// leading spaces (we already skipped them) and reset l.depth
-			// to 0, making the child appear at the wrong depth and
-			// causing the parser to nest subsequent siblings inside it.
+			// We must scan the child tag immediately — still on the same logical
+			// line — so that all tokens it produces carry the correct indentDepth
+			// (the parent's indentation level). If we returned here and let Lex
+			// call scanLine again, scanLine would invoke scanIndentation which
+			// counts zero leading spaces and reset indentDepth to 0, making the
+			// child appear at the wrong depth and causing the parser to nest
+			// subsequent siblings inside it.
 			l.advance()
 			l.addToken(TokenColon, ":")
 			l.skipSpaces()
@@ -875,56 +802,50 @@ func (l *Lexer) scanTagRest() error {
 			return nil
 
 		case '=':
-			// Inline buffered code: p= expr
 			l.advance()
 			l.skipSpaces()
-			code := ""
+			var codeB strings.Builder
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				code += l.advanceStr()
+				l.advanceInto(&codeB)
 			}
-			l.addToken(TokenCodeBuffered, strings.TrimSpace(code))
+			l.addToken(TokenCodeBuffered, strings.TrimSpace(codeB.String()))
 			l.skipToNewline()
 			return nil
 
 		case '!':
-			// Inline unescaped code: p!= expr
 			if l.pos+1 < len(l.input) && l.input[l.pos+1] == '=' {
 				l.advance() // consume !
 				l.advance() // consume =
 				l.skipSpaces()
-				code := ""
+				var codeB strings.Builder
 				for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-					code += l.advanceStr()
+					l.advanceInto(&codeB)
 				}
-				l.addToken(TokenCodeUnescaped, strings.TrimSpace(code))
+				l.addToken(TokenCodeUnescaped, strings.TrimSpace(codeB.String()))
 				l.skipToNewline()
 				return nil
 			}
-			// Not !=, fall through to default
 			l.skipToNewline()
 			return nil
 
 		case '/':
-			// Self-closing tag
 			l.advance()
 			l.addToken(TokenTagEnd, "/")
 
 		case ' ', '\t':
-			// Text content follows
 			l.skipSpaces()
-			text := ""
+			var textB strings.Builder
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				text += l.advanceStr()
+				l.advanceInto(&textB)
 			}
+			text := textB.String()
 			if text != "" {
-				// Split on #{} / !{} interpolations
-				l.emitTextWithInterpolations(text, l.depth)
+				l.emitTextWithInterpolations(text, l.indentDepth)
 			}
 			l.skipToNewline()
 			return nil
 
 		default:
-			// End of tag definition
 			l.skipToNewline()
 			return nil
 		}
@@ -934,7 +855,12 @@ func (l *Lexer) scanTagRest() error {
 	return nil
 }
 
-// scanAttributes handles attributes inside ( ... )
+// scanAttributes handles the attribute list inside ( ... ). Each attribute is
+// either a named key=value pair, a bare boolean identifier, or a positional
+// expression (for mixin calls). Strategy: try to scan an identifier first; if
+// one is found and followed by = or !=, treat it as a named attribute;
+// otherwise emit whatever was scanned as a positional TokenAttrName with no
+// following TokenAttrEqual.
 func (l *Lexer) scanAttributes() error {
 	for l.pos < len(l.input) && l.peek() != ')' {
 		l.skipSpaces()
@@ -943,26 +869,13 @@ func (l *Lexer) scanAttributes() error {
 			break
 		}
 
-		// Scan attribute name or positional expression.
-		// An attribute is either:
-		//   name          — boolean attribute or mixin positional arg (identifier only)
-		//   name=value    — standard HTML attribute
-		//   name!=value   — unescaped attribute
-		//   "expr"        — positional mixin argument (quoted string, starts non-alpha)
-		//   expr          — positional mixin argument (any expression, e.g. variable)
-		//
-		// Strategy: try to scan an identifier first.  If we get one AND the next
-		// non-space character is = or !=, treat it as a named attribute.  Otherwise
-		// treat whatever we scanned (identifier or raw expression) as a positional
-		// argument emitted as TokenAttrName with no following TokenAttrEqual.
 		var name string
 		if isAlpha(l.peek()) || l.peek() == '_' {
 			name = l.scanIdentifier()
 		}
 
 		if name == "" {
-			// Non-identifier start (quoted string, number, etc.) — scan as a
-			// raw expression value up to the next comma or closing paren.
+			// Non-identifier start — scan as a raw expression value.
 			name = l.scanAttributeValue()
 			if name == "" {
 				return l.errorf("expected attribute name")
@@ -977,14 +890,12 @@ func (l *Lexer) scanAttributes() error {
 		}
 
 		l.addToken(TokenAttrName, name)
-
 		l.skipSpaces()
 
-		// Check for = or !=
 		if l.peek() == '=' {
 			l.advance()
 			if l.peek() == '=' {
-				// Handle == as a comparison, not an assignment
+				// == is a comparison operator, not an assignment.
 				l.advance()
 				l.addToken(TokenAttrEqual, "==")
 			} else {
@@ -995,7 +906,7 @@ func (l *Lexer) scanAttributes() error {
 			l.advance()
 			l.addToken(TokenAttrEqualUnescape, "!=")
 		} else {
-			// Boolean attribute or positional identifier argument — no value follows.
+			// Bare boolean attribute or positional identifier argument.
 			if l.peek() == ',' {
 				l.advance()
 				l.addToken(TokenAttrComma, ",")
@@ -1005,7 +916,6 @@ func (l *Lexer) scanAttributes() error {
 
 		l.skipSpaces()
 
-		// Scan attribute value
 		value := l.scanAttributeValue()
 		l.addToken(TokenAttrValue, value)
 
@@ -1025,33 +935,33 @@ func (l *Lexer) scanAttributes() error {
 	return nil
 }
 
-// scanAttributeValue scans a quoted string, backtick string, or expression.
+// scanAttributeValue scans a quoted string, backtick string, or unquoted
+// expression. For quoted values it also consumes a trailing arithmetic
+// operator and its operand so that expressions like `"/user/" + uid` are
+// captured as a single value token.
 func (l *Lexer) scanAttributeValue() string {
-	// If the value starts with a quote, scan the quoted string first, then
-	// check whether an operator follows (e.g. "/user/" + uid).  If so,
-	// continue reading the rest as an unquoted expression fragment.
 	if l.peek() == '"' || l.peek() == '\'' || l.peek() == '`' {
 		q := l.peek()
-		value := l.scanQuotedString(rune(q))
+		var valueB strings.Builder
+		valueB.WriteString(l.scanQuotedString(rune(q)))
 		// After the closing quote, check for a following operator so that
 		// expressions like `"/user/" + uid` are captured whole.
 		l.skipSpaces()
 		ch := l.peek()
 		if ch == '+' || ch == '-' || ch == '*' || ch == '/' {
-			// Consume the operator and the rest of the expression.
 			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 				c := l.peek()
 				if c == ')' || c == ',' {
 					break
 				}
-				value += l.advanceStr()
+				l.advanceInto(&valueB)
 			}
 		}
-		return strings.TrimSpace(value)
+		return strings.TrimSpace(valueB.String())
 	}
 
-	// Unquoted value: read until comma, closing paren, or end of line
-	value := ""
+	// Unquoted value: read until comma, closing paren, or end of line.
+	var valueB strings.Builder
 	depth := 0
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		ch := l.peek()
@@ -1065,32 +975,33 @@ func (l *Lexer) scanAttributeValue() string {
 		} else if ch == ',' && depth == 0 {
 			break
 		}
-		value += l.advanceStr()
+		l.advanceInto(&valueB)
 	}
-	return strings.TrimSpace(value)
+	return strings.TrimSpace(valueB.String())
 }
 
-// scanQuotedString scans a quoted string and returns its content (including quotes).
+// scanQuotedString scans a quoted string and returns its full content
+// including the surrounding quote characters.
 func (l *Lexer) scanQuotedString(quote rune) string {
-	value := l.advanceStr() // opening quote
+	var valueB strings.Builder
+	l.advanceInto(&valueB) // opening quote
 	for l.pos < len(l.input) {
 		ch := l.peek()
 		if ch == '\\' {
-			value += l.advanceStr()
+			l.advanceInto(&valueB)
 			if l.pos < len(l.input) {
-				value += l.advanceStr()
+				l.advanceInto(&valueB)
 			}
 		} else if rune(ch) == quote {
-			value += l.advanceStr() // closing quote
+			l.advanceInto(&valueB) // closing quote
 			break
 		} else {
-			value += l.advanceStr()
+			l.advanceInto(&valueB)
 		}
 	}
-	return value
+	return valueB.String()
 }
 
-// scanIdentifier reads an identifier (alphanumeric + underscore/hyphen)
 func (l *Lexer) scanIdentifier() string {
 	start := l.pos
 	for l.pos < len(l.input) {
@@ -1104,8 +1015,6 @@ func (l *Lexer) scanIdentifier() string {
 	}
 	return l.input[start:l.pos]
 }
-
-// Helper methods
 
 func (l *Lexer) peek() byte {
 	if l.pos >= len(l.input) {
@@ -1128,11 +1037,17 @@ func (l *Lexer) advance() byte {
 	return ch
 }
 
-// advanceStr advances one byte and returns it as a correct single-byte string.
-// Unlike string(l.advance()), which re-encodes the byte value as a Unicode
-// code point (corrupting non-ASCII bytes), this preserves the raw byte.
+// advanceStr advances one byte and returns it as a string. Unlike
+// string(l.advance()), which re-encodes the byte value as a Unicode code point
+// (corrupting non-ASCII bytes), this preserves the raw byte.
 func (l *Lexer) advanceStr() string {
 	return string([]byte{l.advance()})
+}
+
+// advanceInto advances one byte and writes it directly into b,
+// avoiding a temporary string allocation on every character.
+func (l *Lexer) advanceInto(b *strings.Builder) {
+	b.WriteByte(l.advance())
 }
 
 func (l *Lexer) match(expected byte) bool {
@@ -1167,11 +1082,11 @@ func (l *Lexer) isEOF() bool {
 
 func (l *Lexer) addToken(tt TokenType, value string) {
 	l.tokens = append(l.tokens, Token{
-		Type:  tt,
-		Value: value,
-		Line:  l.line,
-		Col:   l.col,
-		Depth: l.depth,
+		Type:        tt,
+		Value:       value,
+		Line:        l.line,
+		Col:         l.col,
+		IndentDepth: l.indentDepth,
 	})
 }
 
@@ -1179,12 +1094,10 @@ func (l *Lexer) errorf(format string, args ...interface{}) error {
 	return fmt.Errorf("lexer error at line %d, col %d: %s", l.line, l.col, fmt.Sprintf(format, args...))
 }
 
-// isAlpha checks if a character is alphabetic.
 func isAlpha(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
 }
 
-// isDigit checks if a character is a digit.
 func isDigit(ch byte) bool {
 	return ch >= '0' && ch <= '9'
 }
