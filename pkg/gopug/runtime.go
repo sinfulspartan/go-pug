@@ -21,7 +21,6 @@ import (
 // that cannot appear in any valid Pug identifier.
 var mixinScopeBoundary = map[string]any{"\x00mixin_boundary": true}
 
-// Runtime renders an AST to HTML.
 type Runtime struct {
 	ast          *DocumentNode
 	data         map[string]any
@@ -38,13 +37,10 @@ type Runtime struct {
 	prettyIndent int
 }
 
-// NewRuntime creates a Runtime with no options.
 func NewRuntime(ast *DocumentNode, data map[string]any) *Runtime {
 	return NewRuntimeWithOptions(ast, data, nil)
 }
 
-// NewRuntimeWithOptions creates a Runtime with explicit Options. Basedir and
-// Globals from opts are available during rendering (e.g. for includes).
 func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options) *Runtime {
 	r := &Runtime{
 		ast:          ast,
@@ -67,8 +63,6 @@ func (r *Runtime) pretty() bool {
 	return r.opts != nil && r.opts.Pretty
 }
 
-// prettyNewline writes a newline followed by two-space indentation per level.
-// Does nothing in compact mode.
 func (r *Runtime) prettyNewline() {
 	if !r.pretty() {
 		return
@@ -105,7 +99,6 @@ func prettyInline(tag *TagNode) bool {
 	return false
 }
 
-// Render renders the AST to a string.
 func (r *Runtime) Render() (string, error) {
 	r.scopeStack[0] = r.data
 
@@ -420,7 +413,6 @@ func (r *Runtime) renderBlockBody(b *BlockNode) error {
 	return nil
 }
 
-// writeNewlineAfterDoctype emits a newline after a doctype in pretty-print mode.
 func (r *Runtime) writeNewlineAfterDoctype(nodes []Node) {
 	if !r.pretty() {
 		return
@@ -433,7 +425,6 @@ func (r *Runtime) writeNewlineAfterDoctype(nodes []Node) {
 	}
 }
 
-// renderTag renders an HTML tag and its children.
 func (r *Runtime) renderTag(tag *TagNode) error {
 	if r.pretty() && !prettyInline(tag) {
 		r.prettyNewline()
@@ -946,7 +937,6 @@ func findAssignOp(stmt string) int {
 	return -1
 }
 
-// toFloat converts an any value to float64.
 func toFloat(v any) (float64, bool) {
 	if v == nil {
 		return 0, false
@@ -1337,8 +1327,6 @@ func (r *Runtime) renderTextRun(run *TextRunNode) error {
 	return nil
 }
 
-// renderMixinCall pushes a fresh scope containing evaluated arguments, renders
-// the mixin body, then restores the previous scope and block slot.
 func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	decl, ok := r.mixinDecls[call.Name]
 	if !ok {
@@ -2224,7 +2212,6 @@ func findRightmostOp(expr string, op byte) int {
 	return result
 }
 
-// findTernary returns the index of the top-level ? operator, or -1.
 func findTernary(expr string) int {
 	depth := 0
 	inDouble := false
