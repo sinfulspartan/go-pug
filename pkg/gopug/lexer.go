@@ -53,7 +53,6 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 			}
 		}
 
-		// Determine which marker comes first (treat -1 as "not found" / infinity).
 		type marker struct {
 			pos       int
 			kind      string // "expr", "unescape", "taginterp"
@@ -127,9 +126,7 @@ func (l *Lexer) emitTextWithInterpolations(text string, depth int) {
 	l.indentDepth = savedDepth
 }
 
-// scanBalancedBraces reads characters from s up to (but not including) the
-// matching closing brace, handling nested braces and quoted strings.
-// Returns (expr, remaining, ok); remaining starts after the closing }.
+// scanBalancedBraces returns (expr, remaining, ok); remaining starts after the closing }.
 func scanBalancedBraces(s string) (string, string, bool) {
 	depth := 0
 	inDouble := false
@@ -160,9 +157,7 @@ func scanBalancedBraces(s string) (string, string, bool) {
 	return "", "", false
 }
 
-// scanBalancedBrackets reads characters from s up to (but not including) the
-// matching closing bracket ], handling nested brackets and quoted strings.
-// Returns (inner, remaining, ok); remaining starts after the closing ].
+// scanBalancedBrackets returns (inner, remaining, ok); remaining starts after the closing ].
 func scanBalancedBrackets(s string) (string, string, bool) {
 	depth := 0
 	inDouble := false
@@ -193,7 +188,6 @@ func scanBalancedBrackets(s string) (string, string, bool) {
 	return "", "", false
 }
 
-// Lexer tokenizes Pug source code.
 type Lexer struct {
 	input       string
 	pos         int
@@ -203,7 +197,6 @@ type Lexer struct {
 	indentDepth int
 }
 
-// NewLexer creates a new Lexer for the given Pug source string.
 func NewLexer(input string) *Lexer {
 	return &Lexer{
 		input: input,
@@ -212,7 +205,6 @@ func NewLexer(input string) *Lexer {
 	}
 }
 
-// Lex tokenizes the entire input and returns the token slice.
 func (l *Lexer) Lex() ([]Token, error) {
 	for l.pos < len(l.input) {
 		if err := l.scanLine(); err != nil {
@@ -506,7 +498,6 @@ func (l *Lexer) scanFilter() error {
 
 	scanSubfilters()
 
-	// Capture raw (key=val, ...) options as a single TokenFilterOptions token.
 	l.skipSpaces()
 	if l.peek() == '(' {
 		l.advance() // consume '('
@@ -531,7 +522,6 @@ func (l *Lexer) scanFilter() error {
 
 	scanSubfilters()
 
-	// Same-line inline content (e.g. ":uppercase Hello World").
 	var inlineB strings.Builder
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		l.advanceInto(&inlineB)
@@ -543,7 +533,6 @@ func (l *Lexer) scanFilter() error {
 		return nil
 	}
 
-	// No inline content — eagerly collect indented body lines.
 	// A body line must have strictly MORE leading spaces than the filter header.
 	// filterDepth uses the same raw space count set by scanLine before calling us.
 	l.skipToNewline()
@@ -672,10 +661,8 @@ func (l *Lexer) scanTagOrKeyword() error {
 	return l.scanTagRest()
 }
 
-// scanBlockTextBody eagerly consumes all lines indented more deeply than
-// headerDepth, emitting each as a TokenText token. It is called after a
-// block-text dot (p.) so the main scanLine dispatcher never tries to
-// re-parse the literal body lines as Pug tags or keywords.
+// scanBlockTextBody is called after a block-text dot (p.) so the main scanLine
+// dispatcher never tries to re-parse the literal body lines as Pug tags or keywords.
 func (l *Lexer) scanBlockTextBody(headerDepth int) {
 	l.skipToNewline()
 	for l.pos < len(l.input) {
@@ -737,8 +724,6 @@ func (l *Lexer) scanTagRest() error {
 			}
 
 		case '&':
-			// &attributes(expr) — merge a map expression into the tag's attributes.
-			// Peek ahead to confirm it is exactly "&attributes(".
 			if strings.HasPrefix(l.input[l.pos:], "&attributes(") {
 				for i := 0; i < len("&attributes("); i++ {
 					l.advance()
@@ -769,8 +754,6 @@ func (l *Lexer) scanTagRest() error {
 
 		case '#':
 			// Distinguish #id shorthand from #{expr} tag-body interpolation.
-			// If the next character is '{', hand the rest of the line to
-			// emitTextWithInterpolations rather than treating it as an ID.
 			if l.pos+1 < len(l.input) && l.input[l.pos+1] == '{' {
 				var textB strings.Builder
 				for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
@@ -785,7 +768,6 @@ func (l *Lexer) scanTagRest() error {
 			l.addToken(TokenID, idName)
 
 		case ':':
-			// Block expansion: tag: child
 			// We must scan the child tag immediately — still on the same logical
 			// line — so that all tokens it produces carry the correct indentDepth
 			// (the parent's indentation level). If we returned here and let Lex
@@ -857,12 +839,9 @@ func (l *Lexer) scanTagRest() error {
 	return nil
 }
 
-// scanAttributes handles the attribute list inside ( ... ). Each attribute is
-// either a named key=value pair, a bare boolean identifier, or a positional
-// expression (for mixin calls). Strategy: try to scan an identifier first; if
-// one is found and followed by = or !=, treat it as a named attribute;
-// otherwise emit whatever was scanned as a positional TokenAttrName with no
-// following TokenAttrEqual.
+// scanAttributes: tries to scan an identifier first; if one is found and
+// followed by = or !=, treats it as a named attribute; otherwise emits it as
+// a positional TokenAttrName with no following TokenAttrEqual.
 func (l *Lexer) scanAttributes() error {
 	for l.pos < len(l.input) && l.peek() != ')' {
 		l.skipSpaces()
@@ -877,7 +856,6 @@ func (l *Lexer) scanAttributes() error {
 		}
 
 		if name == "" {
-			// Non-identifier start — scan as a raw expression value.
 			name = l.scanAttributeValue()
 			if name == "" {
 				return l.errorf("expected attribute name")
@@ -908,7 +886,6 @@ func (l *Lexer) scanAttributes() error {
 			l.advance()
 			l.addToken(TokenAttrEqualUnescape, "!=")
 		} else {
-			// Bare boolean attribute or positional identifier argument.
 			if l.peek() == ',' {
 				l.advance()
 				l.addToken(TokenAttrComma, ",")
@@ -937,17 +914,13 @@ func (l *Lexer) scanAttributes() error {
 	return nil
 }
 
-// scanAttributeValue scans a quoted string, backtick string, or unquoted
-// expression. For quoted values it also consumes a trailing arithmetic
-// operator and its operand so that expressions like `"/user/" + uid` are
-// captured as a single value token.
+// scanAttributeValue: for quoted values also consumes a trailing arithmetic
+// operator so that expressions like `"/user/" + uid` are captured whole.
 func (l *Lexer) scanAttributeValue() string {
 	if l.peek() == '"' || l.peek() == '\'' || l.peek() == '`' {
 		q := l.peek()
 		var valueB strings.Builder
 		valueB.WriteString(l.scanQuotedString(rune(q)))
-		// After the closing quote, check for a following operator so that
-		// expressions like `"/user/" + uid` are captured whole.
 		l.skipSpaces()
 		ch := l.peek()
 		if ch == '+' || ch == '-' || ch == '*' || ch == '/' {
@@ -982,8 +955,6 @@ func (l *Lexer) scanAttributeValue() string {
 	return strings.TrimSpace(valueB.String())
 }
 
-// scanQuotedString scans a quoted string and returns its full content
-// including the surrounding quote characters.
 func (l *Lexer) scanQuotedString(quote rune) string {
 	var valueB strings.Builder
 	l.advanceInto(&valueB) // opening quote
@@ -1046,8 +1017,6 @@ func (l *Lexer) advanceStr() string {
 	return string([]byte{l.advance()})
 }
 
-// advanceInto advances one byte and writes it directly into b,
-// avoiding a temporary string allocation on every character.
 func (l *Lexer) advanceInto(b *strings.Builder) {
 	b.WriteByte(l.advance())
 }

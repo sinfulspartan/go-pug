@@ -5,14 +5,12 @@ import (
 	"strings"
 )
 
-// Parser builds an AST from a token stream.
 type Parser struct {
 	tokens []Token
 	pos    int
 	cur    Token
 }
 
-// NewParser creates a new Parser for the given token slice.
 func NewParser(tokens []Token) *Parser {
 	p := &Parser{
 		tokens: tokens,
@@ -24,14 +22,12 @@ func NewParser(tokens []Token) *Parser {
 	return p
 }
 
-// Parse consumes the token stream and returns the root DocumentNode.
 func (p *Parser) Parse() (*DocumentNode, error) {
 	doc := &DocumentNode{
 		Children: make([]Node, 0),
 	}
 
 	for p.cur.Type != TokenEOF {
-		// Skip newlines at top level
 		if p.cur.Type == TokenNewline {
 			p.advance()
 			continue
@@ -49,8 +45,7 @@ func (p *Parser) Parse() (*DocumentNode, error) {
 	return doc, nil
 }
 
-// parseNode dispatches to the appropriate parse function based on the current
-// token type. expectedDepth is the minimum token depth required at this level;
+// parseNode: expectedDepth is the minimum token depth required at this level;
 // a token with a smaller depth triggers a dedent error.
 func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 	tok := p.cur
@@ -118,9 +113,6 @@ func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 	}
 }
 
-// parseTag parses a tag and everything that can follow it on the same line
-// (class/ID shorthands, attributes, block expansion, inline text, inline code)
-// plus any indented children.
 func (p *Parser) parseTag() (Node, error) {
 	tag := &TagNode{
 		Name:       "",
@@ -140,7 +132,6 @@ func (p *Parser) parseTag() (Node, error) {
 		tag.Name = "div" // implicit div
 	}
 
-	// Parse attributes, classes, IDs, and special characters
 	for p.cur.Type == TokenClass || p.cur.Type == TokenID || p.cur.Type == TokenAttrStart || p.cur.Type == TokenDot || p.cur.Type == TokenColon || p.cur.Type == TokenTagEnd ||
 		(p.cur.Type == TokenAttrName && p.cur.Value == "&attributes") {
 		switch p.cur.Type {
@@ -166,7 +157,7 @@ func (p *Parser) parseTag() (Node, error) {
 			}
 
 		case TokenAttrName:
-			// &attributes(expr) emitted outside an AttrStart/AttrEnd block by the lexer.
+			// &attributes emitted outside an AttrStart/AttrEnd block by the lexer.
 			if p.cur.Value == "&attributes" {
 				p.advance() // consume &attributes name
 				// Consume the = token
@@ -179,7 +170,6 @@ func (p *Parser) parseTag() (Node, error) {
 					p.advance()
 				}
 			} else {
-				// Unknown bare AttrName outside attribute block — skip
 				p.advance()
 			}
 
@@ -210,7 +200,6 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 	}
 
-	// Inline text or interpolation run on the same line as the tag (e.g. p Hello #{name}).
 	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth {
 		line := p.cur.Line
 		col := p.cur.Col
@@ -260,9 +249,8 @@ func (p *Parser) parseTag() (Node, error) {
 	return tag, nil
 }
 
-// parseAttributes parses the attribute list inside ( ... ) for the given tag.
-// For the "class" attribute, values from multiple sources (shorthand + explicit)
-// are merged rather than overwritten.
+// parseAttributes: for the "class" attribute, values from multiple sources
+// (shorthand + explicit) are merged rather than overwritten.
 func (p *Parser) parseAttributes(tag *TagNode) error {
 	for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
 		if p.cur.Type == TokenAttrName {
@@ -387,9 +375,6 @@ func (p *Parser) parseUnescapedCode() (*CodeNode, error) {
 	return &CodeNode{Expression: expr, Type: CodeUnescaped, Line: line, Col: col}, nil
 }
 
-// parsePipedText collects a run of same-depth pipe/text/interpolation tokens
-// and returns either a single PipeNode (plain text only) or a TextRunNode
-// (mixed text and interpolations).
 func (p *Parser) parsePipedText() (Node, error) {
 	line := p.cur.Line
 	col := p.cur.Col
@@ -407,8 +392,6 @@ func (p *Parser) parsePipedText() (Node, error) {
 	return &TextRunNode{Nodes: nodes, Line: line, Col: col}, nil
 }
 
-// collectTextRun collects a consecutive run of pipe/text/interpolation tokens
-// at the given depth, returning them as a slice of Nodes.
 func (p *Parser) collectTextRun(depth int) []Node {
 	var nodes []Node
 	for {
@@ -444,8 +427,8 @@ done:
 	return nodes
 }
 
-// parseTagInterpolation re-lexes and re-parses the inner content of a #[...]
-// interpolation token to produce a TagInterpolationNode.
+// parseTagInterpolation handles the inner content of a #[...] interpolation
+// token by re-lexing and re-parsing it to produce a TagInterpolationNode.
 func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 	inner := p.cur.Value
 	line := p.cur.Line
@@ -519,12 +502,10 @@ func (p *Parser) parseLiteralHTML() (*LiteralHTMLNode, error) {
 	return &LiteralHTMLNode{Content: content, Line: line, Col: col}, nil
 }
 
-// parseConditional parses if/else if/else blocks.
-//
-// The lexer folds "else if <cond>" onto a single TokenElse whose Value starts
-// with "if ".  A bare "else" has Value "else" (or empty).  We build a proper
-// linked chain: each else-if is the *sole* element of its parent's Alternate
-// slice, so the runtime can walk the chain with a simple for loop.
+// parseConditional: the lexer folds "else if <cond>" onto a single TokenElse
+// whose Value starts with "if ". A bare "else" has Value "else" (or empty).
+// Each else-if is the sole element of its parent's Alternate slice so the
+// runtime can walk the chain with a simple for loop.
 func (p *Parser) parseConditional() (*ConditionalNode, error) {
 	return p.parseConditionalWithCond(p.cur.Value, p.cur.IndentDepth, p.cur.Line, p.cur.Col, false)
 }
@@ -554,7 +535,6 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 	// For else-if, p.cur already points at the first body token (caller
 	// consumed the TokenElse and called skipNewlines).
 
-	// Parse consequent body
 	for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 		if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 			break
@@ -569,7 +549,6 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 		p.skipNewlines()
 	}
 
-	// Parse else / else-if tail.
 	// There is at most one TokenElse at this depth; we handle it and stop.
 	if p.cur.Type == TokenElse && p.cur.IndentDepth == currentDepth {
 		elseToken := p.cur
@@ -586,7 +565,6 @@ func (p *Parser) parseConditionalWithCond(condition string, currentDepth, line, 
 			}
 			cond.Alternate = append(cond.Alternate, child)
 		} else {
-			// bare else — collect body nodes directly into cond.Alternate
 			for p.cur.Type != TokenEOF && p.cur.IndentDepth > currentDepth {
 				node, err := p.parseNode(currentDepth + 1)
 				if err != nil {
@@ -813,11 +791,8 @@ func (p *Parser) parseCase() (*CaseNode, error) {
 	return c, nil
 }
 
-// parseMixinDecl parses mixin declarations.
-//
-// The lexer emits TokenMixin whose Value is everything after the "mixin"
-// keyword on the same line, e.g. "button(text, cls)" or "tag(name, ...attrs)".
-// We split that into the mixin name and an optional parameter list.
+// parseMixinDecl: TokenMixin.Value is everything after the "mixin" keyword,
+// e.g. "button(text, cls)" or "tag(name, ...attrs)".
 func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 	raw := p.cur.Value
 	line := p.cur.Line
@@ -908,12 +883,9 @@ func splitMixinParams(s string) []string {
 	return parts
 }
 
-// parseMixinCall parses mixin calls (+name).
-//
-// The lexer emits TokenMixinCall whose Value is the mixin name, then calls
-// scanTagRest which emits AttrStart/AttrName/AttrValue/AttrEnd tokens for
-// any argument list written as (+name(arg1, arg2)).  We collect those as
-// positional argument strings.  Any indented children become the call's Block.
+// parseMixinCall: scanTagRest emits AttrStart/AttrName/AttrValue/AttrEnd for
+// the argument list; we collect positional argument strings from those tokens.
+// Any indented children become the call's BlockContent.
 func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 	name := p.cur.Value
 	line := p.cur.Line
@@ -987,7 +959,6 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 					}
 					call.Attributes[attrName] = &AttributeValue{Value: val, Unescaped: unescaped}
 				} else {
-					// Boolean attribute (no value)
 					call.Attributes[attrName] = &AttributeValue{Value: attrName, IsBare: true}
 				}
 				continue
@@ -1056,18 +1027,8 @@ func (p *Parser) parseBlock() (*BlockNode, error) {
 	return block, nil
 }
 
-// parseBlockModifier parses standalone append/prepend keywords.
-//
-// Two forms are supported:
-//
-//  1. Standalone keyword: "append <name>" or "prepend <name>"
-//     The lexer emits TokenAppend/TokenPrepend with the block name already
-//     stored in the token's Value field (the rest of the line after the
-//     keyword).
-//
-//  2. Legacy two-token form: "append block <name>" or "prepend block <name>"
-//     where a separate TokenBlock token follows (kept for compatibility with
-//     any future lexer variant that splits the tokens).
+// parseBlockModifier: TokenAppend/TokenPrepend carry the block name in Value.
+// Legacy two-token form "append block <name>" is also handled for compatibility.
 func (p *Parser) parseBlockModifier() (*BlockNode, error) {
 	mode := BlockModeAppend
 	if p.cur.Type == TokenPrepend {
@@ -1124,11 +1085,11 @@ func (p *Parser) parseExtends() (*ExtendsNode, error) {
 	return &ExtendsNode{Path: path, Line: line, Col: col}, nil
 }
 
-// parseInclude handles all three include forms:
+// parseInclude handles three forms:
 //
-//	include path/to/file.pug     — Pug include
-//	include path/to/file.txt     — raw file include
-//	include :filtername path     — raw file include with filter applied
+//	include path/to/file.pug   — Pug include
+//	include path/to/file.txt   — raw file include
+//	include :filtername path   — raw file include with filter applied
 func (p *Parser) parseInclude() (*IncludeNode, error) {
 	raw := p.cur.Value
 	line := p.cur.Line
@@ -1165,9 +1126,8 @@ func (p *Parser) parseInclude() (*IncludeNode, error) {
 	return include, nil
 }
 
-// parseFilter consumes the token stream for a filter block. The lexer has
-// already eagerly collected body lines as consecutive TokenText tokens, so
-// the parser just drains them. Token sequence:
+// parseFilter: body lines were eagerly collected by the lexer as TokenText.
+// Token sequence:
 //
 //	TokenFilter{"name"}
 //	TokenFilterColon{"sub"}  — repeated for each chained subfilter
@@ -1186,7 +1146,6 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 		Col:  col,
 	}
 
-	// Subfilters may appear before or after the options block.
 	var subfilters []string
 	collectSubfilters := func() {
 		for p.cur.Type == TokenFilterColon {
@@ -1219,8 +1178,7 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 	return filter, nil
 }
 
-// parseFilterOptions decodes the raw (key=value ...) options string into a
-// map[string]string. Bare keys without a value are stored as "true".
+// parseFilterOptions: bare keys without a value are stored as "true".
 func parseFilterOptions(raw string) map[string]string {
 	opts := make(map[string]string)
 	s := strings.TrimSpace(raw)
