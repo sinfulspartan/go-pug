@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
@@ -451,8 +452,9 @@ func renderJSON(w io.Writer, rep report, goVersion string) error {
 func main() {
 	outFile := flag.String("o", "", "write output to `file` instead of stdout")
 	format := flag.String("format", "md", "output format: md, json, csv")
+	tee := flag.Bool("tee", false, "echo stdin to stdout while reading, then write report to -o")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: go test -bench . -benchmem ./pkg/gopug | go run ./scripts/bench2md [-o file] [-format md|json|csv]")
+		fmt.Fprintln(os.Stderr, "Usage: go test -bench . -benchmem ./pkg/gopug | go run ./scripts/bench2md [-tee] [-o file] [-format md|json|csv]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -465,7 +467,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	rep := parse(os.Stdin)
+	// When -tee is set, read all of stdin into a buffer while echoing each
+	// line to stdout, then parse from the buffer.  This replaces the shell
+	// pattern:  ... | tee bench_raw.txt ; bench2md < bench_raw.txt ; rm bench_raw.txt
+	var parseReader io.Reader = os.Stdin
+	if *tee {
+		if *outFile == "" {
+			fmt.Fprintln(os.Stderr, "bench2md: -tee requires -o <file>")
+			os.Exit(1)
+		}
+		var buf bytes.Buffer
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+			buf.WriteString(line + "\n")
+		}
+		if err := scanner.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "bench2md: reading stdin: %v\n", err)
+			os.Exit(1)
+		}
+		parseReader = &buf
+	}
+
+	rep := parse(parseReader)
 
 	goVersion := fmt.Sprintf("%s %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 

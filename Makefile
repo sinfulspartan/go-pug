@@ -31,7 +31,7 @@ BENCH_CSV  ?= benchmarks.csv
 BENCH2MD   := ./scripts/bench2md
 
 # -- Tooling detection --------------------------------------------------------
-GOLANGCI_LINT := $(shell which golangci-lint 2>/dev/null)
+GOLANGCI_LINT := $(shell where golangci-lint 2>nul || which golangci-lint 2>/dev/null)
 
 # ---------------------------------------------------------------------------
 # Phony targets
@@ -140,10 +140,6 @@ test-race:
 # Benchmarks
 # ---------------------------------------------------------------------------
 
-# _BENCH_TMP captures raw benchmark output so it can be both displayed to the
-# terminal and fed to bench2md in a single run, without process substitution.
-_BENCH_TMP := bench_raw.txt
-
 bench:
 	@echo "=> Benchmarks  BENCH=$(BENCH)  BENCHTIME=$(BENCHTIME)  COUNT=$(BENCHCOUNT)"
 	$(GO) test -count=$(BENCHCOUNT) \
@@ -151,9 +147,8 @@ bench:
 	           -bench "$(BENCH)" \
 	           -benchtime $(BENCHTIME) \
 	           -benchmem \
-	           $(PKG) | tee $(_BENCH_TMP) ; \
-	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
-	rm -f $(_BENCH_TMP)
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -tee -o $(BENCH_MD)
 	@echo "-> $(BENCH_MD) written"
 
 bench-short:
@@ -163,9 +158,8 @@ bench-short:
 	           -bench "$(BENCH)" \
 	           -benchtime 100ms \
 	           -benchmem \
-	           $(PKG) | tee $(_BENCH_TMP) ; \
-	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
-	rm -f $(_BENCH_TMP)
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -tee -o $(BENCH_MD)
 	@echo "-> $(BENCH_MD) written"
 
 bench-cpu:
@@ -176,9 +170,8 @@ bench-cpu:
 	           -benchtime $(BENCHTIME) \
 	           -benchmem \
 	           -cpuprofile cpu.prof \
-	           $(PKG) | tee $(_BENCH_TMP) ; \
-	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
-	rm -f $(_BENCH_TMP)
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -tee -o $(BENCH_MD)
 	@echo "-> cpu.prof written  (inspect with: go tool pprof cpu.prof)"
 	@echo "-> $(BENCH_MD) written"
 
@@ -190,9 +183,8 @@ bench-mem:
 	           -benchtime $(BENCHTIME) \
 	           -benchmem \
 	           -memprofile mem.prof \
-	           $(PKG) | tee $(_BENCH_TMP) ; \
-	$(GO) run $(BENCH2MD) -o $(BENCH_MD) < $(_BENCH_TMP) ; \
-	rm -f $(_BENCH_TMP)
+	           $(PKG) \
+	| $(GO) run $(BENCH2MD) -tee -o $(BENCH_MD)
 	@echo "-> mem.prof written  (inspect with: go tool pprof mem.prof)"
 	@echo "-> $(BENCH_MD) written"
 
@@ -284,6 +276,9 @@ mod:
 
 clean:
 	@echo "=> Cleaning build artifacts"
-	-rm -rf $(BIN_DIR)
-	-rm -f $(COVER_OUT) $(COVER_HTML) cpu.prof mem.prof $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV) $(_BENCH_TMP)
+	$(GO) run ./scripts/clean \
+	    $(BIN_DIR) \
+	    $(COVER_OUT) $(COVER_HTML) \
+	    cpu.prof mem.prof \
+	    $(BENCH_MD) $(BENCH_JSON) $(BENCH_CSV)
 	@echo "-> Done"
