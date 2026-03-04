@@ -238,7 +238,6 @@ func loadExamples(viewsDir string) ([]example, error) {
 		return nil, fmt.Errorf("reading views dir: %w", err)
 	}
 
-	// Files that need include/extends resolution
 	needsBasedir := map[string]bool{
 		"35-includes.pug": true,
 		"36-extends.pug":  true,
