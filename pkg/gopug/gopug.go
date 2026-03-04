@@ -34,9 +34,7 @@ func SimpleFilter(fn func(string) (string, error)) FilterFunc {
 	}
 }
 
-// compiledCache caches the result of CompileFile keyed by absolute file path.
-// The cached entries are invalidated by ClearCache().
-var compiledCache sync.Map // map[string]*Template
+var compiledCache sync.Map
 
 // ClearCache removes all cached compiled templates, forcing the next
 // CompileFile call for each path to re-read and re-parse the file.
@@ -62,7 +60,6 @@ type Options struct {
 }
 
 // Render compiles a Pug template string and renders it with the given data.
-// This is a convenience function that compiles and renders in one step.
 func Render(src string, data map[string]any, opts *Options) (string, error) {
 	tpl, err := Compile(src, opts)
 	if err != nil {
@@ -95,14 +92,12 @@ func Compile(src string, opts *Options) (*Template, error) {
 		opts = &Options{}
 	}
 
-	// Lex
 	lexer := NewLexer(src)
 	tokens, err := lexer.Lex()
 	if err != nil {
 		return nil, fmt.Errorf("lexer error: %w", err)
 	}
 
-	// Parse
 	parser := NewParser(tokens)
 	ast, err := parser.Parse()
 	if err != nil {
@@ -125,7 +120,6 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		return nil, fmt.Errorf("failed to resolve path %q: %w", path, err)
 	}
 
-	// Check the cache first.
 	if cached, ok := compiledCache.Load(abs); ok {
 		tpl := cached.(*Template)
 		// If caller supplied opts, return a shallow copy that merges them in
@@ -167,7 +161,6 @@ func (t *Template) Render(data map[string]any) (string, error) {
 		data = make(map[string]any)
 	}
 
-	// Merge globals into data
 	if t.opts != nil && t.opts.Globals != nil {
 		for k, v := range t.opts.Globals {
 			if _, exists := data[k]; !exists {
@@ -176,7 +169,6 @@ func (t *Template) Render(data map[string]any) (string, error) {
 		}
 	}
 
-	// Create runtime and render
 	rt := NewRuntimeWithOptions(t.ast, data, t.opts)
 	return rt.Render()
 }
