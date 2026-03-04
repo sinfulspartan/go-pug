@@ -41,7 +41,7 @@ var compiledCache sync.Map // map[string]*Template
 // ClearCache removes all cached compiled templates, forcing the next
 // CompileFile call for each path to re-read and re-parse the file.
 func ClearCache() {
-	compiledCache.Range(func(k, _ interface{}) bool {
+	compiledCache.Range(func(k, _ any) bool {
 		compiledCache.Delete(k)
 		return true
 	})
@@ -57,13 +57,13 @@ type Template struct {
 type Options struct {
 	Basedir string                     // root directory for absolute paths
 	Pretty  bool                       // pretty-print HTML output
-	Globals map[string]interface{}     // data available to all renders
+	Globals map[string]any     // data available to all renders
 	Filters map[string]FilterFunc      // custom filters (receive body text + parsed options)
 }
 
 // Render compiles a Pug template string and renders it with the given data.
 // This is a convenience function that compiles and renders in one step.
-func Render(src string, data map[string]interface{}, opts *Options) (string, error) {
+func Render(src string, data map[string]any, opts *Options) (string, error) {
 	tpl, err := Compile(src, opts)
 	if err != nil {
 		return "", err
@@ -72,7 +72,7 @@ func Render(src string, data map[string]interface{}, opts *Options) (string, err
 }
 
 // RenderFile reads a .pug file, compiles it, and renders it with the given data.
-func RenderFile(path string, data map[string]interface{}, opts *Options) (string, error) {
+func RenderFile(path string, data map[string]any, opts *Options) (string, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file %q: %w", path, err)
@@ -162,9 +162,9 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 }
 
 // Render renders the template with the provided data and returns HTML.
-func (t *Template) Render(data map[string]interface{}) (string, error) {
+func (t *Template) Render(data map[string]any) (string, error) {
 	if data == nil {
-		data = make(map[string]interface{})
+		data = make(map[string]any)
 	}
 
 	// Merge globals into data
@@ -182,7 +182,7 @@ func (t *Template) Render(data map[string]interface{}) (string, error) {
 }
 
 // RenderToWriter renders the template with the provided data and writes to w.
-func (t *Template) RenderToWriter(w io.Writer, data map[string]interface{}) error {
+func (t *Template) RenderToWriter(w io.Writer, data map[string]any) error {
 	html, err := t.Render(data)
 	if err != nil {
 		return err

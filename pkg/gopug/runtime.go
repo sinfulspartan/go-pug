@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"html"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,10 +17,10 @@ import (
 // Runtime renders an AST to HTML.
 type Runtime struct {
 	ast          *DocumentNode
-	data         map[string]interface{}
-	globals      map[string]interface{}
+	data         map[string]any
+	globals      map[string]any
 	htmlBuf      *bytes.Buffer
-	scopeStack   []map[string]interface{}
+	scopeStack   []map[string]any
 	doctype      string
 	mixinDecls   map[string]*MixinDeclNode
 	callerBlock  []Node
@@ -30,19 +32,19 @@ type Runtime struct {
 }
 
 // NewRuntime creates a Runtime with no options.
-func NewRuntime(ast *DocumentNode, data map[string]interface{}) *Runtime {
+func NewRuntime(ast *DocumentNode, data map[string]any) *Runtime {
 	return NewRuntimeWithOptions(ast, data, nil)
 }
 
 // NewRuntimeWithOptions creates a Runtime with explicit Options. Basedir and
 // Globals from opts are available during rendering (e.g. for includes).
-func NewRuntimeWithOptions(ast *DocumentNode, data map[string]interface{}, opts *Options) *Runtime {
+func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options) *Runtime {
 	r := &Runtime{
 		ast:          ast,
 		data:         data,
-		globals:      make(map[string]interface{}),
+		globals:      make(map[string]any),
 		htmlBuf:      &bytes.Buffer{},
-		scopeStack:   make([]map[string]interface{}, 1),
+		scopeStack:   make([]map[string]any, 1),
 		doctype:      "html",
 		mixinDecls:   make(map[string]*MixinDeclNode),
 		opts:         opts,
@@ -102,8 +104,8 @@ func (r *Runtime) Render() (string, error) {
 
 	r.collectMixins(r.ast.Children)
 
-	if ext := r.findExtendsNode(r.ast.Children); ext != nil {
-		return r.renderExtends(ext)
+	if r.findExtendsNode(r.ast.Children) != nil {
+		return r.renderExtends()
 	}
 
 	for _, node := range r.ast.Children {
@@ -146,7 +148,7 @@ func (r *Runtime) collectMixins(nodes []Node) {
 //     chained extends of any depth without goto / label spaghetti).
 //  2. Merge all collected mixins into the runtime.
 //  3. Render the patched root AST with the current data.
-func (r *Runtime) renderExtends(ext *ExtendsNode) (string, error) {
+func (r *Runtime) renderExtends() (string, error) {
 	// We need to know the "current file path" for relative resolution.
 	// If we are inside an include stack, the top of the stack is the current
 	// file; otherwise we use basedir as a hint (we create a synthetic path).
@@ -162,9 +164,7 @@ func (r *Runtime) renderExtends(ext *ExtendsNode) (string, error) {
 		return "", err
 	}
 
-	for k, v := range mixins {
-		r.mixinDecls[k] = v
-	}
+	maps.Copy(r.mixinDecls, mixins)
 	r.collectMixins(rootAST.Children)
 
 	for _, node := range rootAST.Children {
@@ -184,10 +184,8 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 	if currentPath != "" && !strings.HasSuffix(currentPath, "_root_.pug") {
 		absCurrentPath, err := filepath.Abs(currentPath)
 		if err == nil {
-			for _, p := range r.includeStack {
-				if p == absCurrentPath {
-					return nil, nil, fmt.Errorf("extends: cycle — %q", absCurrentPath)
-				}
+			if slices.Contains(r.includeStack, absCurrentPath) {
+				return nil, nil, fmt.Errorf("extends: cycle — %q", absCurrentPath)
 			}
 			r.includeStack = append(r.includeStack, absCurrentPath)
 			defer func() { r.includeStack = r.includeStack[:len(r.includeStack)-1] }()
@@ -196,14 +194,14 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 
 	var ext *ExtendsNode
 	for _, node := range childAST.Children {
-		switch node.(type) {
-		case *CommentNode, *MixinDeclNode:
-			if m, ok := node.(*MixinDeclNode); ok {
-				mixins[m.Name] = m
-			}
+		switch n := node.(type) {
+		case *CommentNode:
+			continue
+		case *MixinDeclNode:
+			mixins[n.Name] = n
 			continue
 		case *ExtendsNode:
-			ext = node.(*ExtendsNode)
+			ext = n
 		default:
 		}
 		break
@@ -241,10 +239,8 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("extends: cannot resolve %q: %w", parentPath, err)
 	}
-	for _, p := range r.includeStack {
-		if p == abs {
-			return nil, nil, fmt.Errorf("extends: cycle — %q", abs)
-		}
+	if slices.Contains(r.includeStack, abs) {
+		return nil, nil, fmt.Errorf("extends: cycle — %q", abs)
 	}
 	if filepath.Ext(abs) == "" {
 		abs += ".pug"
@@ -269,9 +265,7 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 	if err != nil {
 		return nil, nil, err
 	}
-	for k, v := range parentMixins {
-		mixins[k] = v
-	}
+	maps.Copy(mixins, parentMixins)
 
 	childBlocks := r.collectBlocks(childAST.Children)
 	for _, node := range childAST.Children {
@@ -453,7 +447,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 		expr := strings.TrimSpace(v.Value)
 
-		spreadMap := map[string]interface{}{}
+		spreadMap := map[string]any{}
 
 		if raw, ok := r.lookup(expr); ok && raw != nil {
 			rv := reflect.ValueOf(raw)
@@ -481,11 +475,12 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 					merged["class"] = &AttributeValue{Value: `"` + valStr + `"`}
 				}
 			default:
-				if valStr == "true" {
+				switch valStr {
+				case "true":
 					merged[attrKey] = &AttributeValue{IsBare: true}
-				} else if valStr == "false" {
+				case "false":
 					delete(merged, attrKey)
-				} else {
+				default:
 					merged[attrKey] = &AttributeValue{Value: `"` + valStr + `"`}
 				}
 			}
@@ -898,7 +893,7 @@ func (r *Runtime) executeStatement(stmt string) error {
 
 // setVar writes a variable, updating the innermost scope that already contains
 // it, or creating it in the top scope if not found anywhere.
-func (r *Runtime) setVar(name string, val interface{}) {
+func (r *Runtime) setVar(name string, val any) {
 	for i := len(r.scopeStack) - 1; i >= 0; i-- {
 		if r.scopeStack[i] == nil {
 			continue
@@ -910,7 +905,7 @@ func (r *Runtime) setVar(name string, val interface{}) {
 	}
 	top := len(r.scopeStack) - 1
 	if r.scopeStack[top] == nil {
-		r.scopeStack[top] = make(map[string]interface{})
+		r.scopeStack[top] = make(map[string]any)
 	}
 	r.scopeStack[top][name] = val
 }
@@ -935,8 +930,8 @@ func findAssignOp(stmt string) int {
 	return -1
 }
 
-// toFloat converts an interface{} value to float64.
-func toFloat(v interface{}) (float64, bool) {
+// toFloat converts an any value to float64.
+func toFloat(v any) (float64, bool) {
 	if v == nil {
 		return 0, false
 	}
@@ -991,7 +986,7 @@ func (r *Runtime) renderConditional(cond *ConditionalNode) error {
 
 // renderEach renders each/for loops. The collection is looked up as a raw
 // value first so slices and maps are iterable; method expressions like
-// csv.split(",") fall back to evaluateExprRaw which returns []interface{}.
+// csv.split(",") fall back to evaluateExprRaw which returns []any.
 func (r *Runtime) renderEach(each *EachNode) error {
 	collVal, ok := r.lookup(each.CollectionExpr)
 	if !ok {
@@ -1010,7 +1005,7 @@ func (r *Runtime) renderEach(each *EachNode) error {
 				return nil
 			}
 			for _, mapKey := range v.MapKeys() {
-				scope := make(map[string]interface{})
+				scope := make(map[string]any)
 				scope[each.ItemVar] = v.MapIndex(mapKey).Interface()
 				if each.IndexVar != "" {
 					scope[each.IndexVar] = fmt.Sprintf("%v", mapKey.Interface())
@@ -1040,7 +1035,7 @@ func (r *Runtime) renderEach(each *EachNode) error {
 	}
 
 	for i, item := range items {
-		scope := make(map[string]interface{})
+		scope := make(map[string]any)
 		scope[each.ItemVar] = item
 		if each.IndexVar != "" {
 			scope[each.IndexVar] = strconv.Itoa(i)
@@ -1254,10 +1249,8 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 		return fmt.Errorf("include: cannot resolve path %q: %w", inclPath, err)
 	}
 
-	for _, p := range r.includeStack {
-		if p == abs {
-			return fmt.Errorf("include: cycle detected — %q includes itself", abs)
-		}
+	if slices.Contains(r.includeStack, abs) {
+		return fmt.Errorf("include: cycle detected — %q includes itself", abs)
 	}
 
 	if filepath.Ext(abs) == "" {
@@ -1336,7 +1329,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 		return fmt.Errorf("mixin %q is not defined", call.Name)
 	}
 
-	scope := make(map[string]interface{})
+	scope := make(map[string]any)
 
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
@@ -1361,7 +1354,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	}
 
 	if decl.RestParamName != "" {
-		rest := make([]interface{}, 0)
+		rest := make([]any, 0)
 		for i := len(decl.Parameters); i < len(call.Arguments); i++ {
 			val, err := r.evaluateExpr(call.Arguments[i])
 			if err != nil {
@@ -1372,7 +1365,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 		scope[decl.RestParamName] = rest
 	}
 
-	attrMap := make(map[string]interface{})
+	attrMap := make(map[string]any)
 	for k, v := range call.Attributes {
 		var evaluated string
 		if v.IsBare {
@@ -1491,11 +1484,11 @@ func (r *Runtime) lookupFilter(name string) (FilterFunc, bool) {
 	return nil, false
 }
 
-// evaluateExprRaw evaluates an expression and returns a raw interface{} value
+// evaluateExprRaw evaluates an expression and returns a raw any value
 // rather than a string. Used when the caller needs a real Go slice or map
 // (e.g. the collection in an each loop). Special-cased for split, inline
 // object literals, and inline array literals; falls back to evaluateExpr.
-func (r *Runtime) evaluateExprRaw(expr string) interface{} {
+func (r *Runtime) evaluateExprRaw(expr string) any {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return nil
@@ -1506,12 +1499,10 @@ func (r *Runtime) evaluateExprRaw(expr string) interface{} {
 		rest := expr[dotIdx+1:]
 		methodName := rest
 		argsStr := ""
-		if parenIdx := strings.Index(rest, "("); parenIdx >= 0 {
-			methodName = rest[:parenIdx]
-			inner := rest[parenIdx+1:]
-			if closeIdx := strings.LastIndex(inner, ")"); closeIdx >= 0 {
-				argsStr = strings.TrimSpace(inner[:closeIdx])
-			}
+		if before, inner, found := strings.Cut(rest, "("); found {
+			methodName = before
+			argsStr, _, _ = strings.Cut(strings.TrimSpace(inner), ")")
+			argsStr = strings.TrimSpace(argsStr)
 		}
 		methodName = strings.TrimSpace(methodName)
 
@@ -1527,7 +1518,7 @@ func (r *Runtime) evaluateExprRaw(expr string) interface{} {
 				}
 			}
 			parts := strings.Split(objStr, sep)
-			result := make([]interface{}, len(parts))
+			result := make([]any, len(parts))
 			for i, p := range parts {
 				result[i] = p
 			}
@@ -1538,7 +1529,7 @@ func (r *Runtime) evaluateExprRaw(expr string) interface{} {
 	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
 		obj := parseInlineObject(expr)
 		if obj != nil {
-			result := make(map[string]interface{}, len(obj))
+			result := make(map[string]any, len(obj))
 			for k, v := range obj {
 				result[k] = v
 			}
@@ -1549,10 +1540,10 @@ func (r *Runtime) evaluateExprRaw(expr string) interface{} {
 	if len(expr) >= 2 && expr[0] == '[' && expr[len(expr)-1] == ']' {
 		inner := strings.TrimSpace(expr[1 : len(expr)-1])
 		if inner == "" {
-			return []interface{}{}
+			return []any{}
 		}
 		parts := splitTopLevel(inner, ',')
-		result := make([]interface{}, 0, len(parts))
+		result := make([]any, 0, len(parts))
 		for _, p := range parts {
 			v, _ := r.evaluateExpr(strings.TrimSpace(p))
 			result = append(result, v)
@@ -1846,12 +1837,10 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 
 		methodName := rest
 		argsStr := ""
-		if parenIdx := strings.Index(rest, "("); parenIdx >= 0 {
-			methodName = rest[:parenIdx]
-			inner := rest[parenIdx+1:]
-			if closeIdx := strings.LastIndex(inner, ")"); closeIdx >= 0 {
-				argsStr = strings.TrimSpace(inner[:closeIdx])
-			}
+		if before, inner, found := strings.Cut(rest, "("); found {
+			methodName = before
+			argsStr, _, _ = strings.Cut(strings.TrimSpace(inner), ")")
+			argsStr = strings.TrimSpace(argsStr)
 		}
 		methodName = strings.TrimSpace(methodName)
 
@@ -2279,7 +2268,7 @@ func findIndexOp(expr string) int {
 	return -1
 }
 
-func (r *Runtime) indexValue(obj interface{}, key string) interface{} {
+func (r *Runtime) indexValue(obj any, key string) any {
 	v := reflect.ValueOf(obj)
 	switch v.Kind() {
 	case reflect.Slice, reflect.Array:
@@ -2428,11 +2417,11 @@ func parseNumber(s string) (float64, bool) {
 // lookup retrieves a value by name from the scope stack (innermost first),
 // falling back to globals. Dot notation ("user.name") is resolved by walking
 // the chain with getField.
-func (r *Runtime) lookup(key string) (interface{}, bool) {
+func (r *Runtime) lookup(key string) (any, bool) {
 	parts := strings.Split(key, ".")
 	root := strings.TrimSpace(parts[0])
 
-	var rootVal interface{}
+	var rootVal any
 	found := false
 	for i := len(r.scopeStack) - 1; i >= 0; i-- {
 		if r.scopeStack[i] == nil {
@@ -2468,7 +2457,7 @@ func (r *Runtime) lookup(key string) (interface{}, bool) {
 	return current, true
 }
 
-func (r *Runtime) getField(obj interface{}, field string) interface{} {
+func (r *Runtime) getField(obj any, field string) any {
 	if obj == nil {
 		return nil
 	}
@@ -2489,14 +2478,14 @@ func (r *Runtime) getField(obj interface{}, field string) interface{} {
 	return nil
 }
 
-func (r *Runtime) toSlice(val interface{}) []interface{} {
+func (r *Runtime) toSlice(val any) []any {
 	if val == nil {
-		return []interface{}{}
+		return []any{}
 	}
 
 	v := reflect.ValueOf(val)
 	if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-		result := make([]interface{}, v.Len())
+		result := make([]any, v.Len())
 		for i := 0; i < v.Len(); i++ {
 			result[i] = v.Index(i).Interface()
 		}
@@ -2504,14 +2493,14 @@ func (r *Runtime) toSlice(val interface{}) []interface{} {
 	}
 
 	if v.Kind() == reflect.Map {
-		result := make([]interface{}, 0)
+		result := make([]any, 0)
 		for _, key := range v.MapKeys() {
 			result = append(result, v.MapIndex(key).Interface())
 		}
 		return result
 	}
 
-	return []interface{}{val}
+	return []any{val}
 }
 
 // splitTopLevel splits s on sep at depth 0 (outside quotes and brackets).
@@ -2556,12 +2545,12 @@ func parseInlineObject(s string) map[string]string {
 		if pair == "" {
 			continue
 		}
-		colonIdx := strings.Index(pair, ":")
-		if colonIdx < 0 {
+		key, val, found := strings.Cut(pair, ":")
+		if !found {
 			continue
 		}
-		key := strings.TrimSpace(pair[:colonIdx])
-		val := strings.TrimSpace(pair[colonIdx+1:])
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
 		if len(key) >= 2 &&
 			((key[0] == '"' && key[len(key)-1] == '"') ||
 				(key[0] == '\'' && key[len(key)-1] == '\'')) {

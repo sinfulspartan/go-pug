@@ -132,10 +132,11 @@ func (p *Parser) parseTag() (Node, error) {
 
 	currentDepth := p.cur.IndentDepth
 
-	if p.cur.Type == TokenTag {
+	switch p.cur.Type {
+	case TokenTag:
 		tag.Name = p.cur.Value
 		p.advance()
-	} else if p.cur.Type == TokenClass || p.cur.Type == TokenID {
+	case TokenClass, TokenID:
 		tag.Name = "div" // implicit div
 	}
 
@@ -206,9 +207,6 @@ func (p *Parser) parseTag() (Node, error) {
 		case TokenTagEnd:
 			p.advance()
 			tag.SelfClose = true
-
-		default:
-			break
 		}
 	}
 
@@ -827,12 +825,10 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 
 	mixinName := raw
 	paramStr := ""
-	if idx := strings.Index(raw, "("); idx >= 0 {
-		mixinName = strings.TrimSpace(raw[:idx])
-		end := strings.LastIndex(raw, ")")
-		if end > idx {
-			paramStr = raw[idx+1 : end]
-		}
+	if before, inner, found := strings.Cut(raw, "("); found {
+		mixinName = strings.TrimSpace(before)
+		paramStr, _, _ = strings.Cut(inner, ")")
+		paramStr = strings.TrimSpace(paramStr)
 	}
 
 	mixin := &MixinDeclNode{
@@ -852,9 +848,9 @@ func (p *Parser) parseMixinDecl() (*MixinDeclNode, error) {
 			}
 			if strings.HasPrefix(param, "...") {
 				mixin.RestParamName = strings.TrimSpace(strings.TrimPrefix(param, "..."))
-			} else if eqIdx := strings.Index(param, "="); eqIdx >= 0 {
-				paramName := strings.TrimSpace(param[:eqIdx])
-				defaultExpr := strings.TrimSpace(param[eqIdx+1:])
+			} else if paramName, defaultExpr, hasDefault := strings.Cut(param, "="); hasDefault {
+				paramName = strings.TrimSpace(paramName)
+				defaultExpr = strings.TrimSpace(defaultExpr)
 				mixin.Parameters = append(mixin.Parameters, paramName)
 				mixin.ParamDefaults[paramName] = defaultExpr
 			} else {
@@ -926,12 +922,12 @@ func (p *Parser) parseMixinCall() (*MixinCallNode, error) {
 	p.advance()
 
 	call := &MixinCallNode{
-		Name:       name,
-		Arguments:  make([]string, 0),
-		Attributes: make(map[string]*AttributeValue),
+		Name:         name,
+		Arguments:    make([]string, 0),
+		Attributes:   make(map[string]*AttributeValue),
 		BlockContent: make([]Node, 0),
-		Line:       line,
-		Col:        col,
+		Line:         line,
+		Col:          col,
 	}
 
 	// First attribute group: positional arguments (no AttrEqual) and/or

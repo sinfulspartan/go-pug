@@ -264,18 +264,20 @@ func (l *Lexer) scanLine() error {
 
 func (l *Lexer) scanIndentation() int {
 	depth := 0
+loop:
 	for l.pos < len(l.input) {
 		ch := l.input[l.pos]
-		if ch == ' ' {
+		switch ch {
+		case ' ':
 			depth++
 			l.pos++
 			l.col++
-		} else if ch == '\t' {
+		case '\t':
 			depth += 4 // treat tab as 4 spaces
 			l.pos++
 			l.col++
-		} else {
-			break
+		default:
+			break loop
 		}
 	}
 	return depth
@@ -1090,7 +1092,7 @@ func (l *Lexer) addToken(tt TokenType, value string) {
 	})
 }
 
-func (l *Lexer) errorf(format string, args ...interface{}) error {
+func (l *Lexer) errorf(format string, args ...any) error {
 	return fmt.Errorf("lexer error at line %d, col %d: %s", l.line, l.col, fmt.Sprintf(format, args...))
 }
 
