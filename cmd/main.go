@@ -7,8 +7,9 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
-
 	"strings"
 
 	"github.com/sinfulspartan/go-pug/pkg/gopug"
@@ -33,6 +34,7 @@ type example struct {
 	pug      string
 	data     map[string]interface{}
 	opts     *gopug.Options
+	basedir  string // non-empty for examples that use include/extends
 }
 
 type meta struct {
@@ -196,17 +198,55 @@ var registry = map[string]meta{
 		title: "Pretty-print mode",
 		opts:  &gopug.Options{Pretty: true},
 	},
+	"35-includes.pug": {title: "Includes"},
+	"36-extends.pug":  {title: "Template inheritance — extends & block"},
+	"37-expressions.pug": {title: "Expressions — arithmetic, comparison, logic, ternary"},
 }
 
-func loadExamples() ([]example, error) {
+// extractViewsToTemp writes all embedded views/*.pug files to a temp
+// directory so that include/extends resolution can find them on disk.
+// The caller is responsible for removing the directory when done.
+func extractViewsToTemp() (string, error) {
+	dir, err := os.MkdirTemp("", "gopug-views-*")
+	if err != nil {
+		return "", fmt.Errorf("creating temp dir: %w", err)
+	}
+
+	entries, err := fs.ReadDir(viewsFS, "views")
+	if err != nil {
+		return "", fmt.Errorf("reading embedded views: %w", err)
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pug") {
+			continue
+		}
+		data, err := viewsFS.ReadFile("views/" + e.Name())
+		if err != nil {
+			return "", fmt.Errorf("reading %s: %w", e.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0644); err != nil {
+			return "", fmt.Errorf("writing %s: %w", e.Name(), err)
+		}
+	}
+	return dir, nil
+}
+
+func loadExamples(viewsDir string) ([]example, error) {
 	entries, err := fs.ReadDir(viewsFS, "views")
 	if err != nil {
 		return nil, fmt.Errorf("reading views dir: %w", err)
 	}
 
+	// Files that need include/extends resolution
+	needsBasedir := map[string]bool{
+		"35-includes.pug": true,
+		"36-extends.pug":  true,
+	}
+
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".pug") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".pug") && !strings.HasPrefix(e.Name(), "_") {
 			names = append(names, e.Name())
 		}
 	}
@@ -230,12 +270,17 @@ func loadExamples() ([]example, error) {
 			title = strings.ReplaceAll(base, "-", " ")
 		}
 
+		bd := ""
+		if needsBasedir[name] {
+			bd = viewsDir
+		}
 		examples = append(examples, example{
 			filename: name,
 			title:    title,
 			pug:      string(raw),
 			data:     m.data,
 			opts:     m.opts,
+			basedir:  bd,
 		})
 	}
 
@@ -258,7 +303,19 @@ func writePage(w http.ResponseWriter, exs []example, previewStyles string) {
 	sb.WriteString(`<div class="grid">`)
 
 	for i, ex := range exs {
-		rendered, renderErr := gopug.Render(ex.pug, ex.data, ex.opts)
+		var rendered string
+		var renderErr error
+		if ex.basedir != "" {
+			opts := ex.opts
+			if opts == nil {
+				opts = &gopug.Options{}
+			}
+			merged := *opts
+			merged.Basedir = ex.basedir
+			rendered, renderErr = gopug.RenderFile(filepath.Join(ex.basedir, ex.filename), ex.data, &merged)
+		} else {
+			rendered, renderErr = gopug.Render(ex.pug, ex.data, ex.opts)
+		}
 
 		sb.WriteString(`<div class="card">`)
 		sb.WriteString(`<div class="card-header">`)
@@ -309,7 +366,13 @@ func writePage(w http.ResponseWriter, exs []example, previewStyles string) {
 }
 
 func main() {
-	exs, err := loadExamples()
+	viewsDir, err := extractViewsToTemp()
+	if err != nil {
+		log.Fatalf("failed to extract views: %v", err)
+	}
+	defer os.RemoveAll(viewsDir)
+
+	exs, err := loadExamples(viewsDir)
 	if err != nil {
 		log.Fatalf("failed to load examples: %v", err)
 	}

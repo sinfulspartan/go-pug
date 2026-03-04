@@ -1,0 +1,25 @@
+- a = 10
+- b = 3
+
+p Addition: #{a + b}
+p Subtraction: #{a - b}
+p Multiply: #{a * b}
+p Divide: #{a / b}
+p Modulo: #{a % b}
+p Precedence: #{a + b * 2}
+
+p Equal: #{a == 10}
+p Not equal: #{a != b}
+p Less than: #{b < a}
+p Greater than: #{a > b}
+p Less or equal: #{b <= 3}
+p Greater or equal: #{a >= 10}
+
+p And (true): #{a == 10 && b == 3}
+p And (false): #{a == 10 && b == 99}
+p Or (true): #{a == 99 || b == 3}
+p Not: #{!(a == 99)}
+
+p Ternary (true branch): #{a > b ? "a is bigger" : "b is bigger"}
+p Ternary (false branch): #{b > a ? "b is bigger" : "a is bigger"}
+p Nested ternary: #{a == 10 ? (b == 3 ? "both match" : "only a") : "neither"}

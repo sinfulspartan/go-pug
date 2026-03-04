@@ -1,0 +1,24 @@
+extends _layout.pug
+
+block title
+  | My Page &mdash; Go-Pug
+
+block header
+  header
+    nav
+      a(href="/") Home
+      a(href="/about") About
+      a(href="/contact") Contact
+    p.tagline Overridden header block
+
+block content
+  h1 Template Inheritance
+  p This page extends _layout.pug and overrides three blocks.
+  ul
+    li The #[strong title] block sets the page title.
+    li The #[strong header] block replaces the default nav.
+    li The #[strong content] block (this) replaces the default body.
+    li The #[strong footer] block is left as the layout default.
+
+block append footer
+  p Appended to the default footer via #[code block append].

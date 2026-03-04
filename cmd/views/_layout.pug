@@ -1,0 +1,21 @@
+doctype html
+html(lang="en")
+  head
+    block meta
+      meta(charset="utf-8")
+      meta(name="viewport" content="width=device-width, initial-scale=1")
+    title
+      block title
+        | Go-Pug
+  body
+    block header
+      header
+        nav
+          a(href="/") Home
+          a(href="/about") About
+    main
+      block content
+        p No content provided.
+    block footer
+      footer
+        p &copy; 2026 Go-Pug
