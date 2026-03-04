@@ -2451,6 +2451,24 @@ func TestExprNestedTernary(t *testing.T) {
 	assertContains(t, out, "two")
 }
 
+func TestExprNestedTernaryParenthesised(t *testing.T) {
+	src := "p= a == 10 ? (b == 3 ? \"both match\" : \"only a\") : \"neither\""
+	out := renderTest(t, src, map[string]interface{}{"a": 10, "b": 3})
+	assertContains(t, out, "both match")
+}
+
+func TestExprNestedTernaryParenthesisedFalseBranch(t *testing.T) {
+	src := "p= a == 10 ? (b == 3 ? \"both match\" : \"only a\") : \"neither\""
+	out := renderTest(t, src, map[string]interface{}{"a": 10, "b": 99})
+	assertContains(t, out, "only a")
+}
+
+func TestExprNestedTernaryParenthesisedOuterFalse(t *testing.T) {
+	src := "p= a == 10 ? (b == 3 ? \"both match\" : \"only a\") : \"neither\""
+	out := renderTest(t, src, map[string]interface{}{"a": 99, "b": 3})
+	assertContains(t, out, "neither")
+}
+
 // TestExprStringConcatMulti verifies that multiple + operators chain correctly.
 func TestExprStringConcatMulti(t *testing.T) {
 	src := `p= "a" + "b" + "c"`

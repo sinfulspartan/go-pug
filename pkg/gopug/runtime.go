@@ -1748,6 +1748,30 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return "", nil
 	}
 
+	// Strip matching outer parentheses: (expr) → expr
+	// This allows nested ternaries like (cond ? a : b) to be evaluated correctly
+	// when they appear as a branch of an outer ternary or logical expression.
+	if len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
+		depth := 0
+		isWrapped := true
+		for i, ch := range expr {
+			if ch == '(' {
+				depth++
+			} else if ch == ')' {
+				depth--
+				// If depth hits 0 before the last character, the outer parens
+				// don't wrap the whole expression (e.g. "(a) + (b)").
+				if depth == 0 && i < len(expr)-1 {
+					isWrapped = false
+					break
+				}
+			}
+		}
+		if isWrapped {
+			expr = strings.TrimSpace(expr[1 : len(expr)-1])
+		}
+	}
+
 	// Ternary: cond ? a : b  (lowest precedence of all)
 	if idx := findTernary(expr); idx >= 0 {
 		cond, err := r.evaluateExpr(expr[:idx])
