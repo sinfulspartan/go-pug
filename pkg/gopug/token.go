@@ -2,7 +2,6 @@ package gopug
 
 import "fmt"
 
-// TokenType represents the type of a lexical token.
 type TokenType int
 
 const (
@@ -90,7 +89,6 @@ const (
 	TokenTagEnd
 )
 
-// Token represents a single lexical token.
 type Token struct {
 	Type        TokenType
 	Value       string
@@ -99,13 +97,11 @@ type Token struct {
 	IndentDepth int
 }
 
-// String returns a human-readable representation of the token.
 func (t Token) String() string {
 	return fmt.Sprintf("Token{Type: %s, Value: %q, Line: %d, Col: %d, IndentDepth: %d}",
 		tokenTypeName(t.Type), t.Value, t.Line, t.Col, t.IndentDepth)
 }
 
-// tokenTypeName returns the name of a TokenType.
 func tokenTypeName(tt TokenType) string {
 	names := map[TokenType]string{
 		TokenEOF:                   "EOF",
@@ -170,7 +166,6 @@ func tokenTypeName(tt TokenType) string {
 	return fmt.Sprintf("Unknown(%d)", tt)
 }
 
-// Keywords maps Pug keywords to their token types.
 var Keywords = map[string]TokenType{
 	"if":      TokenIf,
 	"else":    TokenElse,
