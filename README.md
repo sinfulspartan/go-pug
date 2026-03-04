@@ -852,6 +852,62 @@ opts.Filters["bold"] = func(s string, _ map[string]string) (string, error) {
 }
 ```
 
+### `include:filter` on a `.pug` file silently ignores the filter
+
+The `include:filtername` syntax only applies the filter when the included file is a **non-Pug** file (`.txt`, `.css`, `.js`, etc.). If the path ends in `.pug`, the engine enters the Pug rendering branch first and returns before the filter is ever invoked — the filter name is silently ignored and the file is rendered as normal Pug.
+
+```pug
+//- ✗ Misleading — :uppercase is silently ignored, partial.pug is rendered as Pug
+include :uppercase partial.pug
+
+//- ✓ Correct usage — filter only makes sense on raw (non-Pug) files
+include :uppercase content.txt
+```
+
+### Including a file that itself uses `extends`
+
+A `.pug` file that starts with `extends` must be used as the **root** template (i.e. passed to `Render` / `RenderFile` directly). It cannot be `include`d from another template. If you do include it, `renderInclude` processes its nodes individually and the `ExtendsNode` dispatches to `renderExtends()`, which resolves inheritance against the **top-level document's AST** rather than the included file's. The result is silently broken output — no error, no `<html>` wrapper, missing content.
+
+```pug
+//- ✗ Broken — child.pug starts with "extends base", including it produces wrong output
+include child.pug
+
+//- ✓ Fix — only include plain partials; render an extends-based file at the top level
+```
+
+### Mixin declared inside a conditional is not callable
+
+`collectMixins` runs a single pass over **top-level** document nodes before rendering begins. A mixin declaration nested inside an `if`, `each`, or any other block is never registered, so any call to it always returns an error — even when the condition that wraps the declaration evaluates to true at runtime.
+
+```pug
+//- ✗ Broken — mixin foo is never registered because it is not at the top level
+if true
+  mixin foo
+    p hello
++foo
+
+//- ✓ Fix — always declare mixins at the top level
+mixin foo
+  p hello
+if true
+  +foo
+```
+
+### `CompileFile` does not cache per `Options`
+
+`CompileFile` caches compiled templates in a `sync.Map` keyed by **absolute file path only**. If you call `CompileFile` with the same path but different `Options` (e.g. different `Globals` or `Filters`), the cached `*Template` from the first call is returned and the new options are shallow-copied in — but the AST is shared. It is not possible to maintain two independently compiled versions of the same file simultaneously. Call `ClearCache()` between calls if you need a fresh compile with different options.
+
+```go
+// ✗ The second call returns the cached template — opts2 filters are set on
+//   the returned value but the AST was compiled under opts1.
+t1, _ := gopug.CompileFile("page.pug", opts1)
+t2, _ := gopug.CompileFile("page.pug", opts2) // same path → cache hit
+
+// ✓ Clear the cache when you need a genuinely fresh compile.
+gopug.ClearCache()
+t2, _ = gopug.CompileFile("page.pug", opts2)
+```
+
 ---
 
 ## Contributing

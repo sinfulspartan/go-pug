@@ -26,8 +26,6 @@ func loadPreviewStyles() string {
 	return "<style>\n" + string(data) + "\n</style>\n"
 }
 
-
-
 type example struct {
 	filename string
 	title    string
@@ -81,9 +79,9 @@ var filterOpts = &gopug.Options{
 }
 
 var registry = map[string]meta{
-	"01-doctype.pug":  {title: "Doctype"},
-	"02-tags.pug":     {title: "Tags & nesting"},
-	"03-class-id.pug": {title: "Class & ID shorthand"},
+	"01-doctype.pug":    {title: "Doctype"},
+	"02-tags.pug":       {title: "Tags & nesting"},
+	"03-class-id.pug":   {title: "Class & ID shorthand"},
 	"04-attributes.pug": {title: "Attributes"},
 	"05-dynamic-attrs.pug": {
 		title: "Dynamic attributes",
@@ -161,7 +159,7 @@ var registry = map[string]meta{
 	"29-comments.pug":             {title: "Comments"},
 	"30-methods.pug": {
 		title: "String method expressions",
-		data:  map[string]interface{}{"s": "Hello, World!"},
+		data:  map[string]interface{}{"s": "  Hello, World!  "},
 	},
 	"31-split-join.pug": {title: "split / join"},
 	"32-struct-access.pug": {
@@ -198,10 +196,10 @@ var registry = map[string]meta{
 		title: "Pretty-print mode",
 		opts:  &gopug.Options{Pretty: true},
 	},
-	"35-includes.pug": {title: "Includes"},
-	"36-extends.pug":  {title: "Template inheritance — extends & block"},
-	"37-expressions.pug": {title: "Expressions — arithmetic, comparison, logic, ternary"},
-	"38-mixins-nested.pug":        {title: "Mixins — nested calls"},
+	"35-includes.pug":               {title: "Includes"},
+	"36-extends.pug":                {title: "Template inheritance — extends & block"},
+	"37-expressions.pug":            {title: "Expressions — arithmetic, comparison, logic, ternary"},
+	"38-mixins-nested.pug":          {title: "Mixins — nested calls"},
 	"39-and-attributes-dynamic.pug": {title: "&attributes — dynamic spread"},
 }
 

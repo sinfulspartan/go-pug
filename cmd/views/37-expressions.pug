@@ -1,5 +1,7 @@
 - a = 10
 - b = 3
+- items = ["alpha", "beta", "gamma"]
+- obj = {x: 100, y: 200}
 
 p Addition: #{a + b}
 p Subtraction: #{a - b}
@@ -23,3 +25,8 @@ p Not: #{!(a == 99)}
 p Ternary (true branch): #{a > b ? "a is bigger" : "b is bigger"}
 p Ternary (false branch): #{b > a ? "b is bigger" : "a is bigger"}
 p Nested ternary: #{a == 10 ? (b == 3 ? "both match" : "only a") : "neither"}
+
+p Bracket index (array): #{items[0]}
+p Bracket index (object): #{obj["x"]}
+p Inline array literal: #{["one", "two", "three"][1]}
+p Inline object literal: #{{label: "hello", value: 42}["label"]}

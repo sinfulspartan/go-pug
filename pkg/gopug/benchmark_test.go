@@ -58,12 +58,12 @@ func largeData() map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"pageTitle":   "Benchmark Page",
-		"heading":     "Welcome",
-		"intro":       "This is the intro paragraph.",
-		"products":    products,
+		"pageTitle":    "Benchmark Page",
+		"heading":      "Welcome",
+		"intro":        "This is the intro paragraph.",
+		"products":     products,
 		"showFootnote": true,
-		"footnote":    "Prices subject to change.",
+		"footnote":     "Prices subject to change.",
 	}
 }
 

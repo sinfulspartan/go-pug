@@ -15,10 +15,13 @@ block content
   h1 Template Inheritance
   p This page extends _layout.pug and overrides three blocks.
   ul
-    li The #[strong title] block sets the page title.
+    li The #[strong title] block replaces the page title.
     li The #[strong header] block replaces the default nav.
     li The #[strong content] block (this) replaces the default body.
-    li The #[strong footer] block is left as the layout default.
+    li The #[strong footer] block uses both #[code block prepend] and #[code block append].
+
+block prepend footer
+  p Prepended before the default footer via #[code block prepend].
 
 block append footer
-  p Appended to the default footer via #[code block append].
+  p Appended after the default footer via #[code block append].

@@ -14,6 +14,13 @@ import (
 	"strings"
 )
 
+// mixinScopeBoundary is a sentinel frame pushed onto scopeStack immediately
+// before a mixin's own parameter frame. lookup stops descending when it finds
+// this frame, enforcing hard scope isolation: mixin bodies cannot read
+// variables from the caller's scope. The sentinel key uses a null byte prefix
+// that cannot appear in any valid Pug identifier.
+var mixinScopeBoundary = map[string]any{"\x00mixin_boundary": true}
+
 // Runtime renders an AST to HTML.
 type Runtime struct {
 	ast          *DocumentNode
@@ -278,13 +285,15 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 	return rootAST, mixins, nil
 }
 
-// collectBlocks returns a map of block name → *BlockNode for all named blocks
-// found at the top level of the given node list (child template overrides).
-func (r *Runtime) collectBlocks(nodes []Node) map[string]*BlockNode {
-	blocks := make(map[string]*BlockNode)
+// collectBlocks returns a map of block name → []*BlockNode for all named
+// blocks found at the top level of the given node list (child template
+// overrides). Multiple overrides for the same block name (e.g. one
+// block prepend and one block append) are preserved in declaration order.
+func (r *Runtime) collectBlocks(nodes []Node) map[string][]*BlockNode {
+	blocks := make(map[string][]*BlockNode)
 	for _, node := range nodes {
 		if b, ok := node.(*BlockNode); ok {
-			blocks[b.Name] = b
+			blocks[b.Name] = append(blocks[b.Name], b)
 		}
 	}
 	return blocks
@@ -294,22 +303,29 @@ func (r *Runtime) collectBlocks(nodes []Node) map[string]*BlockNode {
 // replaces, appends to, or prepends each BlockNode whose name appears in the
 // overrides map. The walk is deep so blocks nested inside tags, conditionals,
 // etc. are also patched.
-func (r *Runtime) applyBlockOverrides(nodes []Node, overrides map[string]*BlockNode) {
+//
+// Multiple overrides for the same block name are applied in declaration order.
+// A replace override resets the body; subsequent append/prepend overrides then
+// operate on that new body. This means a child can legitimately write both
+// "block prepend foo" and "block append foo" and get [prepend, parent, append].
+func (r *Runtime) applyBlockOverrides(nodes []Node, overrides map[string][]*BlockNode) {
 	for i, node := range nodes {
 		switch n := node.(type) {
 		case *BlockNode:
-			override, ok := overrides[n.Name]
+			overrideList, ok := overrides[n.Name]
 			if !ok {
 				r.applyBlockOverrides(n.Body, overrides)
 				continue
 			}
-			switch override.Mode {
-			case BlockModeAppend:
-				n.Body = append(n.Body, override.Body...)
-			case BlockModePrepend:
-				n.Body = append(override.Body, n.Body...)
-			default: // BlockModeReplace
-				n.Body = override.Body
+			for _, override := range overrideList {
+				switch override.Mode {
+				case BlockModeAppend:
+					n.Body = append(n.Body, override.Body...)
+				case BlockModePrepend:
+					n.Body = append(override.Body, n.Body...)
+				default: // BlockModeReplace
+					n.Body = override.Body
+				}
 			}
 			nodes[i] = n
 			r.applyBlockOverrides(n.Body, overrides)
@@ -1384,18 +1400,21 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	prevBlock := r.callerBlock
 	r.callerBlock = call.BlockContent
 
-	r.scopeStack = append(r.scopeStack, scope)
+	// Push the boundary sentinel first, then the mixin's own scope frame.
+	// lookup stops at the sentinel, so caller variables are not visible inside
+	// the mixin body. Both frames are popped together on exit.
+	r.scopeStack = append(r.scopeStack, mixinScopeBoundary, scope)
 	prevInMixin := r.inMixin
 	r.inMixin = true
 	for _, node := range decl.Body {
 		if err := r.renderNode(node); err != nil {
-			r.scopeStack = r.scopeStack[:len(r.scopeStack)-1]
+			r.scopeStack = r.scopeStack[:len(r.scopeStack)-2]
 			r.inMixin = prevInMixin
 			r.callerBlock = prevBlock
 			return err
 		}
 	}
-	r.scopeStack = r.scopeStack[:len(r.scopeStack)-1]
+	r.scopeStack = r.scopeStack[:len(r.scopeStack)-2]
 	r.inMixin = prevInMixin
 	r.callerBlock = prevBlock
 	return nil
@@ -2424,10 +2443,15 @@ func (r *Runtime) lookup(key string) (any, bool) {
 	var rootVal any
 	found := false
 	for i := len(r.scopeStack) - 1; i >= 0; i-- {
-		if r.scopeStack[i] == nil {
+		frame := r.scopeStack[i]
+		if frame == nil {
 			continue
 		}
-		if val, ok := r.scopeStack[i][root]; ok {
+		// Hard mixin scope boundary: stop descending into caller frames.
+		if _, isBoundary := frame["\x00mixin_boundary"]; isBoundary {
+			break
+		}
+		if val, ok := frame[root]; ok {
 			rootVal = val
 			found = true
 			break

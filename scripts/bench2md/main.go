@@ -33,13 +33,13 @@ import (
 
 // result holds the parsed data for a single benchmark line.
 type result struct {
-	name    string  // stripped name, e.g. "CompileSmall"
-	group   string  // section heading
-	iters   int64
-	ns      float64 // ns/op
-	bop     float64 // B/op  (-1 = not present)
-	aop     int64   // allocs/op  (-1 = not present)
-	hasMem  bool
+	name   string // stripped name, e.g. "CompileSmall"
+	group  string // section heading
+	iters  int64
+	ns     float64 // ns/op
+	bop    float64 // B/op  (-1 = not present)
+	aop    int64   // allocs/op  (-1 = not present)
+	hasMem bool
 }
 
 // group is an ordered collection of results under a section heading.
@@ -392,14 +392,14 @@ func renderCSV(w io.Writer, rep report, goVersion string) {
 
 // jsonReport is the top-level JSON document structure.
 type jsonReport struct {
-	Date       string        `json:"date"`
-	GoVersion  string        `json:"go_version"`
-	GOOS       string        `json:"goos,omitempty"`
-	GOARCH     string        `json:"goarch,omitempty"`
-	CPU        string        `json:"cpu,omitempty"`
-	Package    string        `json:"package,omitempty"`
-	Elapsed    string        `json:"elapsed,omitempty"`
-	Benchmarks []jsonResult  `json:"benchmarks"`
+	Date       string       `json:"date"`
+	GoVersion  string       `json:"go_version"`
+	GOOS       string       `json:"goos,omitempty"`
+	GOARCH     string       `json:"goarch,omitempty"`
+	CPU        string       `json:"cpu,omitempty"`
+	Package    string       `json:"package,omitempty"`
+	Elapsed    string       `json:"elapsed,omitempty"`
+	Benchmarks []jsonResult `json:"benchmarks"`
 }
 
 // jsonResult represents one benchmark result entry.
