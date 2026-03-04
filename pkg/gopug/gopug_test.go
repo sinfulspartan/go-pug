@@ -2902,6 +2902,36 @@ func TestAndAttributesInlineObjectClassMerge(t *testing.T) {
 	assertContains(t, out, `aria-label="Edit"`)
 }
 
+// TestAndAttributesFromCodeVar verifies that &attributes works correctly when
+// the map is assigned via unbuffered code (- var x = {...}) rather than
+// passed in the data map. This exercises the evaluateExprRaw object path.
+func TestAndAttributesFromCodeVar(t *testing.T) {
+	src := "- var attrs = {class: \"btn\", type: \"button\"}\nbutton&attributes(attrs) Click"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `class="btn"`)
+	assertContains(t, out, `type="button"`)
+}
+
+// TestAndAttributesFromCodeVarBoolean verifies that a boolean value in a
+// code-assigned map renders as a boolean attribute.
+func TestAndAttributesFromCodeVarBoolean(t *testing.T) {
+	src := "- var attrs = {disabled: true}\nbutton&attributes(attrs) Delete"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `disabled`)
+	if strings.Contains(out, `disabled="`) {
+		t.Errorf("disabled=true should render as boolean attr, got: %q", out)
+	}
+}
+
+// TestAndAttributesFromCodeVarClassMerge verifies that class from a
+// code-assigned map merges with an existing shorthand class.
+func TestAndAttributesFromCodeVarClassMerge(t *testing.T) {
+	src := "- var attrs = {class: \"btn-primary\"}\nbutton.btn&attributes(attrs) Primary"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `btn`)
+	assertContains(t, out, `btn-primary`)
+}
+
 // TestAndAttributesInMixin verifies that &attributes inside a mixin body
 // spreads the implicit attributes argument onto the tag.
 func TestAndAttributesInMixin(t *testing.T) {

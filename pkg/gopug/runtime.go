@@ -1002,6 +1002,16 @@ func (r *Runtime) executeStatement(stmt string) error {
 	if idx := findAssignOp(stmt); idx >= 0 {
 		varName := strings.TrimSpace(stmt[:idx])
 		rhsExpr := strings.TrimSpace(stmt[idx+1:])
+		// Use evaluateExprRaw for object/array literals so that they are stored
+		// as real map[string]interface{} / []interface{} values rather than the
+		// empty string that evaluateExpr returns for those forms.
+		rhs := strings.TrimSpace(rhsExpr)
+		if (len(rhs) >= 2 && rhs[0] == '{' && rhs[len(rhs)-1] == '}') ||
+			(len(rhs) >= 2 && rhs[0] == '[' && rhs[len(rhs)-1] == ']') {
+			rawVal := r.evaluateExprRaw(rhs)
+			r.setVar(varName, rawVal)
+			return nil
+		}
 		val, err := r.evaluateExpr(rhsExpr)
 		if err != nil {
 			return err
@@ -1751,6 +1761,19 @@ func (r *Runtime) evaluateExprRaw(expr string) interface{} {
 			result := make([]interface{}, len(parts))
 			for i, p := range parts {
 				result[i] = p
+			}
+			return result
+		}
+	}
+
+	// Inline object literal: {key: val, ...} — return a real map[string]interface{}
+	// so that &attributes and other map-consuming code gets the actual value.
+	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
+		obj := parseInlineObject(expr)
+		if obj != nil {
+			result := make(map[string]interface{}, len(obj))
+			for k, v := range obj {
+				result[k] = v
 			}
 			return result
 		}
