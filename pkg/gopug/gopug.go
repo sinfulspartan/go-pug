@@ -141,8 +141,6 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		return nil, err
 	}
 
-	// Store in cache (store the template compiled with default opts; callers
-	// with custom opts get a shallow copy above on subsequent calls).
 	compiledCache.Store(abs, tpl)
 	return tpl, nil
 }
