@@ -367,29 +367,223 @@ func TestClassAndIDTogether(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Attributes — comma separated and unescaped
+// Attributes — Alpine.js / framework special syntax (@, :, x-on:, x-bind:)
 // ---------------------------------------------------------------------------
 
-func TestAtSignAttributeName(t *testing.T) {
+// --- @event shorthand (x-on shorthand) ---
+
+func TestAlpineAtClickBasic(t *testing.T) {
+	// @click="expr" — most common Alpine.js event handler
 	out := renderTest(t, `button(@click="doThing()") Click me`, nil)
 	assertContains(t, out, `@click="doThing()"`)
 }
 
-func TestColonInAttributeName(t *testing.T) {
-	out := renderTest(t, `button(x-on:click="doThing()") Click me`, nil)
+func TestAlpineAtEventNoValue(t *testing.T) {
+	// @click.stop — bare modifier with no value is a boolean-style attribute
+	out := renderTest(t, `button(@click.stop) Stop`, nil)
+	assertContains(t, out, `@click.stop`)
+}
+
+func TestAlpineAtEventSingleModifier(t *testing.T) {
+	// @submit.prevent="expr" — one dot modifier
+	out := renderTest(t, `form(@submit.prevent="handleSubmit()") x`, nil)
+	assertContains(t, out, `@submit.prevent="handleSubmit()"`)
+}
+
+func TestAlpineAtEventChainedModifiers(t *testing.T) {
+	// @keyup.shift.enter="expr" — two chained modifiers
+	out := renderTest(t, `input(@keyup.shift.enter="submit()")`, nil)
+	assertContains(t, out, `@keyup.shift.enter="submit()"`)
+}
+
+func TestAlpineAtEventKebabKeyModifier(t *testing.T) {
+	// @keyup.page-down="expr" — modifier with a hyphen (kebab-case key name)
+	out := renderTest(t, `div(@keyup.page-down="scroll()")`, nil)
+	assertContains(t, out, `@keyup.page-down="scroll()"`)
+}
+
+func TestAlpineAtEventDebounceWithDuration(t *testing.T) {
+	// @input.debounce.500ms="expr" — modifier carrying a duration value
+	out := renderTest(t, `input(@input.debounce.500ms="search()")`, nil)
+	assertContains(t, out, `@input.debounce.500ms="search()"`)
+}
+
+func TestAlpineAtEventWindowModifier(t *testing.T) {
+	// @keyup.escape.window="expr" — .window modifier registers on window object
+	out := renderTest(t, `div(@keyup.escape.window="closeAll()")`, nil)
+	assertContains(t, out, `@keyup.escape.window="closeAll()"`)
+}
+
+func TestAlpineAtEventOutsideModifier(t *testing.T) {
+	// @click.outside="expr" — .outside fires when click is outside element
+	out := renderTest(t, `div(@click.outside="close()") x`, nil)
+	assertContains(t, out, `@click.outside="close()"`)
+}
+
+func TestAlpineAtEventMultipleModifiers(t *testing.T) {
+	// @click.shift.prevent — two modifiers, no value
+	out := renderTest(t, `button(@click.shift.prevent="addToSelection()") x`, nil)
+	assertContains(t, out, `@click.shift.prevent="addToSelection()"`)
+}
+
+func TestAlpineAtCustomEvent(t *testing.T) {
+	// @foo="expr" — custom event name (bare word after @)
+	out := renderTest(t, `div(@foo="handleFoo()") x`, nil)
+	assertContains(t, out, `@foo="handleFoo()"`)
+}
+
+// --- :attr shorthand (x-bind shorthand) ---
+
+func TestAlpineColonBindPlaceholder(t *testing.T) {
+	// :placeholder="expr" — shorthand x-bind on a standard attribute
+	out := renderTest(t, `input(:placeholder="msg")`, nil)
+	assertContains(t, out, `:placeholder="msg"`)
+}
+
+func TestAlpineColonBindClass(t *testing.T) {
+	// :class="expr" — most common use of x-bind shorthand
+	out := renderTest(t, `div(:class="isActive ? 'active' : ''") hi`, nil)
+	assertContains(t, out, `:class=`)
+}
+
+func TestAlpineColonBindDisabled(t *testing.T) {
+	// :disabled="expr" — boolean-like attribute driven by expression
+	out := renderTest(t, `button(:disabled="isLoading") Go`, nil)
+	assertContains(t, out, `:disabled="isLoading"`)
+}
+
+func TestAlpineColonBindKey(t *testing.T) {
+	// :key="expr" — used inside x-for template loops
+	out := renderTest(t, `template(:key="item") x`, nil)
+	assertContains(t, out, `:key="item"`)
+}
+
+func TestAlpineColonBindStyle(t *testing.T) {
+	// :style="expr" — inline style binding
+	out := renderTest(t, `div(:style="styles") hi`, nil)
+	assertContains(t, out, `:style="styles"`)
+}
+
+// --- x-on: long form with modifiers ---
+
+func TestAlpineXOnClickBasic(t *testing.T) {
+	// x-on:click="expr" — long form event binding, no modifier
+	out := renderTest(t, `button(x-on:click="doThing()") Click`, nil)
 	assertContains(t, out, `x-on:click="doThing()"`)
 }
 
-func TestAtSignAttributeNoValue(t *testing.T) {
-	out := renderTest(t, `button(@disabled) Text`, nil)
-	assertContains(t, out, `@disabled`)
+func TestAlpineXOnClickOutside(t *testing.T) {
+	// x-on:click.outside="expr" — long form with one modifier
+	out := renderTest(t, `div(x-on:click.outside="close()") x`, nil)
+	assertContains(t, out, `x-on:click.outside="close()"`)
 }
 
-func TestMultipleSpecialAttributeNames(t *testing.T) {
-	out := renderTest(t, `div(@click="open()", x-on:keyup="close()") body`, nil)
-	assertContains(t, out, `@click="open()"`)
-	assertContains(t, out, `x-on:keyup="close()"`)
+func TestAlpineXOnKeyupChainedModifiers(t *testing.T) {
+	// x-on:keyup.shift.enter="expr" — long form with chained modifiers
+	out := renderTest(t, `input(x-on:keyup.shift.enter="submit()")`, nil)
+	assertContains(t, out, `x-on:keyup.shift.enter="submit()"`)
 }
+
+// --- x-bind: long form ---
+
+func TestAlpineXBindPlaceholder(t *testing.T) {
+	// x-bind:placeholder="expr" — long form attribute binding
+	out := renderTest(t, `input(x-bind:placeholder="msg")`, nil)
+	assertContains(t, out, `x-bind:placeholder="msg"`)
+}
+
+func TestAlpineXBindClass(t *testing.T) {
+	// x-bind:class="expr" — long form class binding
+	out := renderTest(t, `div(x-bind:class="open ? 'show' : ''") x`, nil)
+	assertContains(t, out, `x-bind:class=`)
+}
+
+// --- plain x-* directives (no colon, already worked — regression guard) ---
+
+func TestAlpineXData(t *testing.T) {
+	out := renderTest(t, `div(x-data="{ open: false }") x`, nil)
+	assertContains(t, out, `x-data="{ open: false }"`)
+}
+
+func TestAlpineXShow(t *testing.T) {
+	out := renderTest(t, `div(x-show="open") x`, nil)
+	assertContains(t, out, `x-show="open"`)
+}
+
+func TestAlpineXText(t *testing.T) {
+	out := renderTest(t, `span(x-text="message")`, nil)
+	assertContains(t, out, `x-text="message"`)
+}
+
+func TestAlpineXModel(t *testing.T) {
+	out := renderTest(t, `input(x-model="search")`, nil)
+	assertContains(t, out, `x-model="search"`)
+}
+
+func TestAlpineXRef(t *testing.T) {
+	out := renderTest(t, `button(x-ref="btn") click`, nil)
+	assertContains(t, out, `x-ref="btn"`)
+}
+
+func TestAlpineXCloakBare(t *testing.T) {
+	// x-cloak has no value — rendered as bare attribute
+	out := renderTest(t, `div(x-cloak) x`, nil)
+	assertContains(t, out, `x-cloak`)
+}
+
+// --- mixed Alpine + normal attributes on the same tag ---
+
+func TestAlpineMixedWithNormalAttrs(t *testing.T) {
+	// Ensures that special-syntax attrs and plain attrs coexist correctly
+	// and that the attribute after @click is not swallowed.
+	out := renderTest(t, `button(type="button" @click="open=true" :disabled="loading") Go`, nil)
+	assertContains(t, out, `type="button"`)
+	assertContains(t, out, `@click="open=true"`)
+	assertContains(t, out, `:disabled="loading"`)
+}
+
+func TestAlpineAtAndColonTogetherComma(t *testing.T) {
+	// Comma-separated list mixing @ and : attributes
+	out := renderTest(t, `div(@click="open()", :class="isOpen ? 'show' : ''") body`, nil)
+	assertContains(t, out, `@click="open()"`)
+	assertContains(t, out, `:class=`)
+}
+
+func TestAlpineNormalAttrAfterAt(t *testing.T) {
+	// Normal attribute (href) following an @ attribute must not be swallowed
+	out := renderTest(t, `a(@click="go()" href="/") link`, nil)
+	assertContains(t, out, `@click="go()"`)
+	assertContains(t, out, `href="/"`)
+}
+
+// --- realistic Alpine.js component snippets ---
+
+func TestAlpineCounterSnippet(t *testing.T) {
+	// Models the counter example from https://alpinejs.dev/start-here
+	src := `div(x-data="{ count: 0 }")
+  button(x-on:click="count++") Increment
+  span(x-text="count")`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `x-data="{ count: 0 }"`)
+	assertContains(t, out, `x-on:click="count++"`)
+	assertContains(t, out, `x-text="count"`)
+}
+
+func TestAlpineDropdownSnippet(t *testing.T) {
+	// Models the dropdown example from https://alpinejs.dev/start-here
+	src := `div(x-data="{ open: false }")
+  button(@click="open = ! open") Toggle
+  div(x-show="open" @click.outside="open = false") Contents`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `x-data="{ open: false }"`)
+	assertContains(t, out, `@click="open = ! open"`)
+	assertContains(t, out, `x-show="open"`)
+	assertContains(t, out, `@click.outside="open = false"`)
+}
+
+// ---------------------------------------------------------------------------
+// Attributes — comma separated and unescaped
+// ---------------------------------------------------------------------------
 
 func TestCommaSeperatedAttributes(t *testing.T) {
 	out := renderTest(t, `a(href="/", class="btn") Click`, nil)

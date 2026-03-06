@@ -851,7 +851,7 @@ func (l *Lexer) scanAttributes() error {
 		}
 
 		var name string
-		if isAlpha(l.peek()) || l.peek() == '_' || l.peek() == '@' {
+		if isAlpha(l.peek()) || l.peek() == '_' || l.peek() == '@' || l.peek() == ':' {
 			name = l.scanAttrName()
 		}
 
@@ -976,14 +976,19 @@ func (l *Lexer) scanQuotedString(quote rune) string {
 }
 
 // scanAttrName scans an attribute name, which may contain letters, digits,
-// hyphens, underscores, colons, and a leading @.  It is broader than
-// scanIdentifier (which is used for tag names, keywords, etc.) and must only
-// be called from within scanAttributes.
+// hyphens, underscores, colons, dots, and a leading @ or :.  It is broader
+// than scanIdentifier (which is used for tag names, keywords, etc.) and must
+// only be called from within scanAttributes.
+//
+// The broader character set supports framework attribute syntaxes such as:
+//   - Alpine.js / Vue shorthand:  @click.prevent, :class, :key
+//   - x-on long form with modifiers: x-on:click.outside, x-on:keyup.shift.enter
+//   - x-bind long form: x-bind:placeholder, x-bind:class
 func (l *Lexer) scanAttrName() string {
 	start := l.pos
 	for l.pos < len(l.input) {
 		ch := l.input[l.pos]
-		if isAlpha(ch) || isDigit(ch) || ch == '-' || ch == '_' || ch == '@' || ch == ':' {
+		if isAlpha(ch) || isDigit(ch) || ch == '-' || ch == '_' || ch == '@' || ch == ':' || ch == '.' {
 			l.pos++
 			l.col++
 		} else {
