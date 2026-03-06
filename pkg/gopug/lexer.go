@@ -851,8 +851,8 @@ func (l *Lexer) scanAttributes() error {
 		}
 
 		var name string
-		if isAlpha(l.peek()) || l.peek() == '_' {
-			name = l.scanIdentifier()
+		if isAlpha(l.peek()) || l.peek() == '_' || l.peek() == '@' {
+			name = l.scanAttrName()
 		}
 
 		if name == "" {
@@ -973,6 +973,24 @@ func (l *Lexer) scanQuotedString(quote rune) string {
 		}
 	}
 	return valueB.String()
+}
+
+// scanAttrName scans an attribute name, which may contain letters, digits,
+// hyphens, underscores, colons, and a leading @.  It is broader than
+// scanIdentifier (which is used for tag names, keywords, etc.) and must only
+// be called from within scanAttributes.
+func (l *Lexer) scanAttrName() string {
+	start := l.pos
+	for l.pos < len(l.input) {
+		ch := l.input[l.pos]
+		if isAlpha(ch) || isDigit(ch) || ch == '-' || ch == '_' || ch == '@' || ch == ':' {
+			l.pos++
+			l.col++
+		} else {
+			break
+		}
+	}
+	return l.input[start:l.pos]
 }
 
 func (l *Lexer) scanIdentifier() string {

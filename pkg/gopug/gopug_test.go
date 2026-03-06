@@ -370,6 +370,27 @@ func TestClassAndIDTogether(t *testing.T) {
 // Attributes — comma separated and unescaped
 // ---------------------------------------------------------------------------
 
+func TestAtSignAttributeName(t *testing.T) {
+	out := renderTest(t, `button(@click="doThing()") Click me`, nil)
+	assertContains(t, out, `@click="doThing()"`)
+}
+
+func TestColonInAttributeName(t *testing.T) {
+	out := renderTest(t, `button(x-on:click="doThing()") Click me`, nil)
+	assertContains(t, out, `x-on:click="doThing()"`)
+}
+
+func TestAtSignAttributeNoValue(t *testing.T) {
+	out := renderTest(t, `button(@disabled) Text`, nil)
+	assertContains(t, out, `@disabled`)
+}
+
+func TestMultipleSpecialAttributeNames(t *testing.T) {
+	out := renderTest(t, `div(@click="open()", x-on:keyup="close()") body`, nil)
+	assertContains(t, out, `@click="open()"`)
+	assertContains(t, out, `x-on:keyup="close()"`)
+}
+
 func TestCommaSeperatedAttributes(t *testing.T) {
 	out := renderTest(t, `a(href="/", class="btn") Click`, nil)
 	assertContains(t, out, `href="/"`)
