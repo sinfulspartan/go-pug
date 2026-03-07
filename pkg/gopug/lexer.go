@@ -908,25 +908,13 @@ func (l *Lexer) scanAttributes() error {
 	return nil
 }
 
-// scanAttributeValue: for quoted values also consumes a trailing arithmetic
-// operator so that expressions like `"/user/" + uid` are captured whole.
+// scanAttributeValue scans a single operand: a quoted string or an unquoted
+// token (identifier, number, bare keyword).  Operator stitching across spaces
+// is handled by the caller, scanAttrValueFull.
 func (l *Lexer) scanAttributeValue() string {
 	if l.peek() == '"' || l.peek() == '\'' || l.peek() == '`' {
 		q := l.peek()
-		var valueB strings.Builder
-		valueB.WriteString(l.scanQuotedString(rune(q)))
-		l.skipSpaces()
-		ch := l.peek()
-		if ch == '+' || ch == '-' || ch == '*' || ch == '/' {
-			for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
-				c := l.peek()
-				if c == ')' || c == ',' {
-					break
-				}
-				l.advanceInto(&valueB)
-			}
-		}
-		return strings.TrimSpace(valueB.String())
+		return l.scanQuotedString(rune(q))
 	}
 
 	// Unquoted value: read until whitespace (at depth 0), comma, closing

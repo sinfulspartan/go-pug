@@ -735,6 +735,105 @@ func TestAttrTernaryWithUndefinedBranch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Attribute value — comparison and logical operators (issue #4 follow-up)
+// ---------------------------------------------------------------------------
+
+// TestAttrLessThan verifies that `class=count < 5 ? "low" : "high"` is
+// evaluated as a full ternary expression, not split at the < operator.
+func TestAttrLessThan(t *testing.T) {
+	out := renderTest(t, `p(class=count < 5 ? "low" : "high")`, map[string]any{"count": 3})
+	assertContains(t, out, `class="low"`)
+	if strings.Contains(out, "<") && strings.Contains(out, "5") && strings.Contains(out, "?") {
+		t.Errorf("< ternary expression leaked raw tokens into HTML, got: %q", out)
+	}
+}
+
+// TestAttrGreaterThan verifies that `class=count > 5 ? "many" : "few"` is evaluated.
+func TestAttrGreaterThan(t *testing.T) {
+	out := renderTest(t, `p(class=count > 5 ? "many" : "few")`, map[string]any{"count": 3})
+	assertContains(t, out, `class="few"`)
+	if strings.Contains(out, ">") && strings.Contains(out, "?") {
+		t.Errorf("> ternary expression leaked raw tokens into HTML, got: %q", out)
+	}
+}
+
+// TestAttrLessThanOrEqual verifies `class=count <= 5 ? "ok" : "over"`.
+func TestAttrLessThanOrEqual(t *testing.T) {
+	out := renderTest(t, `p(class=count <= 5 ? "ok" : "over")`, map[string]any{"count": 5})
+	assertContains(t, out, `class="ok"`)
+}
+
+// TestAttrGreaterThanOrEqual verifies `class=count >= 5 ? "ok" : "under"`.
+func TestAttrGreaterThanOrEqual(t *testing.T) {
+	out := renderTest(t, `p(class=count >= 5 ? "ok" : "under")`, map[string]any{"count": 5})
+	assertContains(t, out, `class="ok"`)
+}
+
+// TestAttrStrictNotEqual verifies that `class=a !== "x" ? "yes" : "no"` is
+// evaluated correctly.
+func TestAttrStrictNotEqual(t *testing.T) {
+	out := renderTest(t, `p(class=a !== "x" ? "yes" : "no")`, map[string]any{"a": "y"})
+	assertContains(t, out, `class="yes"`)
+	if strings.Contains(out, "!==") || strings.Contains(out, "?") {
+		t.Errorf("!== ternary expression leaked raw tokens into HTML, got: %q", out)
+	}
+}
+
+// TestAttrMixedLogicalAndComparison verifies `data-v=a >= 0 && b <= 10 ? "ok" : "fail"`.
+func TestAttrMixedLogicalAndComparison(t *testing.T) {
+	out := renderTest(t, `p(data-v=a >= 0 && b <= 10 ? "ok" : "fail")`, map[string]any{"a": 5, "b": 5})
+	assertContains(t, out, `data-v="ok"`)
+	if strings.Contains(out, "&&") || strings.Contains(out, ">=") {
+		t.Errorf("mixed logical/comparison expression leaked raw tokens, got: %q", out)
+	}
+}
+
+// TestAttrUnescapedAssignmentWithComparison verifies that `!=` (unescaped
+// assignment) works when the value is a comparison expression.
+func TestAttrUnescapedAssignmentWithComparison(t *testing.T) {
+	out := renderTest(t, `p(class!=a == "x" ? "yes" : "no")`, map[string]any{"a": "x"})
+	assertContains(t, out, `class="yes"`)
+}
+
+// TestAttrNegativeTabindex verifies that a bare negative number attribute
+// value (tabindex=-1) is not disturbed by the new = operator handling.
+func TestAttrNegativeTabindex(t *testing.T) {
+	out := renderTest(t, `input(tabindex=-1 type="text")`, nil)
+	assertContains(t, out, `tabindex="-1"`)
+	assertContains(t, out, `type="text"`)
+}
+
+// TestAttrMultiSpaceSepWithComparison verifies that a space-separated
+// attribute list where one value is a comparison expression (value=a == "x")
+// followed by a bare boolean attribute (required) works correctly.
+func TestAttrMultiSpaceSepWithComparison(t *testing.T) {
+	out := renderTest(t, `input(value=a == "x" required type="text")`, map[string]any{"a": "x"})
+	assertContains(t, out, `value="true"`)
+	assertContains(t, out, `required`)
+	assertContains(t, out, `type="text"`)
+}
+
+// TestAttrQuotedPlusVarSwallowsNextAttr verifies that a quoted string
+// concatenated with a variable (`href="/base/" + path`) followed by another
+// attribute without a comma does NOT swallow the subsequent attribute.
+// This was caused by the greedy arithmetic extension in the quoted branch of
+// scanAttributeValue reading to end-of-line, which is now removed in favour
+// of scanAttrValueFull handling operator stitching uniformly.
+func TestAttrQuotedPlusVarDoesNotSwallowNextAttr(t *testing.T) {
+	out := renderTest(t, `a(href="/base/" + path title="Link")`, map[string]any{"path": "home"})
+	assertContains(t, out, `href="/base/home"`)
+	assertContains(t, out, `title="Link"`)
+}
+
+// TestAttrQuotedPlusVarWithCommaUnaffected verifies the comma-separated
+// version of the above still works after the fix.
+func TestAttrQuotedPlusVarWithCommaUnaffected(t *testing.T) {
+	out := renderTest(t, `a(href="/base/" + path, title="Link")`, map[string]any{"path": "home"})
+	assertContains(t, out, `href="/base/home"`)
+	assertContains(t, out, `title="Link"`)
+}
+
+// ---------------------------------------------------------------------------
 // Void tag variants
 // ---------------------------------------------------------------------------
 
