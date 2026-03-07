@@ -664,7 +664,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 		if !val.IsBare && val.Value != "" {
 			if !val.Unescaped {
-				evaluated = html.EscapeString(evaluated)
+				evaluated = htmlEscapeAttr(evaluated)
 			}
 			r.htmlBuf.WriteString("=")
 			r.htmlBuf.WriteString("\"")
@@ -706,6 +706,42 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	r.htmlBuf.WriteString(">")
 
 	return nil
+}
+
+// htmlEscapeAttr escapes the characters that must be escaped inside a
+// double-quoted HTML attribute value: <, >, ", and bare & (i.e. & not already
+// part of a valid entity reference).  Single quotes do NOT need escaping
+// inside double-quoted attributes, so they are passed through unchanged —
+// this is important for inline JS event handlers such as onclick="alert('x')".
+func htmlEscapeAttr(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch c {
+		case '<':
+			b.WriteString("&lt;")
+			i++
+		case '>':
+			b.WriteString("&gt;")
+			i++
+		case '"':
+			b.WriteString("&quot;")
+			i++
+		case '&':
+			if end := entityEnd(s, i); end > i {
+				b.WriteString(s[i:end])
+				i = end
+			} else {
+				b.WriteString("&amp;")
+				i++
+			}
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
 }
 
 // htmlEscapeText escapes only the characters that must be escaped in HTML

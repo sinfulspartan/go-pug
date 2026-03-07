@@ -132,6 +132,72 @@ func TestAttributeHTMLEscaping(t *testing.T) {
 	assertContains(t, out, "&lt;")
 }
 
+// TestAttributeSingleQuoteNotEscaped verifies that single quotes inside a
+// double-quoted attribute value are passed through as literal ' characters and
+// are NOT escaped to &#39;.  This is critical for inline JS event handlers:
+// browsers do not decode HTML entities before executing JS, so onclick="alert(&#39;x&#39;)"
+// would pass the literal string "&#39;x&#39;" to alert instead of "'x'".
+// Regression test for issue #5.
+func TestAttributeSingleQuoteNotEscaped(t *testing.T) {
+	out := renderTest(t, `button(type="button" onclick="alert('hello')") Click me`, nil)
+	if strings.Contains(out, "&#39;") {
+		t.Errorf("single quote must not be escaped to &#39; in attribute value, got: %q", out)
+	}
+	assertContains(t, out, `onclick="alert('hello')"`)
+}
+
+// TestAttributeSingleQuoteInTitleNotEscaped verifies single-quote passthrough
+// for non-JS attributes too (e.g. title="it's a title").
+func TestAttributeSingleQuoteInTitleNotEscaped(t *testing.T) {
+	out := renderTest(t, `p(title="it's a title") Hello`, nil)
+	if strings.Contains(out, "&#39;") {
+		t.Errorf("single quote must not be escaped to &#39; in title attribute, got: %q", out)
+	}
+	assertContains(t, out, `title="it's a title"`)
+}
+
+// TestAttributeDoubleQuoteStillEscaped verifies that double quotes inside an
+// attribute value are still escaped to &quot; so the attribute delimiter is
+// not broken.
+func TestAttributeDoubleQuoteStillEscaped(t *testing.T) {
+	out := renderTest(t, `p(title="say \"hi\"")`, nil)
+	assertContains(t, out, `&quot;`)
+	if strings.Contains(out, `title="say "hi""`) {
+		t.Errorf("unescaped double quote must not appear bare inside attribute value, got: %q", out)
+	}
+}
+
+// TestAttributeAngleBracketsStillEscaped verifies that < and > inside
+// attribute values are still escaped to &lt; and &gt;.
+func TestAttributeAngleBracketsStillEscaped(t *testing.T) {
+	out := renderTest(t, `p(title="<b>bold</b>")`, nil)
+	assertContains(t, out, "&lt;")
+	assertContains(t, out, "&gt;")
+	if strings.Contains(out, `title="<b>`) {
+		t.Errorf("angle brackets must be escaped in attribute values, got: %q", out)
+	}
+}
+
+// TestAttributeAmpersandStillEscaped verifies that & inside an attribute
+// value is still escaped to &amp; when it is not already a valid entity.
+func TestAttributeAmpersandStillEscaped(t *testing.T) {
+	out := renderTest(t, `a(href="/search?a=1&b=2") Search`, nil)
+	assertContains(t, out, "&amp;")
+	if strings.Contains(out, `href="/search?a=1&b=2"`) {
+		t.Errorf("bare & must be escaped to &amp; in attribute value, got: %q", out)
+	}
+}
+
+// TestAttributeUnescapedSingleQuote verifies that the != (unescaped)
+// assignment operator also preserves single quotes unchanged.
+func TestAttributeUnescapedSingleQuote(t *testing.T) {
+	out := renderTest(t, `button(onclick!="alert('hi')") Click`, nil)
+	if strings.Contains(out, "&#39;") {
+		t.Errorf("unescaped attribute must not escape single quote to &#39;, got: %q", out)
+	}
+	assertContains(t, out, `onclick="alert('hi')"`)
+}
+
 // ---------------------------------------------------------------------------
 // Comments
 // ---------------------------------------------------------------------------
