@@ -597,6 +597,98 @@ func TestUnescapedAttribute(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Attributes — space-separated (no comma), unquoted expression value (issue #3)
+// ---------------------------------------------------------------------------
+
+func TestSpaceSepValueNotLast(t *testing.T) {
+	// value=expr is not the last attribute — must not be cleared.
+	out := renderTest(t, `input(type="text" value=myVar required)`, map[string]any{"myVar": "hello"})
+	assertContains(t, out, `value="hello"`)
+	assertContains(t, out, `required`)
+}
+
+func TestSpaceSepValueFirst(t *testing.T) {
+	// value=expr is first, another named attr follows.
+	out := renderTest(t, `input(value=myVar placeholder="hint")`, map[string]any{"myVar": "hello"})
+	assertContains(t, out, `value="hello"`)
+	assertContains(t, out, `placeholder="hint"`)
+}
+
+func TestSpaceSepTwoDynamicAttrs(t *testing.T) {
+	// Two dynamic (unquoted) attrs separated by a space — both must render.
+	out := renderTest(t, `input(value=myVar name=myVar)`, map[string]any{"myVar": "hello"})
+	assertContains(t, out, `value="hello"`)
+	assertContains(t, out, `name="hello"`)
+}
+
+func TestSpaceSepValueMiddle(t *testing.T) {
+	// value=expr in the middle of three attrs.
+	out := renderTest(t, `input(type="text" value=myVar class="x")`, map[string]any{"myVar": "hello"})
+	assertContains(t, out, `type="text"`)
+	assertContains(t, out, `value="hello"`)
+	assertContains(t, out, `class="x"`)
+}
+
+func TestSpaceSepStructFieldNotLast(t *testing.T) {
+	// Struct field access as value, not last attribute.
+	type User struct{ Name string }
+	out := renderTest(t, `input(value=user.Name required)`, map[string]any{"user": User{Name: "Alice"}})
+	assertContains(t, out, `value="Alice"`)
+	assertContains(t, out, `required`)
+}
+
+func TestSpaceSepQuotedValueUnaffected(t *testing.T) {
+	// Quoted literal values must continue to work without commas.
+	out := renderTest(t, `input(type="text" value="hello" required)`, nil)
+	assertContains(t, out, `value="hello"`)
+	assertContains(t, out, `required`)
+}
+
+func TestSpaceSepOrExpressionInValue(t *testing.T) {
+	// value=a || "fallback" — the || is part of the expression, not an attr separator.
+	out := renderTest(t, `input(value=myVar || "guest" required)`, map[string]any{"myVar": ""})
+	assertContains(t, out, `value="guest"`)
+	assertContains(t, out, `required`)
+}
+
+func TestSpaceSepTernaryInValue(t *testing.T) {
+	// value=cond ? "a" : "b" — full ternary must be captured as one value.
+	out := renderTest(t, `input(value=flag ? "yes" : "no" required)`, map[string]any{"flag": true})
+	assertContains(t, out, `value="yes"`)
+	assertContains(t, out, `required`)
+}
+
+func TestSpaceSepTernaryFalseBranch(t *testing.T) {
+	out := renderTest(t, `input(value=flag ? "yes" : "no" required)`, map[string]any{"flag": false})
+	assertContains(t, out, `value="no"`)
+	assertContains(t, out, `required`)
+}
+
+func TestSpaceSepArithmeticInValue(t *testing.T) {
+	// value=a + b — arithmetic expression must not be word-split.
+	out := renderTest(t, `span(title=a class="x")`, map[string]any{"a": "hello"})
+	assertContains(t, out, `title="hello"`)
+	assertContains(t, out, `class="x"`)
+}
+
+func TestSpaceSepColonBindAfterExpr(t *testing.T) {
+	// :disabled="loading" after @click="open=true" — colon-bind must not be
+	// consumed as a ternary ':' continuation of the preceding expression.
+	out := renderTest(t, `button(type="button" @click="open=true" :disabled="loading") Go`, nil)
+	assertContains(t, out, `@click="open=true"`)
+	assertContains(t, out, `:disabled="loading"`)
+	assertContains(t, out, `type="button"`)
+}
+
+func TestSpaceSepValueCommaStillWorks(t *testing.T) {
+	// Comma-separated syntax must continue to work exactly as before.
+	out := renderTest(t, `input(type="text", value=myVar, required)`, map[string]any{"myVar": "hello"})
+	assertContains(t, out, `type="text"`)
+	assertContains(t, out, `value="hello"`)
+	assertContains(t, out, `required`)
+}
+
+// ---------------------------------------------------------------------------
 // Void tag variants
 // ---------------------------------------------------------------------------
 

@@ -895,7 +895,7 @@ func (l *Lexer) scanAttributes() error {
 
 		l.skipSpaces()
 
-		value := l.scanAttributeValue()
+		value := l.scanAttrValueFull()
 		l.addToken(TokenAttrValue, value)
 
 		l.skipSpaces()
@@ -935,11 +935,17 @@ func (l *Lexer) scanAttributeValue() string {
 		return strings.TrimSpace(valueB.String())
 	}
 
-	// Unquoted value: read until comma, closing paren, or end of line.
+	// Unquoted value: read until whitespace (at depth 0), comma, closing
+	// paren, or end of line.  Whitespace at depth 0 is a potential attribute
+	// separator; the caller (scanAttrValueFull) will decide whether to extend
+	// the value across an operator that follows the space.
 	var valueB strings.Builder
 	depth := 0
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		ch := l.peek()
+		if (ch == ' ' || ch == '\t') && depth == 0 {
+			break
+		}
 		if ch == '(' || ch == '[' || ch == '{' {
 			depth++
 		} else if ch == ')' || ch == ']' || ch == '}' {
@@ -953,6 +959,112 @@ func (l *Lexer) scanAttributeValue() string {
 		l.advanceInto(&valueB)
 	}
 	return strings.TrimSpace(valueB.String())
+}
+
+// isAttrOpChar reports whether ch is an infix operator character that can
+// appear between two sub-expressions in an attribute value
+// (e.g. the | in `a || b`, the ? in `c ? x : y`).
+func isAttrOpChar(ch byte) bool {
+	switch ch {
+	case '|', '&', '?', ':', '+', '-', '*', '/', '!', '<', '>':
+		return true
+	}
+	return false
+}
+
+// scanAttrValueFull scans a complete attribute value expression, including
+// space-separated operator continuations such as `a || b` and `x ? "y" : "z"`.
+//
+// The ambiguity between attribute separators and expression operators is
+// resolved by peeking at the first non-space character after each token:
+//
+//   - If it is an infix operator char, we are still inside the expression →
+//     consume the space, operator, and the next operand, then repeat.
+//   - If it is anything else (letter, digit, _, @, :, ), ,, newline, EOF) →
+//     we have reached the boundary between attributes → stop.
+//
+// Operands may themselves be quoted strings, bracket-balanced sub-expressions,
+// or bare identifiers / numbers; scanAttributeValue handles all of those cases
+// for the initial token, and the extension loop handles subsequent ones.
+func (l *Lexer) scanAttrValueFull() string {
+	// Scan the first operand.
+	first := l.scanAttributeValue()
+	if first == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(first)
+
+	for {
+		// Save position so we can backtrack if there is no operator ahead.
+		saved := l.pos
+		savedCol := l.col
+
+		// Skip whitespace.
+		for l.pos < len(l.input) && (l.input[l.pos] == ' ' || l.input[l.pos] == '\t') {
+			l.pos++
+			l.col++
+		}
+
+		// Nothing left, or hard boundary — restore and stop.
+		if l.isEOF() || l.peek() == ')' || l.peek() == ',' ||
+			l.peek() == '\n' || l.peek() == '\r' {
+			l.pos = saved
+			l.col = savedCol
+			break
+		}
+
+		if !isAttrOpChar(l.peek()) {
+			// Next non-space is not an operator → attribute boundary.
+			l.pos = saved
+			l.col = savedCol
+			break
+		}
+
+		// Special case: a bare ':' that is immediately followed by a letter,
+		// digit, '_', or '@' (with no intervening space) is the start of an
+		// Alpine.js / x-bind attribute name (e.g. `:disabled`, `:class`),
+		// not the else-branch of a ternary operator.  A ternary ':' always
+		// has at least one space between the colon and the next operand
+		// (e.g. `x ? "a" : "b"`), so the character right after ':' will be
+		// a space when it is used as an operator.
+		if l.peek() == ':' && l.pos+1 < len(l.input) {
+			after := l.input[l.pos+1]
+			if isAlpha(after) || isDigit(after) || after == '_' || after == '@' {
+				// Looks like :attrName — treat as attribute boundary.
+				l.pos = saved
+				l.col = savedCol
+				break
+			}
+		}
+
+		// Consume the operator token (may be multi-char: ||, &&, <=, >=, !=, ==).
+		b.WriteByte(' ')
+		for l.pos < len(l.input) && isAttrOpChar(l.input[l.pos]) {
+			b.WriteByte(l.input[l.pos])
+			l.col++
+			l.pos++
+		}
+
+		// Skip whitespace between operator and next operand.
+		for l.pos < len(l.input) && (l.input[l.pos] == ' ' || l.input[l.pos] == '\t') {
+			l.pos++
+			l.col++
+		}
+
+		if l.isEOF() || l.peek() == ')' || l.peek() == ',' ||
+			l.peek() == '\n' || l.peek() == '\r' {
+			// Trailing operator with no operand — stop (leave at boundary).
+			break
+		}
+
+		// Consume the next operand.
+		b.WriteByte(' ')
+		operand := l.scanAttributeValue()
+		b.WriteString(operand)
+	}
+
+	return b.String()
 }
 
 func (l *Lexer) scanQuotedString(quote rune) string {
