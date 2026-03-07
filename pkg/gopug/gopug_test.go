@@ -1455,6 +1455,111 @@ func TestStructFieldLookup(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Nil pointer struct fields (issue #2)
+// ---------------------------------------------------------------------------
+
+func TestNilPointerFieldRendersEmpty(t *testing.T) {
+	// A nil *string field should produce an empty string, not "<nil>".
+	type User struct {
+		Name     string
+		Nickname *string
+	}
+	out := renderTest(t, `input(value=user.Nickname)`, map[string]any{
+		"user": User{Name: "Alice"},
+	})
+	if strings.Contains(out, "nil") {
+		t.Errorf("nil *string field should not render as nil, got: %q", out)
+	}
+	assertContains(t, out, `value=""`)
+}
+
+func TestNilPointerFieldOrFallback(t *testing.T) {
+	// The || fallback must be reachable when the field is a nil pointer.
+	type User struct {
+		Name     string
+		Nickname *string
+	}
+	out := renderTest(t, `input(value=user.Nickname || "guest")`, map[string]any{
+		"user": User{Name: "Alice"},
+	})
+	assertContains(t, out, `value="guest"`)
+}
+
+func TestNonNilPointerFieldRendersValue(t *testing.T) {
+	// A non-nil *string field should render its dereferenced value.
+	type User struct {
+		Name     string
+		Nickname *string
+	}
+	nick := "ali"
+	out := renderTest(t, `input(value=user.Nickname)`, map[string]any{
+		"user": User{Name: "Alice", Nickname: &nick},
+	})
+	assertContains(t, out, `value="ali"`)
+}
+
+func TestNilPointerFieldInText(t *testing.T) {
+	// nil *string in buffered text output should also be empty, not "<nil>".
+	type Page struct {
+		Subtitle *string
+	}
+	out := renderTest(t, `p= page.Subtitle`, map[string]any{
+		"page": Page{},
+	})
+	if strings.Contains(out, "nil") {
+		t.Errorf("nil *string field in text should not render as nil, got: %q", out)
+	}
+	assertEqual(t, out, "<p></p>")
+}
+
+func TestNilPointerFieldTernaryFallback(t *testing.T) {
+	// nil pointer field used in a ternary should be falsy.
+	type Config struct {
+		Label *string
+	}
+	out := renderTest(t, `p= config.Label ? config.Label : "default"`, map[string]any{
+		"config": Config{},
+	})
+	assertContains(t, out, "default")
+}
+
+func TestNilPointerIntField(t *testing.T) {
+	// nil *int field should render as empty, not "<nil>".
+	type Item struct {
+		Count *int
+	}
+	out := renderTest(t, `span= item.Count`, map[string]any{
+		"item": Item{},
+	})
+	if strings.Contains(out, "nil") {
+		t.Errorf("nil *int field should not render as nil, got: %q", out)
+	}
+}
+
+func TestNilPointerFieldOrFallbackInt(t *testing.T) {
+	// nil *int || fallback should reach the fallback.
+	type Item struct {
+		Count *int
+	}
+	out := renderTest(t, `span= item.Count || "n/a"`, map[string]any{
+		"item": Item{},
+	})
+	assertContains(t, out, "n/a")
+}
+
+func TestPointerToStructFieldAccess(t *testing.T) {
+	// Passing a *struct as data — field access should still work.
+	type Profile struct {
+		Bio string
+	}
+	bio := "hello"
+	out := renderTest(t, `p= profile.Bio`, map[string]any{
+		"profile": &Profile{Bio: bio},
+	})
+	assertContains(t, out, "hello")
+}
+
+// ---------------------------------------------------------------------------
 // Full page test
 // ---------------------------------------------------------------------------
 

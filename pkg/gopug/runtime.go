@@ -2513,6 +2513,16 @@ func (r *Runtime) getField(obj any, field string) any {
 	}
 
 	v := reflect.ValueOf(obj)
+
+	// Dereference a pointer-to-struct (or pointer-to-map) so that field
+	// access works whether the caller passes T or *T as data.
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+
 	if v.Kind() == reflect.Map {
 		val := v.MapIndex(reflect.ValueOf(field))
 		if val.IsValid() {
@@ -2521,6 +2531,15 @@ func (r *Runtime) getField(obj any, field string) any {
 	} else if v.Kind() == reflect.Struct {
 		fieldVal := v.FieldByName(field)
 		if fieldVal.IsValid() {
+			// Dereference pointer-typed fields: nil pointer → nil so that
+			// isTruthy returns false and || / ternary fallbacks are reachable;
+			// non-nil pointer → the pointed-to value so it renders correctly.
+			if fieldVal.Kind() == reflect.Ptr {
+				if fieldVal.IsNil() {
+					return nil
+				}
+				return fieldVal.Elem().Interface()
+			}
 			return fieldVal.Interface()
 		}
 	}
