@@ -874,13 +874,7 @@ func (l *Lexer) scanAttributes() error {
 
 		if l.peek() == '=' {
 			l.advance()
-			if l.peek() == '=' {
-				// == is a comparison operator, not an assignment.
-				l.advance()
-				l.addToken(TokenAttrEqual, "==")
-			} else {
-				l.addToken(TokenAttrEqual, "=")
-			}
+			l.addToken(TokenAttrEqual, "=")
 		} else if l.peek() == '!' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '=' {
 			l.advance()
 			l.advance()
@@ -966,7 +960,7 @@ func (l *Lexer) scanAttributeValue() string {
 // (e.g. the | in `a || b`, the ? in `c ? x : y`).
 func isAttrOpChar(ch byte) bool {
 	switch ch {
-	case '|', '&', '?', ':', '+', '-', '*', '/', '!', '<', '>':
+	case '|', '&', '?', ':', '+', '-', '*', '/', '!', '<', '>', '=':
 		return true
 	}
 	return false

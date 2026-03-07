@@ -689,6 +689,52 @@ func TestSpaceSepValueCommaStillWorks(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #4 regressions — comparison expressions and ternary-with-undefined
+// in attribute values (introduced in bb0485d, fixed thereafter)
+// ---------------------------------------------------------------------------
+
+// TestAttrComparisonExprEqualEqual verifies that `selected=val == "FA"` is
+// evaluated as the expression `val == "FA"` (a boolean), not re-parsed as
+// separate attribute tokens. Regression from bb0485d.
+func TestAttrComparisonExprEqualEqual(t *testing.T) {
+	src := "select\n  option(value=\"FA\" selected=val == \"FA\") Field Adjuster\n  option(value=\"DA\" selected=val == \"DA\") Desk Adjuster"
+	out := renderTest(t, src, map[string]any{"val": "FA"})
+	// The FA option must carry selected="true"; DA must not.
+	if strings.Contains(out, `"FA" ==`) || strings.Contains(out, `== selected`) {
+		t.Errorf("comparison expression leaked into HTML as raw tokens, got: %q", out)
+	}
+	assertContains(t, out, `selected="true"`)
+	// The DA option should NOT have selected.
+	if strings.Count(out, "selected") != 1 {
+		t.Errorf("expected exactly one selected attribute, got: %q", out)
+	}
+}
+
+// TestAttrTernaryWithUndefinedBranch verifies that `aria-current=page == "x" ? "page" : undefined`
+// is evaluated as a ternary expression and the result placed in the attribute,
+// rather than leaking raw tokens into the HTML. Regression from bb0485d.
+func TestAttrTernaryWithUndefinedBranch(t *testing.T) {
+	src := `a(href="/x" aria-current=page == "x" ? "page" : undefined) Link`
+	// page == "x" → truthy branch → aria-current="page"
+	outMatch := renderTest(t, src, map[string]any{"page": "x"})
+	if strings.Contains(outMatch, `"page"`) && strings.Contains(outMatch, `"x"`) && strings.Contains(outMatch, `:`) && strings.Contains(outMatch, `?`) {
+		t.Errorf("ternary expression leaked raw tokens into HTML, got: %q", outMatch)
+	}
+	assertContains(t, outMatch, `aria-current="page"`)
+	assertContains(t, outMatch, `href="/x"`)
+
+	// page != "x" → falsy branch (undefined) → aria-current attribute should be absent or empty
+	outNoMatch := renderTest(t, src, map[string]any{"page": "y"})
+	if strings.Contains(outNoMatch, `"page"`) && strings.Contains(outNoMatch, `?`) {
+		t.Errorf("ternary expression leaked raw tokens into HTML (no-match branch), got: %q", outNoMatch)
+	}
+	// undefined branch: attribute value is "undefined" / "" / omitted — must not contain raw expression tokens
+	if strings.Contains(outNoMatch, ` == `) || strings.Contains(outNoMatch, ` ? `) {
+		t.Errorf("raw operator tokens must not appear in rendered output, got: %q", outNoMatch)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Void tag variants
 // ---------------------------------------------------------------------------
 
