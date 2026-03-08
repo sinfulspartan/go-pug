@@ -699,16 +699,26 @@ func (l *Lexer) scanBlockTextBody(headerDepth int) {
 }
 
 func (l *Lexer) scanTagRest() error {
-	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
+	inAttr := false
+	for l.pos < len(l.input) && (inAttr || (l.peek() != '\n' && l.peek() != '\r')) {
 		ch := l.peek()
 
 		switch ch {
+		case '\n', '\r':
+			// Only reachable when inAttr is true (loop condition above).
+			// scanAttributes consumed all attribute content including the closing
+			// ')' before we could get here, so if we still see a newline we are
+			// done with the tag rest.
+			l.skipToNewline()
+			return nil
 		case '(':
+			inAttr = true
 			l.advance()
 			l.addToken(TokenAttrStart, "(")
 			if err := l.scanAttributes(); err != nil {
 				return err
 			}
+			inAttr = false
 
 		case '.':
 			l.advance()
@@ -844,7 +854,10 @@ func (l *Lexer) scanTagRest() error {
 // a positional TokenAttrName with no following TokenAttrEqual.
 func (l *Lexer) scanAttributes() error {
 	for l.pos < len(l.input) && l.peek() != ')' {
-		l.skipSpaces()
+		// Skip whitespace including newlines — multiline attribute blocks are
+		// allowed by the Pug spec and are semantically identical to their
+		// single-line equivalents.
+		l.skipAttrWhitespace()
 
 		if l.peek() == ')' {
 			break
@@ -861,7 +874,7 @@ func (l *Lexer) scanAttributes() error {
 				return l.errorf("expected attribute name")
 			}
 			l.addToken(TokenAttrName, name)
-			l.skipSpaces()
+			l.skipAttrWhitespace()
 			if l.peek() == ',' {
 				l.advance()
 				l.addToken(TokenAttrComma, ",")
@@ -870,7 +883,7 @@ func (l *Lexer) scanAttributes() error {
 		}
 
 		l.addToken(TokenAttrName, name)
-		l.skipSpaces()
+		l.skipAttrWhitespace()
 
 		if l.peek() == '=' {
 			l.advance()
@@ -887,12 +900,12 @@ func (l *Lexer) scanAttributes() error {
 			continue
 		}
 
-		l.skipSpaces()
+		l.skipAttrWhitespace()
 
 		value := l.scanAttrValueFull()
 		l.addToken(TokenAttrValue, value)
 
-		l.skipSpaces()
+		l.skipAttrWhitespace()
 
 		if l.peek() == ',' {
 			l.advance()
@@ -1149,6 +1162,21 @@ func (l *Lexer) match(expected byte) bool {
 func (l *Lexer) skipSpaces() {
 	for l.pos < len(l.input) && (l.peek() == ' ' || l.peek() == '\t') {
 		l.advance()
+	}
+}
+
+// skipAttrWhitespace skips spaces, tabs, and newlines (including bare \r\n and
+// \n). It is used inside multiline attribute blocks where whitespace — including
+// line breaks and their leading indentation — must be treated as insignificant
+// separators between attributes.
+func (l *Lexer) skipAttrWhitespace() {
+	for l.pos < len(l.input) {
+		ch := l.peek()
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+			l.advance()
+		} else {
+			break
+		}
 	}
 }
 

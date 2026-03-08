@@ -199,6 +199,74 @@ func TestAttributeUnescapedSingleQuote(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Attributes — multiline (issue #6)
+// ---------------------------------------------------------------------------
+
+// TestMultilineAttributesBasic verifies that attributes split across multiple
+// lines compile identically to their single-line equivalent.
+func TestMultilineAttributesBasic(t *testing.T) {
+	multi := renderTest(t, "input(\n  type=\"checkbox\"\n  name=\"agreement\"\n  checked\n)", nil)
+	single := renderTest(t, `input(type="checkbox" name="agreement" checked)`, nil)
+	assertEqual(t, multi, single)
+}
+
+// TestMultilineAttributesWithInlineText verifies that a tag with multiline
+// attributes followed by inline text content renders correctly.
+func TestMultilineAttributesWithInlineText(t *testing.T) {
+	out := renderTest(t, "button(\n  type=\"button\"\n  id=\"my-btn\"\n) Click Me", nil)
+	assertContains(t, out, `type="button"`)
+	assertContains(t, out, `id="my-btn"`)
+	assertContains(t, out, "Click Me")
+}
+
+// TestMultilineAttributesWithBufferedOutput verifies that a tag with multiline
+// attributes followed by a buffered `= expr` output renders correctly.
+func TestMultilineAttributesWithBufferedOutput(t *testing.T) {
+	out := renderTest(t, "span(\n  data-id=\"1\"\n  style=\"cursor:pointer;\"\n)= \"hello world\"", nil)
+	assertContains(t, out, `data-id="1"`)
+	assertContains(t, out, `style="cursor:pointer;"`)
+	assertContains(t, out, "hello world")
+}
+
+// TestMultilineAttributesNested verifies multiline attributes work correctly
+// inside an indented tree of tags.
+func TestMultilineAttributesNested(t *testing.T) {
+	src := ".container\n  .row\n    input.form-control(\n      type=\"text\"\n      id=\"nested\"\n      name=\"nested\"\n    )"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `type="text"`)
+	assertContains(t, out, `id="nested"`)
+	assertContains(t, out, `name="nested"`)
+	assertContains(t, out, "container")
+	assertContains(t, out, "row")
+}
+
+// TestMultilineAttributesCommaDelimited verifies that comma-delimited
+// multiline attributes (also valid Pug) are handled correctly.
+func TestMultilineAttributesCommaDelimited(t *testing.T) {
+	multi := renderTest(t, "input(\n  type=\"text\",\n  id=\"comma\",\n  name=\"comma\"\n)", nil)
+	single := renderTest(t, `input(type="text" id="comma" name="comma")`, nil)
+	assertEqual(t, multi, single)
+}
+
+// TestMultilineAttributesBooleanOnly verifies that a multiline block
+// containing only boolean (bare) attributes works.
+func TestMultilineAttributesBooleanOnly(t *testing.T) {
+	out := renderTest(t, "input(\n  type=\"checkbox\"\n  checked\n  disabled\n)", nil)
+	assertContains(t, out, `type="checkbox"`)
+	assertContains(t, out, "checked")
+	assertContains(t, out, "disabled")
+}
+
+// TestMultilineAttributesMatchesSingleLine is a broad equivalence check:
+// the multiline and single-line forms of the same tag must produce identical
+// HTML for an element with many attributes.
+func TestMultilineAttributesMatchesSingleLine(t *testing.T) {
+	multi := renderTest(t, "input.form-control(\n  type=\"text\"\n  id=\"name\"\n  name=\"name\"\n  placeholder=\"Name\"\n)", nil)
+	single := renderTest(t, `input.form-control(type="text" id="name" name="name" placeholder="Name")`, nil)
+	assertEqual(t, multi, single)
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 // ---------------------------------------------------------------------------
 
