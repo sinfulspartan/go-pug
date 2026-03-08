@@ -1761,6 +1761,47 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 				return expr[1 : len(expr)-1], nil
 			}
 		}
+
+		if q == '`' {
+			// Template literal: `text ${expr} text`
+			// Walk the content, evaluate each ${...} interpolation,
+			// and concatenate literal segments with evaluated results.
+			inner := expr[1:]
+			var result strings.Builder
+			i := 0
+			for i < len(inner) {
+				if inner[i] == '`' {
+					break // closing backtick
+				}
+				if inner[i] == '\\' && i+1 < len(inner) {
+					// escape sequence — pass the next char through literally
+					result.WriteByte(inner[i+1])
+					i += 2
+					continue
+				}
+				if inner[i] == '$' && i+1 < len(inner) && inner[i+1] == '{' {
+					// find the matching closing brace, respecting nesting
+					depth := 1
+					j := i + 2
+					for j < len(inner) && depth > 0 {
+						if inner[j] == '{' {
+							depth++
+						} else if inner[j] == '}' {
+							depth--
+						}
+						j++
+					}
+					interp := inner[i+2 : j-1]
+					val, _ := r.evaluateExpr(strings.TrimSpace(interp))
+					result.WriteString(val)
+					i = j
+					continue
+				}
+				result.WriteByte(inner[i])
+				i++
+			}
+			return result.String(), nil
+		}
 	}
 
 	if expr == "block" && r.inMixin {

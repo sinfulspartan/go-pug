@@ -5361,3 +5361,68 @@ func TestPipeTextNamedEntityPassThrough(t *testing.T) {
 	}
 	assertContains(t, out, "&copy;")
 }
+
+// ---------------------------------------------------------------------------
+// Template literals (backtick strings with ${...} interpolation)
+// ---------------------------------------------------------------------------
+
+// TestTemplateLiteralPlain verifies a backtick string with no interpolation.
+func TestTemplateLiteralPlain(t *testing.T) {
+	out := renderTest(t, "a(href=`/about`) About", nil)
+	assertContains(t, out, `href="/about"`)
+}
+
+// TestTemplateLiteralSimpleVar interpolates a plain variable.
+func TestTemplateLiteralSimpleVar(t *testing.T) {
+	out := renderTest(t, "a(href=`/user/${id}`) Link", map[string]any{"id": "42"})
+	assertContains(t, out, `href="/user/42"`)
+}
+
+// TestTemplateLiteralDotNotation interpolates a dot-notation field (map).
+func TestTemplateLiteralDotNotation(t *testing.T) {
+	out := renderTest(t, "a(href=`/user/${user.id}`) Link",
+		map[string]any{"user": map[string]any{"id": "99"}})
+	assertContains(t, out, `href="/user/99"`)
+}
+
+// TestTemplateLiteralStructFieldInEach reproduces the exact pattern from
+// issue #7: struct field accessed from a loop variable inside each.
+func TestTemplateLiteralStructFieldInEach(t *testing.T) {
+	type Cert struct {
+		ID   int
+		Name string
+	}
+	src := "each cert in certifications\n  button(hx-delete=`/profile/certifications/${cert.ID}`) Remove"
+	out := renderTest(t, src, map[string]any{
+		"certifications": []Cert{
+			{ID: 123, Name: "Go Expert"},
+		},
+	})
+	assertContains(t, out, `hx-delete="/profile/certifications/123"`)
+	assertContains(t, out, `>Remove</button>`)
+}
+
+// TestTemplateLiteralMultipleInterpolations tests two ${} segments in one literal.
+func TestTemplateLiteralMultipleInterpolations(t *testing.T) {
+	out := renderTest(t, "a(href=`/${section}/${id}`) Link",
+		map[string]any{"section": "blog", "id": "7"})
+	assertContains(t, out, `href="/blog/7"`)
+}
+
+// TestTemplateLiteralIntField ensures integer struct fields are formatted correctly.
+func TestTemplateLiteralIntField(t *testing.T) {
+	type License struct {
+		ID int
+	}
+	src := "each lic in licenses\n  button(hx-delete=`/profile/licenses/${lic.ID}`) Remove"
+	out := renderTest(t, src, map[string]any{
+		"licenses": []License{{ID: 55}},
+	})
+	assertContains(t, out, `hx-delete="/profile/licenses/55"`)
+}
+
+// TestTemplateLiteralNoInterpolation verifies a backtick string with no ${}.
+func TestTemplateLiteralNoInterpolation(t *testing.T) {
+	out := renderTest(t, "span(class=`active`) Hi", nil)
+	assertContains(t, out, `class="active"`)
+}
