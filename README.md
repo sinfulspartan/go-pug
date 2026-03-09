@@ -3,6 +3,8 @@
 A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, indentation-based templates that compile to HTML.
 
 [![CI](https://github.com/sinfulspartan/go-pug/actions/workflows/ci.yml/badge.svg)](https://github.com/sinfulspartan/go-pug/actions/workflows/ci.yml)
+[![Release](https://github.com/sinfulspartan/go-pug/actions/workflows/release.yml/badge.svg)](https://github.com/sinfulspartan/go-pug/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/sinfulspartan/go-pug)](https://github.com/sinfulspartan/go-pug/releases/latest)
 
 ---
 
@@ -51,11 +53,25 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 
 ## Installation
 
+Install the latest release:
+
 ```sh
-go get github.com/sinfulspartan/go-pug
+go get github.com/sinfulspartan/go-pug@latest
+```
+
+Or pin to a specific version:
+
+```sh
+go get github.com/sinfulspartan/go-pug@v0.1.0
 ```
 
 Import path: `github.com/sinfulspartan/go-pug/pkg/gopug`
+
+The current version is also available at runtime via the `Version` constant:
+
+```go
+fmt.Println(gopug.Version) // e.g. "v0.1.0"
+```
 
 ---
 
@@ -705,6 +721,9 @@ html, err := gopug.RenderFile(path string, data map[string]any, opts *gopug.Opti
 
 // Invalidate the entire compile cache.
 gopug.ClearCache()
+
+// The current engine version (mirrors the latest git tag).
+gopug.Version // e.g. "v0.1.0"
 ```
 
 > ⚠️ **`CompileFile` caches by path only** — the cache key is the absolute file path. If you call `CompileFile` with the same path but different `Options` (e.g. different `Globals` or `Filters`), the cached `*Template` from the first call is returned with the new options shallow-copied in, but the AST is shared. Call `ClearCache()` before a second compile of the same file if you need a fresh result under different options.
@@ -882,12 +901,13 @@ Or run the `go` commands directly — no shell is required for that.
 
 GitHub Actions runs on every push to `main` and on pull requests:
 
-| Job     | Platforms          | Description                                                                                                 |
-| ------- | ------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `test`  | ubuntu, windows    | `go vet` + full test suite                                                                                  |
-| `race`  | ubuntu             | test suite with `-race`                                                                                     |
-| `build` | ubuntu             | build the demo server binary (`bin/go-pug`)                                                                 |
-| `bench` | ubuntu (push only) | benchmark run; uploads `BENCHMARKS.md`, `benchmarks.json`, `benchmarks.csv` as artifacts (retained 90 days) |
+| Job       | Platforms          | Description                                                                                                                            |
+| --------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `test`    | ubuntu, windows    | `go vet` + full test suite                                                                                                             |
+| `race`    | ubuntu             | test suite with `-race`                                                                                                                |
+| `build`   | ubuntu             | build the demo server binary (`bin/go-pug`)                                                                                            |
+| `bench`   | ubuntu (push only) | benchmark run; uploads `BENCHMARKS.md`, `benchmarks.json`, `benchmarks.csv` as artifacts (retained 90 days)                            |
+| `release` | ubuntu (tags only) | triggered on `v*.*.*` tag pushes; runs tests + race detector, then creates a GitHub Release with cross-compiled demo binaries attached |
 
 ---
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"flag"
 	"fmt"
 	"html"
 	"io/fs"
@@ -364,13 +365,21 @@ func writePage(w http.ResponseWriter, exs []example, previewStyles string) {
 	}
 
 	sb.WriteString(`</div>`)
-	sb.WriteString(`<footer>go-pug &mdash; github.com/sinfulspartan/go-pug</footer>`)
+	fmt.Fprintf(&sb, `<footer>go-pug %s &mdash; github.com/sinfulspartan/go-pug</footer>`, html.EscapeString(gopug.Version))
 	sb.WriteString(`</body></html>`)
 
 	fmt.Fprint(w, sb.String())
 }
 
 func main() {
+	printVersion := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+
+	if *printVersion {
+		fmt.Println(gopug.Version)
+		os.Exit(0)
+	}
+
 	viewsDir, err := extractViewsToTemp()
 	if err != nil {
 		log.Fatalf("failed to extract views: %v", err)
@@ -382,7 +391,7 @@ func main() {
 		log.Fatalf("failed to load examples: %v", err)
 	}
 
-	log.Printf("Go-Pug demo server — %d examples loaded", len(exs))
+	log.Printf("Go-Pug demo server %s — %d examples loaded", gopug.Version, len(exs))
 
 	previewStyles := loadPreviewStyles()
 
