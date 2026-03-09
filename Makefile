@@ -14,6 +14,10 @@ GO       := go
 BIN_DIR  := bin
 BINARY   := $(BIN_DIR)/go-pug
 
+# -- Release tunables ---------------------------------------------------------
+# Override on the command line:  make tag VERSION=1.2.3
+VERSION  ?=
+
 # -- Benchmark tunables -------------------------------------------------------
 # Override on the command line:  make bench BENCH=BenchmarkRender BENCHTIME=2s
 BENCH      ?= .
@@ -30,9 +34,6 @@ BENCH_JSON ?= benchmarks.json
 BENCH_CSV  ?= benchmarks.csv
 BENCH2MD   := ./scripts/bench2md
 
-# -- Tooling detection --------------------------------------------------------
-GOLANGCI_LINT := $(shell where golangci-lint 2>nul || which golangci-lint 2>/dev/null)
-
 # ---------------------------------------------------------------------------
 # Phony targets
 # ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ GOLANGCI_LINT := $(shell where golangci-lint 2>nul || which golangci-lint 2>/dev
         cover cover-html \
         fmt vet lint \
         tidy mod \
+        tag \
         clean
 
 .DEFAULT_GOAL := all
@@ -93,6 +95,7 @@ help:
 	@echo ""
 	@echo "  Housekeeping"
 	@echo "    clean          Remove $(BIN_DIR)/, $(COVER_OUT), $(COVER_HTML), *.prof, $(BENCH_MD)"
+	@echo "    tag            Create and push an annotated git tag  (VERSION=x.y.z required)"
 	@echo "    help           Show this message"
 	@echo ""
 	@echo "  Tunable variables (pass on the command line):"
@@ -104,6 +107,7 @@ help:
 	@echo "    BENCH_MD=<file>      benchmark report output   (default: BENCHMARKS.md)"
 	@echo "    BENCH_JSON=<file>    benchmark JSON output     (default: benchmarks.json)"
 	@echo "    BENCH_CSV=<file>     benchmark CSV output      (default: benchmarks.csv)"
+	@echo "    VERSION=<semver>     release version tag       (e.g. 1.2.3 or v1.2.3)"
 	@echo ""
 
 # ---------------------------------------------------------------------------
@@ -116,9 +120,9 @@ build:
 	@echo "-> $(BINARY) ready"
 	@echo ""
 
-run: build
+run:
 	@echo "=> Running demo"
-	$(BINARY)
+	$(GO) run $(CMD)
 
 # ---------------------------------------------------------------------------
 # Test
@@ -242,21 +246,15 @@ cover-html: cover
 
 fmt:
 	@echo "=> Formatting source files"
-	$(GO) fmt ./...
-	gofmt -s -l -w .
+	$(GO) run ./scripts/gofmt
 
 vet:
 	@echo "=> go vet"
 	$(GO) vet ./...
 
 lint:
-ifneq ($(GOLANGCI_LINT),)
-	@echo "=> golangci-lint run"
-	$(GOLANGCI_LINT) run ./...
-else
-	@echo "=> golangci-lint not found -- skipping"
-	@echo "   Install: https://golangci-lint.run/usage/install/"
-endif
+	@echo "=> lint"
+	$(GO) run ./scripts/lint
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -269,6 +267,21 @@ tidy:
 mod:
 	@echo "=> go mod download"
 	$(GO) mod download
+
+# ---------------------------------------------------------------------------
+# Tagging / releasing
+# ---------------------------------------------------------------------------
+
+# Normalise VERSION: prepend "v" if it was supplied without one.
+# e.g.  make tag VERSION=1.2.3   →  v1.2.3
+#       make tag VERSION=v1.2.3  →  v1.2.3
+_TAG := $(if $(VERSION),$(if $(filter v%,$(VERSION)),$(VERSION),v$(VERSION)),)
+
+tag:
+ifeq ($(VERSION),)
+	$(error VERSION is required. Usage: make tag VERSION=x.y.z)
+endif
+	$(GO) run ./scripts/tag -version "$(VERSION)"
 
 # ---------------------------------------------------------------------------
 # Housekeeping
