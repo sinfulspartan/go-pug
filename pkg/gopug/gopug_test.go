@@ -4944,6 +4944,74 @@ func TestIncludeAbsolutePathWithBasedir(t *testing.T) {
 	assertContains(t, out, "<span>absolute</span>")
 }
 
+// TestIncludeAbsolutePathFromNestedInclude is the exact bug scenario from
+// issue #8: a leading-slash include path must resolve against Basedir even
+// when the include stack is non-empty (i.e. the include is nested inside
+// another included file). The existing TestIncludeAbsolutePathWithBasedir
+// only covers the case where the include stack is empty (root file).
+//
+// Layout:
+//
+//	<basedir>/root.pug          — includes /partial/mid.pug
+//	<basedir>/partial/mid.pug   — includes /partial/leaf.pug  (non-empty stack)
+//	<basedir>/partial/leaf.pug  — renders <span>leaf</span>
+func TestIncludeAbsolutePathFromNestedInclude(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.MkdirAll(dir+"/partial", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// leaf: the innermost partial — produces a concrete element to assert on.
+	if err := os.WriteFile(dir+"/partial/leaf.pug", []byte("span leaf"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// mid: included by root, itself includes leaf via a leading-slash path.
+	// When mid is being rendered, includeStack is non-empty (contains the abs
+	// path of mid itself), which was the case the old code got wrong.
+	if err := os.WriteFile(dir+"/partial/mid.pug", []byte("div\n  include /partial/leaf.pug"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// root: entry point — includes mid via a leading-slash path.
+	if err := os.WriteFile(dir+"/root.pug", []byte("div\n  include /partial/mid.pug"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := &Options{Basedir: dir}
+	out, err := RenderFile(dir+"/root.pug", nil, opts)
+	if err != nil {
+		t.Fatalf("RenderFile error: %v", err)
+	}
+	assertContains(t, out, "<span>leaf</span>")
+}
+
+// TestIncludeAbsolutePathViaRenderString covers the second failure mode from
+// issue #8: using Render() (string source, not a file) with Basedir set.
+// In this path the include stack starts empty and includeBase must be used
+// to anchor the leading-slash path.
+func TestIncludeAbsolutePathViaRenderString(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.MkdirAll(dir+"/partial", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The partial that the inline template includes via a leading-slash path.
+	if err := os.WriteFile(dir+"/partial/leaf.pug", []byte("span from-string"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	src := "div\n  include /partial/leaf.pug"
+	opts := &Options{Basedir: dir}
+	out, err := Render(src, nil, opts)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	assertContains(t, out, "<span>from-string</span>")
+}
+
 // TestIncludeInsideEachLoop verifies that an included partial is rendered once
 // per iteration of an each loop, sharing the loop variable.
 func TestIncludeInsideEachLoop(t *testing.T) {
