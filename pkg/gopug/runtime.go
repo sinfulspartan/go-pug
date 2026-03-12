@@ -225,7 +225,15 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 
 	base := filepath.Dir(currentPath)
 	var resolved string
-	if filepath.IsAbs(parentPath) {
+	if strings.HasPrefix(parentPath, "/") || strings.HasPrefix(parentPath, "\\") {
+		// Treat leading slash as basedir-relative on all OSes (on Windows
+		// filepath.IsAbs("/foo") is false, so we handle this case first).
+		if r.includeBase != "" {
+			resolved = filepath.Join(r.includeBase, parentPath)
+		} else {
+			resolved = parentPath
+		}
+	} else if filepath.IsAbs(parentPath) {
 		if r.includeBase != "" {
 			resolved = filepath.Join(r.includeBase, parentPath)
 		} else {
@@ -1308,7 +1316,15 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 	}
 
 	var resolved string
-	if filepath.IsAbs(inclPath) {
+	if strings.HasPrefix(inclPath, "/") || strings.HasPrefix(inclPath, "\\") {
+		// Treat leading slash as basedir-relative on all OSes (on Windows
+		// filepath.IsAbs("/foo") is false, so we handle this case first).
+		if r.includeBase != "" {
+			resolved = filepath.Join(r.includeBase, inclPath)
+		} else {
+			resolved = inclPath
+		}
+	} else if filepath.IsAbs(inclPath) {
 		if r.includeBase != "" {
 			resolved = filepath.Join(r.includeBase, inclPath)
 		} else {
