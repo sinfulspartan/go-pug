@@ -22,19 +22,20 @@ import (
 var mixinScopeBoundary = map[string]any{"\x00mixin_boundary": true}
 
 type Runtime struct {
-	ast          *DocumentNode
-	data         map[string]any
-	globals      map[string]any
-	htmlBuf      *bytes.Buffer
-	scopeStack   []map[string]any
-	doctype      string
-	mixinDecls   map[string]*MixinDeclNode
-	callerBlock  []Node
-	inMixin      bool
-	opts         *Options
-	includeBase  string
-	includeStack []string
-	prettyIndent int
+	ast              *DocumentNode
+	data             map[string]any
+	globals          map[string]any
+	htmlBuf          *bytes.Buffer
+	scopeStack       []map[string]any
+	doctype          string
+	mixinDecls       map[string]*MixinDeclNode
+	callerBlock      []Node
+	inMixin          bool
+	inRawTextElement bool
+	opts             *Options
+	includeBase      string
+	includeStack     []string
+	prettyIndent     int
 }
 
 func NewRuntime(ast *DocumentNode, data map[string]any) *Runtime {
@@ -698,10 +699,18 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		r.prettyIndent++
 	}
 
+	if isRawTextElement(tag.Name) {
+		r.inRawTextElement = true
+	}
+
 	for _, child := range tag.Children {
 		if err := r.renderNode(child); err != nil {
 			return err
 		}
+	}
+
+	if isRawTextElement(tag.Name) {
+		r.inRawTextElement = false
 	}
 
 	if r.pretty() && !isInline {
@@ -714,6 +723,14 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	r.htmlBuf.WriteString(">")
 
 	return nil
+}
+
+// isRawTextElement reports whether name is an HTML raw-text element whose
+// content must never be HTML-entity-encoded. The HTML5 spec defines script
+// and style as raw text elements: the browser passes their text content
+// directly to the JS engine or CSS parser without entity-decoding.
+func isRawTextElement(name string) bool {
+	return name == "script" || name == "style"
 }
 
 // htmlEscapeAttr escapes the characters that must be escaped inside a
@@ -1248,14 +1265,22 @@ func (r *Runtime) renderBlockText(block *BlockTextNode) error {
 	for _, tok := range lx.tokens {
 		switch tok.Type {
 		case TokenText:
-			r.htmlBuf.WriteString(htmlEscapeText(tok.Value))
+			if r.inRawTextElement {
+				r.htmlBuf.WriteString(tok.Value)
+			} else {
+				r.htmlBuf.WriteString(htmlEscapeText(tok.Value))
+			}
 
 		case TokenInterpolation:
 			val, err := r.evaluateExpr(tok.Value)
 			if err != nil {
 				val = tok.Value
 			}
-			r.htmlBuf.WriteString(htmlEscapeText(val))
+			if r.inRawTextElement {
+				r.htmlBuf.WriteString(val)
+			} else {
+				r.htmlBuf.WriteString(htmlEscapeText(val))
+			}
 
 		case TokenInterpolationUnescape:
 			val, err := r.evaluateExpr(tok.Value)

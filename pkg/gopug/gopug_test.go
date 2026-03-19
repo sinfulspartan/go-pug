@@ -4153,6 +4153,41 @@ func TestDotBlockOnStyleTag(t *testing.T) {
 	assertContains(t, out, "</style>")
 }
 
+// TestScriptDotBlockNoEntityEncoding verifies that special characters inside a
+// script. dot-block are written verbatim and not HTML-entity-encoded.
+// The HTML5 spec defines <script> as a raw-text element whose content is
+// passed directly to the JS engine without entity-decoding, so encoding &&
+// as &amp;&amp; would produce a JS syntax error.
+func TestScriptDotBlockNoEntityEncoding(t *testing.T) {
+	src := "script.\n  if (a && !b) { console.log('<ok>'); }"
+	out := renderTest(t, src, nil)
+	// Must appear verbatim — not entity-encoded.
+	assertContains(t, out, "a && !b")
+	assertContains(t, out, "<ok>")
+	// Must NOT be entity-encoded.
+	if strings.Contains(out, "&amp;") {
+		t.Errorf("&amp; found in script. output — & must not be entity-encoded; got: %q", out)
+	}
+	if strings.Contains(out, "&lt;") {
+		t.Errorf("&lt; found in script. output — < must not be entity-encoded; got: %q", out)
+	}
+}
+
+// TestStyleDotBlockNoEntityEncoding verifies that special characters inside a
+// style. dot-block are written verbatim and not HTML-entity-encoded.
+func TestStyleDotBlockNoEntityEncoding(t *testing.T) {
+	src := "style.\n  a > b, a < b { color: red; }"
+	out := renderTest(t, src, nil)
+	assertContains(t, out, "a > b")
+	assertContains(t, out, "a < b")
+	if strings.Contains(out, "&gt;") {
+		t.Errorf("&gt; found in style. output — > must not be entity-encoded; got: %q", out)
+	}
+	if strings.Contains(out, "&lt;") {
+		t.Errorf("&lt; found in style. output — < must not be entity-encoded; got: %q", out)
+	}
+}
+
 // TestLiteralHTMLLine verifies that a line beginning with < is passed through
 // as raw HTML.
 func TestLiteralHTMLLine(t *testing.T) {
