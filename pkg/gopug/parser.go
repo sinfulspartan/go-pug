@@ -277,9 +277,17 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 								newInner[len(newInner)-1] == '"' {
 								newInner = newInner[1 : len(newInner)-1]
 							}
-							tag.Attributes["class"] = &AttributeValue{
-								Value:     `"` + existingInner + " " + newInner + `"`,
-								Unescaped: unescaped,
+							isExprValue := len(newInner) > 0 && (newInner[0] == '!' || newInner[0] == '(' || newInner[0] == '[' || newInner[0] == '{')
+							if isExprValue {
+								tag.Attributes["class"] = &AttributeValue{
+									Value:     existingInner + " " + newInner,
+									Unescaped: unescaped,
+								}
+							} else {
+								tag.Attributes["class"] = &AttributeValue{
+									Value:     `"` + existingInner + " " + newInner + `"`,
+									Unescaped: unescaped,
+								}
 							}
 						} else {
 							tag.Attributes[name] = &AttributeValue{Value: value, Unescaped: unescaped}

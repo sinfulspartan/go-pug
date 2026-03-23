@@ -543,8 +543,16 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 					evaluated = strings.Join(parts, ";") + ";"
 				}
 			} else if name == "class" {
-				if len(rawValExpr) >= 2 && rawValExpr[0] == '{' && rawValExpr[len(rawValExpr)-1] == '}' {
-					obj := parseInlineObject(rawValExpr)
+				classObjStart := -1
+				for i := 0; i < len(rawValExpr); i++ {
+					if rawValExpr[i] == '{' {
+						classObjStart = i
+						break
+					}
+				}
+				if classObjStart >= 0 && classObjStart < len(rawValExpr)-1 && rawValExpr[len(rawValExpr)-1] == '}' {
+					objStr := rawValExpr[classObjStart:]
+					obj := parseInlineObject(objStr)
 					if obj != nil {
 						var activeClasses []string
 						for k, v := range obj {
@@ -555,10 +563,43 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 						}
 						sort.Strings(activeClasses)
 						evaluated = strings.Join(activeClasses, " ")
+						if classObjStart > 0 {
+							prefix := strings.TrimSpace(rawValExpr[:classObjStart])
+							if prefix != "" {
+								evaluated = prefix + " " + evaluated
+							}
+						}
 					}
 				} else {
 					if isOperatorExpr(rawValExpr) {
 						evaluated, _ = r.evaluateExpr(rawValExpr)
+						if evaluated == "" {
+							words := strings.Fields(rawValExpr)
+							if len(words) > 1 {
+								exprStart := -1
+								for i, word := range words {
+									if len(word) > 0 && (word[0] == '!' || word[0] == '(' || word[0] == '[' || word[0] == '{') {
+										exprStart = i
+										break
+									}
+								}
+								if exprStart > 0 {
+									staticWords := words[:exprStart]
+									exprWords := words[exprStart:]
+									if len(exprWords) > 0 {
+										exprStr := strings.Join(exprWords, " ")
+										evaled, _ := r.evaluateExpr(exprStr)
+										if evaled != "" {
+											evaluated = strings.Join(staticWords, " ")
+											if evaluated != "" {
+												evaluated += " "
+											}
+											evaluated += evaled
+										}
+									}
+								}
+							}
+						}
 					} else {
 						raw := r.evaluateExprRaw(rawValExpr)
 						if raw != nil {
