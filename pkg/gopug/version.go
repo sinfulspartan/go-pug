@@ -11,4 +11,4 @@ package gopug
 //	-ldflags "-X github.com/sinfulspartan/go-pug/pkg/gopug.Version=vX.Y.Z"
 //
 // so the binary always reports the exact tag that was built from.
-var Version = "v0.1.0"
+var Version = "v0.1.2"
