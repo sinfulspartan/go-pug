@@ -1662,6 +1662,10 @@ func (r *Runtime) evaluateExprRaw(expr string) any {
 	}
 
 	if len(expr) >= 2 && expr[0] == '[' && expr[len(expr)-1] == ']' {
+		closeIdx := findMatchingCloseBracket(expr)
+		if closeIdx != len(expr)-1 {
+			goto NOT_ARRAY_LITERAL
+		}
 		inner := strings.TrimSpace(expr[1 : len(expr)-1])
 		if inner == "" {
 			return []any{}
@@ -1669,19 +1673,19 @@ func (r *Runtime) evaluateExprRaw(expr string) any {
 		parts := splitTopLevel(inner, ',')
 		result := make([]any, 0, len(parts))
 		for _, p := range parts {
-			v, _ := r.evaluateExpr(strings.TrimSpace(p))
+			v := r.evaluateExprRaw(strings.TrimSpace(p))
 			result = append(result, v)
 		}
 		return result
 	}
+NOT_ARRAY_LITERAL:
 
 	if idx := findIndexOp(expr); idx >= 0 {
 		objExpr := expr[:idx]
 		keyExpr := expr[idx+1 : len(expr)-1]
-		obj, ok := r.lookup(strings.TrimSpace(objExpr))
-		if !ok {
-			s, _ := r.evaluateExpr(expr)
-			return s
+		obj := r.evaluateExprRaw(strings.TrimSpace(objExpr))
+		if obj == nil {
+			return nil
 		}
 		key, _ := r.evaluateExpr(keyExpr)
 		return r.indexValue(obj, key)
@@ -1866,6 +1870,10 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 	}
 
 	if len(expr) >= 2 && expr[0] == '[' && expr[len(expr)-1] == ']' {
+		closeIdx := findMatchingCloseBracket(expr)
+		if closeIdx != len(expr)-1 {
+			goto CHECK_INDEX_OP
+		}
 		inner := expr[1 : len(expr)-1]
 		parts := splitTopLevel(inner, ',')
 		strs := make([]string, 0, len(parts))
@@ -1875,6 +1883,7 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		}
 		return strings.Join(strs, ","), nil
 	}
+CHECK_INDEX_OP:
 
 	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
 		return "", nil
@@ -1988,8 +1997,8 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 	if idx := findIndexOp(expr); idx >= 0 {
 		objExpr := expr[:idx]
 		keyExpr := expr[idx+1 : len(expr)-1]
-		obj, ok := r.lookup(strings.TrimSpace(objExpr))
-		if !ok {
+		obj := r.evaluateExprRaw(strings.TrimSpace(objExpr))
+		if obj == nil {
 			return "", nil
 		}
 		key, err := r.evaluateExpr(keyExpr)
@@ -2467,6 +2476,39 @@ func findIndexOp(expr string) int {
 			inDouble = !inDouble
 		} else if ch == '\'' {
 			inSingle = !inSingle
+		}
+	}
+	return -1
+}
+
+// findMatchingCloseBracket finds the index of the closing bracket that matches
+// the opening bracket at position 0. Returns -1 if no matching bracket is found.
+func findMatchingCloseBracket(expr string) int {
+	if len(expr) < 2 || expr[0] != '[' {
+		return -1
+	}
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++ // skip next char
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+		} else if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+		} else if !inDouble && !inSingle {
+			if ch == '[' {
+				depth++
+			} else if ch == ']' {
+				depth--
+				if depth == 0 {
+					return i
+				}
+			}
 		}
 	}
 	return -1

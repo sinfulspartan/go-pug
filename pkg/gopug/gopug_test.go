@@ -5582,3 +5582,49 @@ func TestMapBracketAccessChained(t *testing.T) {
 	})
 	assertEqual(t, out, "<p>Value</p>")
 }
+
+// TestNestedArrayLiteralInEach tests issue #12: inline nested array literals
+// in each loops should have their elements accessible via index.
+func TestNestedArrayLiteralInEach(t *testing.T) {
+	out := renderTest(t, `each opt in [["none", "None"], ["low", "Low Volume"], ["high", "High Volume"]]
+  option(value=opt[0])= opt[1]`, nil)
+	assertContains(t, out, `<option value="none">None</option>`)
+	assertContains(t, out, `<option value="low">Low Volume</option>`)
+	assertContains(t, out, `<option value="high">High Volume</option>`)
+}
+
+// TestNestedArrayLiteralDirectAccess tests direct access to inline nested arrays.
+func TestNestedArrayLiteralDirectAccess(t *testing.T) {
+	out := renderTest(t, `p= ["a", "b", "c"][1]`, nil)
+	assertEqual(t, out, "<p>b</p>")
+}
+
+// TestNestedArrayLiteralChainedIndex tests chained index access on inline arrays.
+func TestNestedArrayLiteralChainedIndex(t *testing.T) {
+	out := renderTest(t, `p= [["x", "1"], ["y", "2"]][0][0]`, nil)
+	assertEqual(t, out, "<p>x</p>")
+}
+
+// TestNestedArrayLiteralInEachOption tests issue #12: each loop over nested array
+// literals produces correct option elements.
+func TestNestedArrayLiteralInEachOption(t *testing.T) {
+	out := renderTest(t, `each opt in [["none", "None"], ["low", "Low Volume"], ["high", "High Volume"]]
+  option(value=opt[0])= opt[1]`, nil)
+	assertContains(t, out, `<option value="none">None</option>`)
+	assertContains(t, out, `<option value="low">Low Volume</option>`)
+	assertContains(t, out, `<option value="high">High Volume</option>`)
+}
+
+// TestNestedArrayLiteralDirectIndex tests direct indexing into inline arrays.
+func TestNestedArrayLiteralDirectIndex(t *testing.T) {
+	out := renderTest(t, `p= ["a", "b", "c"][1]`, nil)
+	assertEqual(t, out, "<p>b</p>")
+}
+
+// TestNestedArrayLiteralChainedIndexInEach tests nested array access within each loop.
+func TestNestedArrayLiteralChainedIndexInEach(t *testing.T) {
+	out := renderTest(t, `each row in [["a", "b"], ["c", "d"]]
+  p= row[0] + row[1]`, nil)
+	assertContains(t, out, "<p>ab</p>")
+	assertContains(t, out, "<p>cd</p>")
+}
