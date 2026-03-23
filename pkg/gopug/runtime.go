@@ -980,7 +980,8 @@ func (r *Runtime) executeStatement(stmt string) error {
 		rhsExpr := strings.TrimSpace(stmt[idx+1:])
 		rhs := strings.TrimSpace(rhsExpr)
 		if (len(rhs) >= 2 && rhs[0] == '{' && rhs[len(rhs)-1] == '}') ||
-			(len(rhs) >= 2 && rhs[0] == '[' && rhs[len(rhs)-1] == ']') {
+			(len(rhs) >= 2 && rhs[0] == '[' && rhs[len(rhs)-1] == ']') ||
+			findIndexOp(rhs) >= 0 {
 			rawVal := r.evaluateExprRaw(rhs)
 			r.setVar(varName, rawVal)
 			return nil
@@ -1674,6 +1675,18 @@ func (r *Runtime) evaluateExprRaw(expr string) any {
 		return result
 	}
 
+	if idx := findIndexOp(expr); idx >= 0 {
+		objExpr := expr[:idx]
+		keyExpr := expr[idx+1 : len(expr)-1]
+		obj, ok := r.lookup(strings.TrimSpace(objExpr))
+		if !ok {
+			s, _ := r.evaluateExpr(expr)
+			return s
+		}
+		key, _ := r.evaluateExpr(keyExpr)
+		return r.indexValue(obj, key)
+	}
+
 	if val, ok := r.lookup(expr); ok {
 		return val
 	}
@@ -1997,6 +2010,34 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		objVal, err := r.evaluateExpr(objExpr)
 		if err != nil {
 			return "", err
+		}
+
+		if bracketIdx := findIndexOp(objExpr); bracketIdx >= 0 {
+			baseExpr := objExpr[:bracketIdx]
+			keyExpr := objExpr[bracketIdx+1 : len(objExpr)-1]
+			base, ok := r.lookup(strings.TrimSpace(baseExpr))
+			if !ok {
+				return "", nil
+			}
+			key, _ := r.evaluateExpr(keyExpr)
+			result := r.indexValue(base, key)
+			if result == nil {
+				return "", nil
+			}
+			rv := reflect.ValueOf(result)
+			if rest != "" {
+				if rv.Kind() == reflect.Map {
+					fv := rv.MapIndex(reflect.ValueOf(rest))
+					if fv.IsValid() {
+						return fmt.Sprintf("%v", fv.Interface()), nil
+					}
+				} else if rv.Kind() == reflect.Struct {
+					if fv := rv.FieldByName(rest); fv.IsValid() {
+						return fmt.Sprintf("%v", fv.Interface()), nil
+					}
+				}
+			}
+			return fmt.Sprintf("%v", result), nil
 		}
 
 		methodName := rest

@@ -5529,3 +5529,56 @@ func TestTemplateLiteralNoInterpolation(t *testing.T) {
 	out := renderTest(t, "span(class=`active`) Hi", nil)
 	assertContains(t, out, `class="active"`)
 }
+
+// TestMapBracketAccessWithVariableKey tests issue #11: map bracket access with
+// a variable key followed by dot access on the result.
+func TestMapBracketAccessWithVariableKey(t *testing.T) {
+	out := renderTest(t, `each faType in faTypes
+  - var view = faExperiences[faType]
+  p= view.Label
+  p= view.Years`, map[string]any{
+		"faTypes": []string{"general", "peril"},
+		"faExperiences": map[string]any{
+			"general": map[string]any{"Label": "General Adjuster", "Years": 5},
+			"peril":   map[string]any{"Label": "Peril Specialist", "Years": 3},
+		},
+	})
+	assertContains(t, out, "General Adjuster")
+	assertContains(t, out, "5")
+	assertContains(t, out, "Peril Specialist")
+	assertContains(t, out, "3")
+}
+
+// TestMapBracketAccessLiteralKeyWithDotAccess tests bracket access with a literal
+// key followed by dot access on the result.
+func TestMapBracketAccessLiteralKeyWithDotAccess(t *testing.T) {
+	out := renderTest(t, `p= faExperiences["general"].Label`, map[string]any{
+		"faExperiences": map[string]any{
+			"general": map[string]any{"Label": "General Adjuster"},
+		},
+	})
+	assertEqual(t, out, "<p>General Adjuster</p>")
+}
+
+// TestMapBracketAccessInAttribute tests bracket access with variable key in an attribute.
+func TestMapBracketAccessInAttribute(t *testing.T) {
+	out := renderTest(t, `a(data-id=userMap[userId].Label) Link`, map[string]any{
+		"userId": "42",
+		"userMap": map[string]any{
+			"42": map[string]any{"Label": "User 42"},
+		},
+	})
+	assertContains(t, out, `data-id="User 42"`)
+}
+
+// TestMapBracketAccessChained tests that chained bracket access works.
+func TestMapBracketAccessChained(t *testing.T) {
+	// Note: faExperiences["general"]["Label"] is a separate case that has its own issue
+	// Here we test the simpler case of bracket then dot access
+	out := renderTest(t, `p= data["key"].name`, map[string]any{
+		"data": map[string]any{
+			"key": map[string]any{"name": "Value"},
+		},
+	})
+	assertEqual(t, out, "<p>Value</p>")
+}
