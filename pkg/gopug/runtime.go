@@ -577,10 +577,31 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 							words := strings.Fields(rawValExpr)
 							if len(words) > 1 {
 								exprStart := -1
+								// First, try to find an expression word that
+								// starts with a known expression prefix.
 								for i, word := range words {
 									if len(word) > 0 && (word[0] == '!' || word[0] == '(' || word[0] == '[' || word[0] == '{') {
 										exprStart = i
 										break
+									}
+								}
+								// If no prefix-based match, look for a ternary
+								// `?` in the words and treat the word before it
+								// as the start of the expression (it is the
+								// condition).  E.g. for
+								//   card isActive ? "active" : ""
+								// words = [card, isActive, ?, "active", :, ""]
+								// The expression starts at index 1 (isActive).
+								if exprStart < 0 {
+									for i, word := range words {
+										if word == "?" {
+											if i > 0 {
+												exprStart = i - 1
+											} else {
+												exprStart = 0
+											}
+											break
+										}
 									}
 								}
 								if exprStart > 0 {
@@ -589,16 +610,55 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 									if len(exprWords) > 0 {
 										exprStr := strings.Join(exprWords, " ")
 										evaled, _ := r.evaluateExpr(exprStr)
+										staticPart := strings.Join(staticWords, " ")
 										if evaled != "" {
-											evaluated = strings.Join(staticWords, " ")
-											if evaluated != "" {
-												evaluated += " "
-											}
-											evaluated += evaled
+											evaluated = staticPart + " " + evaled
+										} else {
+											// Expression evaluated to empty
+											// (e.g. false branch of ternary
+											// returns ""); keep static classes.
+											evaluated = staticPart
 										}
 									}
+								} else if exprStart == 0 {
+									// The entire value is an expression — just
+									// evaluate it directly (already attempted
+									// above but try once more with trimmed
+									// input).
+									evaluated, _ = r.evaluateExpr(rawValExpr)
 								}
 							}
+						}
+					} else if containsParenExpr(rawValExpr) {
+						// The raw value mixes static class names with a
+						// parenthesised expression, e.g.
+						//   card (isActive ? "active" : "")
+						// isOperatorExpr missed it because the operator
+						// lives inside parens.  Split into static prefix
+						// and expression, then evaluate the expression.
+						words := strings.Fields(rawValExpr)
+						exprStart := -1
+						for i, word := range words {
+							if len(word) > 0 && word[0] == '(' {
+								exprStart = i
+								break
+							}
+						}
+						if exprStart >= 0 {
+							exprStr := strings.Join(words[exprStart:], " ")
+							evaled, _ := r.evaluateExpr(exprStr)
+							if exprStart > 0 {
+								staticPart := strings.Join(words[:exprStart], " ")
+								if evaled != "" {
+									evaluated = staticPart + " " + evaled
+								} else {
+									evaluated = staticPart
+								}
+							} else {
+								evaluated = evaled
+							}
+						} else {
+							evaluated, _ = r.evaluateExpr(rawValExpr)
 						}
 					} else {
 						raw := r.evaluateExprRaw(rawValExpr)
@@ -2363,6 +2423,75 @@ func isOperatorExpr(expr string) bool {
 		case '<', '>':
 			if depth == 0 {
 				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsParenExpr reports whether expr contains a parenthesised
+// sub-expression that includes an operator (e.g. `card (isActive ? "x" : "y")`).
+// This is used for the class attribute where static class names may be followed
+// by a parenthesised ternary/logical expression.
+func containsParenExpr(expr string) bool {
+	inDouble := false
+	inSingle := false
+	depth := 0
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '(' {
+			depth++
+			if depth == 1 {
+				// Scan ahead inside this paren group for operators.
+				for j := i + 1; j < len(expr); j++ {
+					c2 := expr[j]
+					if c2 == '\\' && (inDouble || inSingle) {
+						j++
+						continue
+					}
+					if c2 == '"' && !inSingle {
+						inDouble = !inDouble
+						continue
+					}
+					if c2 == '\'' && !inDouble {
+						inSingle = !inSingle
+						continue
+					}
+					if inDouble || inSingle {
+						continue
+					}
+					if c2 == '?' || c2 == '+' {
+						return true
+					}
+					if c2 == '|' && j+1 < len(expr) && expr[j+1] == '|' {
+						return true
+					}
+					if c2 == '&' && j+1 < len(expr) && expr[j+1] == '&' {
+						return true
+					}
+					if c2 == ')' {
+						break
+					}
+				}
+			}
+		} else if ch == ')' {
+			if depth > 0 {
+				depth--
 			}
 		}
 	}

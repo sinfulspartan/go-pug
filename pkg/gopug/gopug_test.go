@@ -5628,3 +5628,79 @@ func TestNestedArrayLiteralChainedIndexInEach(t *testing.T) {
 	assertContains(t, out, "<p>ab</p>")
 	assertContains(t, out, "<p>cd</p>")
 }
+
+// === Issue #14: Ternary expressions in class= attribute ===
+
+func TestIssue14TernaryInClassWithShorthandInLoop(t *testing.T) {
+	src := "each item, idx in items\n  div.card(class=(idx === 0 ? \"active\" : \"\"))= item"
+	data := map[string]interface{}{
+		"items": []string{"Alpha", "Beta", "Gamma"},
+	}
+	out := renderTest(t, src, data)
+	t.Logf("output: %q", out)
+
+	// First item should have "card active", rest should have just "card"
+	assertContains(t, out, `class="card active"`)
+	if strings.Contains(out, "?") || strings.Contains(out, "idx") {
+		t.Errorf("ternary expression should be evaluated, got: %q", out)
+	}
+}
+
+func TestIssue14TernaryInClassNoShorthandInLoop(t *testing.T) {
+	src := "each item, idx in items\n  div(class=(idx === 0 ? \"card active\" : \"card\"))= item"
+	data := map[string]interface{}{
+		"items": []string{"Alpha", "Beta", "Gamma"},
+	}
+	out := renderTest(t, src, data)
+	t.Logf("output: %q", out)
+
+	assertContains(t, out, `class="card active"`)
+	assertContains(t, out, `class="card"`)
+	if strings.Contains(out, "?") || strings.Contains(out, "idx") {
+		t.Errorf("ternary expression should be evaluated, got: %q", out)
+	}
+}
+
+func TestIssue14TernaryInClassWithShorthandOutsideLoop(t *testing.T) {
+	src := `div.card(class=(isActive ? "active" : "")) Hello`
+	data := map[string]interface{}{
+		"isActive": true,
+	}
+	out := renderTest(t, src, data)
+	t.Logf("output: %q", out)
+
+	assertContains(t, out, `class="card active"`)
+	if strings.Contains(out, "?") || strings.Contains(out, "isActive") {
+		t.Errorf("ternary expression should be evaluated, got: %q", out)
+	}
+}
+
+func TestIssue14TernaryInClassWithShorthandVarNoParens(t *testing.T) {
+	// Ternary without parens: div.card(class=isActive ? "active" : "")
+	src := `div.card(class=isActive ? "active" : "") Hello`
+	data := map[string]interface{}{
+		"isActive": true,
+	}
+	out := renderTest(t, src, data)
+	t.Logf("output: %q", out)
+
+	assertContains(t, out, `class="card active"`)
+	if strings.Contains(out, "?") || strings.Contains(out, "isActive") {
+		t.Errorf("ternary expression should be evaluated, got: %q", out)
+	}
+}
+
+func TestIssue14TernaryInClassWithShorthandFalseBranch(t *testing.T) {
+	src := `div.card(class=isActive ? "active" : "") Hello`
+	data := map[string]interface{}{
+		"isActive": false,
+	}
+	out := renderTest(t, src, data)
+	t.Logf("output: %q", out)
+
+	// Should just have "card", not the expression literal
+	if strings.Contains(out, "?") || strings.Contains(out, "isActive") {
+		t.Errorf("ternary expression should be evaluated, got: %q", out)
+	}
+	assertContains(t, out, "card")
+}

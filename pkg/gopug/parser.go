@@ -278,6 +278,14 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 								newInner = newInner[1 : len(newInner)-1]
 							}
 							isExprValue := len(newInner) > 0 && (newInner[0] == '!' || newInner[0] == '(' || newInner[0] == '[' || newInner[0] == '{')
+							// Also treat the value as an expression if it contains
+							// a top-level operator (ternary, comparison, logical,
+							// concatenation).  This catches cases like
+							//   .card(class=isActive ? "active" : "")
+							// where the value doesn't start with a special char.
+							if !isExprValue {
+								isExprValue = isOperatorExprParser(newInner)
+							}
 							if isExprValue {
 								tag.Attributes["class"] = &AttributeValue{
 									Value:     existingInner + " " + newInner,
@@ -1271,4 +1279,64 @@ func (p *Parser) advance() {
 		p.pos++
 		p.cur = p.tokens[p.pos]
 	}
+}
+
+// isOperatorExprParser reports whether expr contains a top-level operator
+// (ternary ?, comparison ==, ===, !=, !==, <, >, <=, >=, logical ||, &&, or
+// concatenation +) that indicates the value is an expression rather than a
+// plain class name.  This is used during class-attribute merging so that
+// ternary expressions like `isActive ? "active" : ""` are kept un-quoted.
+func isOperatorExprParser(expr string) bool {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		switch ch {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '?', '+':
+			if depth == 0 {
+				return true
+			}
+		case '|':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '|' {
+				return true
+			}
+		case '&':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '&' {
+				return true
+			}
+		case '=':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '=' {
+				return true
+			}
+		case '!':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '=' {
+				return true
+			}
+		case '<', '>':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
