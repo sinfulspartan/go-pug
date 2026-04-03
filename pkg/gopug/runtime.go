@@ -2492,9 +2492,10 @@ CHECK_INDEX_OP:
 			return objVal, nil
 		}
 
-		// If the method name contains no dot or bracket it is a plain method call.
-		// If the object resolved to a numeric type and no case above matched, the
-		// method is unsupported — return an error so the failure is visible.
+		// If the switch above did not match, the method call is unsupported.
+		// Return an error so the failure is visible rather than silently returning "".
+		// Only fire when rest contains "(" (i.e. it is a method call, not a property
+		// access) and the receiver variable actually exists in scope.
 		if strings.Contains(rest, "(") {
 			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
 				rv := reflect.ValueOf(rawObj)
@@ -2503,6 +2504,8 @@ CHECK_INDEX_OP:
 					reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 					reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 					return "", fmt.Errorf("unsupported number method: %q", methodName)
+				case reflect.String:
+					return "", fmt.Errorf("unsupported string method: %q", methodName)
 				}
 			}
 		}

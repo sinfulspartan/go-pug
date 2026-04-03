@@ -5832,3 +5832,51 @@ func TestUnsupportedNumberMethodReturnsError(t *testing.T) {
 		t.Error("expected an error for unsupported number method, got nil")
 	}
 }
+
+// TestUnsupportedStringMethodReturnsError verifies that calling an unknown
+// method on a string value produces an error rather than silently returning "".
+func TestUnsupportedStringMethodReturnsError(t *testing.T) {
+	_, err := Render("p= name.substring(0, 5)", map[string]any{"name": "hello world"}, nil)
+	if err == nil {
+		t.Error("expected an error for unsupported string method, got nil")
+	}
+}
+
+// TestUnsupportedStringMethodErrorMessage verifies the error message names the method.
+func TestUnsupportedStringMethodErrorMessage(t *testing.T) {
+	_, err := Render("p= s.charCodeAt(0)", map[string]any{"s": "abc"}, nil)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "charCodeAt") {
+		t.Errorf("expected error to mention method name, got: %v", err)
+	}
+}
+
+// TestUnsupportedMethodOnMissingFieldIsNotAnError verifies that calling a method
+// on a variable that does not exist in scope does not produce an error — the
+// variable is simply absent, not a typed value with an unsupported method.
+func TestUnsupportedMethodOnMissingFieldIsNotAnError(t *testing.T) {
+	out, err := Render("p= nonexistent.toUpperCase()", nil, nil)
+	if err != nil {
+		t.Errorf("expected nil error for method on missing variable, got: %v", err)
+	}
+	assertEqual(t, out, "<p></p>")
+}
+
+// TestKnownStringMethodsStillWork verifies that the new guard does not break
+// any of the existing supported string methods.
+func TestKnownStringMethodsStillWork(t *testing.T) {
+	data := map[string]any{"s": "Hello World"}
+	cases := []struct{ method, want string }{
+		{`s.toUpperCase()`, "HELLO WORLD"},
+		{`s.toLowerCase()`, "hello world"},
+		{`s.trim()`, "Hello World"},
+		{`s.slice(0, 5)`, "Hello"},
+		{`s.replace("World", "Go")`, "Hello Go"},
+	}
+	for _, c := range cases {
+		out := renderTest(t, "p= "+c.method, data)
+		assertEqual(t, out, "<p>"+c.want+"</p>")
+	}
+}

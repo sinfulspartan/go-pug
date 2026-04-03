@@ -826,6 +826,8 @@ The expression evaluator supports:
 | `.toFixed(n)`    | Format to `n` decimal places (default 0); rounds as `fmt.Sprintf` | `price.toFixed(2)` → `"9.99"`     |
 | `.toPrecision(n)`| Format to `n` significant figures (default 6)                     | `rate.toPrecision(3)` → `"0.175"` |
 
+> **Unsupported method calls** — calling a method that is not in the tables above on a string or numeric value returns a render error. Calling a method on a variable that does not exist in scope silently returns `""` (the variable is absent, not a typed value with an unknown method).
+
 ---
 
 ## Development
