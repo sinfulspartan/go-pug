@@ -22,6 +22,7 @@ benchmarks.csv
 *.test
 
 .agent
+AGENTS.md
 
 # Output of the go coverage tool
 coverage.out

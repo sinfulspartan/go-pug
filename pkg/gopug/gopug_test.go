@@ -5704,3 +5704,131 @@ func TestIssue14TernaryInClassWithShorthandFalseBranch(t *testing.T) {
 	}
 	assertContains(t, out, "card")
 }
+
+// ---------------------------------------------------------------------------
+// toFixed / toPrecision / padStart / padEnd
+// ---------------------------------------------------------------------------
+
+// TestToFixedFloat64 verifies toFixed on a float64 value.
+func TestToFixedFloat64(t *testing.T) {
+	out := renderTest(t, "p= price.toFixed(2)", map[string]any{"price": 9.99})
+	assertEqual(t, out, "<p>9.99</p>")
+}
+
+// TestToFixedRounding verifies toFixed rounds correctly.
+func TestToFixedRounding(t *testing.T) {
+	out := renderTest(t, "p= v.toFixed(1)", map[string]any{"v": 2.75})
+	assertEqual(t, out, "<p>2.8</p>")
+}
+
+// TestToFixedZeroPlaces verifies toFixed(0) truncates to integer.
+func TestToFixedZeroPlaces(t *testing.T) {
+	out := renderTest(t, "p= v.toFixed(0)", map[string]any{"v": 3.7})
+	assertEqual(t, out, "<p>4</p>")
+}
+
+// TestToFixedInt verifies toFixed works on an integer Go value.
+func TestToFixedInt(t *testing.T) {
+	out := renderTest(t, "p= n.toFixed(2)", map[string]any{"n": 42})
+	assertEqual(t, out, "<p>42.00</p>")
+}
+
+// TestToFixedNoArgs verifies toFixed() with no argument defaults to 0 decimal places.
+func TestToFixedNoArgs(t *testing.T) {
+	out := renderTest(t, "p= v.toFixed()", map[string]any{"v": 7.9})
+	assertEqual(t, out, "<p>8</p>")
+}
+
+// TestToFixedInAttr verifies toFixed works inside an attribute value.
+func TestToFixedInAttr(t *testing.T) {
+	out := renderTest(t, `input(value=price.toFixed(2))`, map[string]any{"price": 1.5})
+	assertContains(t, out, `value="1.50"`)
+}
+
+// TestToPrecisionFloat64 verifies toPrecision on a float64 value.
+func TestToPrecisionFloat64(t *testing.T) {
+	out := renderTest(t, "p= rate.toPrecision(3)", map[string]any{"rate": 0.175})
+	assertEqual(t, out, "<p>0.175</p>")
+}
+
+// TestToPrecisionReduces verifies toPrecision reduces significant figures.
+func TestToPrecisionReduces(t *testing.T) {
+	out := renderTest(t, "p= v.toPrecision(2)", map[string]any{"v": 123.456})
+	assertEqual(t, out, "<p>1.2e+02</p>")
+}
+
+// TestToPrecisionInt verifies toPrecision works on an integer Go value.
+func TestToPrecisionInt(t *testing.T) {
+	out := renderTest(t, "p= n.toPrecision(4)", map[string]any{"n": 1000})
+	assertEqual(t, out, "<p>1000</p>")
+}
+
+// TestPadStartBasic verifies padStart pads a short string on the left.
+func TestPadStartBasic(t *testing.T) {
+	out := renderTest(t, `p= id.padStart(5, "0")`, map[string]any{"id": "42"})
+	assertEqual(t, out, "<p>00042</p>")
+}
+
+// TestPadStartSpaceDefault verifies padStart uses space when no pad char is given.
+func TestPadStartSpaceDefault(t *testing.T) {
+	out := renderTest(t, "p= id.padStart(5)", map[string]any{"id": "42"})
+	assertEqual(t, out, "<p>   42</p>")
+}
+
+// TestPadStartNoOpWhenLongEnough verifies padStart is a no-op when string is already at target length.
+func TestPadStartNoOpWhenLongEnough(t *testing.T) {
+	out := renderTest(t, `p= s.padStart(3, "0")`, map[string]any{"s": "hello"})
+	assertEqual(t, out, "<p>hello</p>")
+}
+
+// TestPadStartSingleChar verifies padStart with a single character target length.
+func TestPadStartSingleChar(t *testing.T) {
+	out := renderTest(t, `p= s.padStart(1, "x")`, map[string]any{"s": "a"})
+	assertEqual(t, out, "<p>a</p>")
+}
+
+// TestPadEndBasic verifies padEnd pads a short string on the right.
+func TestPadEndBasic(t *testing.T) {
+	out := renderTest(t, `p= s.padEnd(6, ".")`, map[string]any{"s": "hi"})
+	assertEqual(t, out, "<p>hi....</p>")
+}
+
+// TestPadEndSpaceDefault verifies padEnd uses space when no pad char is given.
+func TestPadEndSpaceDefault(t *testing.T) {
+	out := renderTest(t, "p= s.padEnd(5)", map[string]any{"s": "hi"})
+	assertEqual(t, out, "<p>hi   </p>")
+}
+
+// TestPadEndNoOpWhenLongEnough verifies padEnd is a no-op when string is already at target length.
+func TestPadEndNoOpWhenLongEnough(t *testing.T) {
+	out := renderTest(t, `p= s.padEnd(2, "x")`, map[string]any{"s": "hello"})
+	assertEqual(t, out, "<p>hello</p>")
+}
+
+// TestPadStartInAttr verifies padStart works inside an attribute value.
+func TestPadStartInAttr(t *testing.T) {
+	out := renderTest(t, `input(value=code.padStart(4, "0"))`, map[string]any{"code": "7"})
+	assertContains(t, out, `value="0007"`)
+}
+
+// TestToFixedInEach verifies toFixed works on values accessed inside an each loop.
+func TestToFixedInEach(t *testing.T) {
+	out := renderTest(t, `each item in items
+  p= item.price.toFixed(2)`, map[string]any{
+		"items": []map[string]any{
+			{"price": 1.5},
+			{"price": 20.0},
+		},
+	})
+	assertContains(t, out, "<p>1.50</p>")
+	assertContains(t, out, "<p>20.00</p>")
+}
+
+// TestUnsupportedNumberMethodReturnsError verifies that calling an unknown
+// method on a numeric value produces an error rather than silently returning "".
+func TestUnsupportedNumberMethodReturnsError(t *testing.T) {
+	_, err := Render("p= price.unknownMethod()", map[string]any{"price": 9.99}, nil)
+	if err == nil {
+		t.Error("expected an error for unsupported number method, got nil")
+	}
+}

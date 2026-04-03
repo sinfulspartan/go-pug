@@ -2355,6 +2355,156 @@ CHECK_INDEX_OP:
 
 		case "toString", "String":
 			return objVal, nil
+
+		case "toFixed":
+			prec := 0
+			if argsStr != "" {
+				n, _ := r.evaluateExpr(argsStr)
+				prec, _ = strconv.Atoi(strings.TrimSpace(n))
+			}
+			if prec < 0 {
+				prec = 0
+			}
+			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
+				rv := reflect.ValueOf(rawObj)
+				var f float64
+				switch rv.Kind() {
+				case reflect.Float32, reflect.Float64:
+					f = rv.Float()
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					f = float64(rv.Int())
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					f = float64(rv.Uint())
+				default:
+					if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
+						f = parsed
+					} else {
+						return "", fmt.Errorf("toFixed: value %q is not a number", objVal)
+					}
+				}
+				return fmt.Sprintf("%."+strconv.Itoa(prec)+"f", f), nil
+			}
+			if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
+				return fmt.Sprintf("%."+strconv.Itoa(prec)+"f", parsed), nil
+			}
+			return "", fmt.Errorf("toFixed: value %q is not a number", objVal)
+
+		case "toPrecision":
+			prec := 6
+			if argsStr != "" {
+				n, _ := r.evaluateExpr(argsStr)
+				if p, err2 := strconv.Atoi(strings.TrimSpace(n)); err2 == nil && p > 0 {
+					prec = p
+				}
+			}
+			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
+				rv := reflect.ValueOf(rawObj)
+				var f float64
+				switch rv.Kind() {
+				case reflect.Float32, reflect.Float64:
+					f = rv.Float()
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					f = float64(rv.Int())
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					f = float64(rv.Uint())
+				default:
+					if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
+						f = parsed
+					} else {
+						return "", fmt.Errorf("toPrecision: value %q is not a number", objVal)
+					}
+				}
+				return fmt.Sprintf("%."+strconv.Itoa(prec)+"g", f), nil
+			}
+			if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
+				return fmt.Sprintf("%."+strconv.Itoa(prec)+"g", parsed), nil
+			}
+			return "", fmt.Errorf("toPrecision: value %q is not a number", objVal)
+
+		case "padStart":
+			if argsStr != "" {
+				commaIdx := findBinaryOp(argsStr, ",")
+				padChar := " "
+				var targetLen int
+				if commaIdx > 0 {
+					lenStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
+					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
+					ch, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
+					if len(ch) >= 2 &&
+						((ch[0] == '"' && ch[len(ch)-1] == '"') ||
+							(ch[0] == '\'' && ch[len(ch)-1] == '\'')) {
+						ch = ch[1 : len(ch)-1]
+					}
+					if ch != "" {
+						padChar = ch
+					}
+				} else {
+					lenStr, _ := r.evaluateExpr(argsStr)
+					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
+				}
+				runes := []rune(objVal)
+				if targetLen > len(runes) {
+					padRunes := []rune(padChar)
+					needed := targetLen - len(runes)
+					var b strings.Builder
+					for i := 0; i < needed; i++ {
+						b.WriteRune(padRunes[i%len(padRunes)])
+					}
+					b.WriteString(objVal)
+					return b.String(), nil
+				}
+			}
+			return objVal, nil
+
+		case "padEnd":
+			if argsStr != "" {
+				commaIdx := findBinaryOp(argsStr, ",")
+				padChar := " "
+				var targetLen int
+				if commaIdx > 0 {
+					lenStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
+					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
+					ch, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
+					if len(ch) >= 2 &&
+						((ch[0] == '"' && ch[len(ch)-1] == '"') ||
+							(ch[0] == '\'' && ch[len(ch)-1] == '\'')) {
+						ch = ch[1 : len(ch)-1]
+					}
+					if ch != "" {
+						padChar = ch
+					}
+				} else {
+					lenStr, _ := r.evaluateExpr(argsStr)
+					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
+				}
+				runes := []rune(objVal)
+				if targetLen > len(runes) {
+					padRunes := []rune(padChar)
+					needed := targetLen - len(runes)
+					var b strings.Builder
+					b.WriteString(objVal)
+					for i := 0; i < needed; i++ {
+						b.WriteRune(padRunes[i%len(padRunes)])
+					}
+					return b.String(), nil
+				}
+			}
+			return objVal, nil
+		}
+
+		// If the method name contains no dot or bracket it is a plain method call.
+		// If the object resolved to a numeric type and no case above matched, the
+		// method is unsupported — return an error so the failure is visible.
+		if strings.Contains(rest, "(") {
+			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
+				rv := reflect.ValueOf(rawObj)
+				switch rv.Kind() {
+				case reflect.Float32, reflect.Float64,
+					reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+					reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					return "", fmt.Errorf("unsupported number method: %q", methodName)
+				}
+			}
 		}
 	}
 
