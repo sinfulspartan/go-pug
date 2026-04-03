@@ -44,7 +44,7 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 - **Custom filters** — register Go functions as named filters; receive both body text and parsed `(key=value)` options
 - **Template cache** — `CompileFile` caches parsed ASTs by absolute path; call `ClearCache()` to invalidate
 - **Pretty-print mode** — optional indented HTML output
-- **Method expressions** — `s.toUpperCase()`, `s.trim()`, `s.slice(0,3)`, `items.length`, and more
+- **Method expressions** — `s.toUpperCase()`, `s.trim()`, `s.slice(0,3)`, `price.toFixed(2)`, `id.padStart(5,"0")`, `items.length`, and more
 - **`&attributes` spread** — merge a map into a tag's attribute list at render time
 - **No external dependencies** — pure Go, standard library only
 - **Interactive demo server** — `make run` launches a local web server showing all 34 syntax examples side-by-side (Pug source, HTML output, live preview)
@@ -814,8 +814,17 @@ The expression evaluator supports:
 | `.endsWith(suffix)`            | `true` / `false`                                                                                                         |
 | `.replace(old, new)`           | Replace first occurrence                                                                                                 |
 | `.repeat(n)`                   | Repeat string n times                                                                                                    |
+| `.padStart(n[, ch])`           | Left-pad to length `n` with character `ch` (default space); no-op if already long enough                                |
+| `.padEnd(n[, ch])`             | Right-pad to length `n` with character `ch` (default space); no-op if already long enough                               |
 | `.split(sep)`                  | Split into a slice (usable as an `each` collection or chained into `.join`)                                              |
 | `.join(sep)`                   | Join a slice into a string; works on Go slice variables and on chained expressions such as `csv.split(",").join(" \| ")` |
+
+**Number methods**
+
+| Method           | Description                                                        | Example                           |
+| ---------------- | ------------------------------------------------------------------ | --------------------------------- |
+| `.toFixed(n)`    | Format to `n` decimal places (default 0); rounds as `fmt.Sprintf` | `price.toFixed(2)` → `"9.99"`     |
+| `.toPrecision(n)`| Format to `n` significant figures (default 6)                     | `rate.toPrecision(3)` → `"0.175"` |
 
 ---
 
