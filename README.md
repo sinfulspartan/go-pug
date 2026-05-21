@@ -328,7 +328,14 @@ p Raw: !{htmlSnippet}
 p \#{not interpolated}
 ```
 
-**`${expr}` is not interpolation syntax in text nodes** — it renders as a literal string, matching the reference pugjs behaviour. Use `#{}` for text interpolation. `${}` is only meaningful inside backtick attribute expressions (e.g. `` a(href=`/page/${id}`) ``), where it is handled by the expression evaluator.
+> ⚠️ **`${}` is not interpolation syntax in text nodes** — `${expr}` renders as a literal string in text content. This matches the reference pugjs behaviour. `${}` is only evaluated by the expression evaluator when it appears inside a backtick attribute value.
+>
+> | Context | Syntax | Evaluated? |
+> | --- | --- | --- |
+> | Text node | `p Current page: ${page - 1}` | ❌ literal `${page - 1}` |
+> | Text node | `p Current page: #{page - 1}` | ✅ evaluates to `2` |
+> | Backtick attribute | `` a(href=`/page/${id}`) `` | ✅ evaluates `id` |
+> | Quoted attribute | `a(href="/page/${id}")` | ❌ literal `${id}` |
 
 **Tag interpolation** — inline tags within text
 
@@ -937,6 +944,7 @@ The gotchas below are documented inline in the relevant reference sections. This
 | Including a file that itself uses `extends`         | [Includes](#includes)                   |
 | Filter output is not HTML-escaped by the runtime    | [Filters](#filters)                     |
 | `CompileFile` caches by path only, not by `Options` | [API Reference → Functions](#functions) |
+| `${}` is not interpolation syntax in text nodes     | [Interpolation](#interpolation)         |
 
 ---
 
