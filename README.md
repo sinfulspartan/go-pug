@@ -330,13 +330,13 @@ p \#{not interpolated}
 
 > ⚠️ **`${}` is not interpolation syntax in text nodes** — `${expr}` renders as a literal string in text content. This matches the reference pugjs behaviour. `${}` is only evaluated by the expression evaluator when it appears inside a backtick attribute value.
 >
-> | Context | Syntax | Evaluated? |
+> | Context | Syntax | Result |
 > | --- | --- | --- |
-> | Text node | `p Current page: ${page - 1}` | ❌ literal `${page - 1}` |
-> | Text node | `p Current page: #{page - 1}` | ✅ evaluates to `2` |
-> | Backtick attribute | `` a(href=`/page/${id}`) `` | ✅ evaluates `id` |
-> | Backtick attribute | `` a(href=`/page/${id - 1}`) `` | ✅ evaluates `id - 1` |
-> | Quoted attribute | `a(href="/page/${id}")` | ❌ literal `${id}` |
+> | Text node | `p Current page: ${page - 1}` | ❌ `Current page: ${page - 1}` |
+> | Text node | `p Current page: #{page - 1}` | ✅ `Current page: 2` |
+> | Backtick attribute | `` a(href=`/page/${id}`) `` | ✅ `href="/page/5"` |
+> | Backtick attribute | `` a(href=`/page/${id - 1}`) `` | ✅ `href="/page/4"` |
+> | Quoted attribute | `a(href="/page/${id}")` | ❌ `href="/page/${id}"` |
 
 **Tag interpolation** — inline tags within text
 
