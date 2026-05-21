@@ -335,6 +335,7 @@ p \#{not interpolated}
 > | Text node | `p Current page: ${page - 1}` | ❌ literal `${page - 1}` |
 > | Text node | `p Current page: #{page - 1}` | ✅ evaluates to `2` |
 > | Backtick attribute | `` a(href=`/page/${id}`) `` | ✅ evaluates `id` |
+> | Backtick attribute | `` a(href=`/page/${id - 1}`) `` | ✅ evaluates `id - 1` |
 > | Quoted attribute | `a(href="/page/${id}")` | ❌ literal `${id}` |
 
 **Tag interpolation** — inline tags within text
