@@ -328,6 +328,8 @@ p Raw: !{htmlSnippet}
 p \#{not interpolated}
 ```
 
+**`${expr}` is not interpolation syntax in text nodes** — it renders as a literal string, matching the reference pugjs behaviour. Use `#{}` for text interpolation. `${}` is only meaningful inside backtick attribute expressions (e.g. `` a(href=`/page/${id}`) ``), where it is handled by the expression evaluator.
+
 **Tag interpolation** — inline tags within text
 
 ```pug
