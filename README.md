@@ -332,8 +332,8 @@ p \#{not interpolated}
 >
 > | Context | Syntax | Result |
 > | --- | --- | --- |
-> | Text node | `p Current page: ${page - 1}` | ❌ `Current page: ${page - 1}` |
-> | Text node | `p Current page: #{page - 1}` | ✅ `Current page: 2` |
+> | Text node | `p Current page: ${id - 1}` | ❌ `Current page: ${id - 1}` |
+> | Text node | `p Current page: #{id - 1}` | ✅ `Current page: 4` |
 > | Backtick attribute | `` a(href=`/page/${id}`) `` | ✅ `href="/page/5"` |
 > | Backtick attribute | `` a(href=`/page/${id - 1}`) `` | ✅ `href="/page/4"` |
 > | Quoted attribute | `a(href="/page/${id}")` | ❌ `href="/page/${id}"` |
