@@ -330,6 +330,8 @@ p \#{not interpolated}
 
 > ⚠️ **`${}` is not interpolation syntax in text nodes** — `${expr}` renders as a literal string in text content. This matches the reference pugjs behaviour. `${}` is only evaluated by the expression evaluator when it appears inside a backtick attribute value.
 >
+> The following examples assume `- var id = 5`.
+>
 > | Context | Syntax | Result |
 > | --- | --- | --- |
 > | Text node | `p Current page: ${id - 1}` | ❌ `Current page: ${id - 1}` |
