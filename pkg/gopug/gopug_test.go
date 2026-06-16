@@ -3147,6 +3147,36 @@ func TestAttributeBooleanDynamicTrue(t *testing.T) {
 	assertContains(t, out, `disabled`)
 }
 
+// TestAttributeNonBooleanFalseExprRendered verifies that a NON-boolean
+// attribute whose dynamic value evaluates to the string "false" is rendered
+// literally (e.g. data-confirm-dialogs="false"), not omitted. Only HTML
+// boolean attributes are omitted on a falsy value; a data-* attribute carrying
+// "false" is a legitimate string. (Regression: this was silently dropped.)
+func TestAttributeNonBooleanFalseExprRendered(t *testing.T) {
+	src := `div(data-confirm-dialogs=pref)`
+	out := renderTest(t, src, map[string]interface{}{"pref": "false"})
+	assertContains(t, out, `data-confirm-dialogs="false"`)
+}
+
+// TestAttributeNonBooleanFalseLiteralRendered verifies a quoted literal "false"
+// on a non-boolean attribute is rendered (carve-out preserved).
+func TestAttributeNonBooleanFalseLiteralRendered(t *testing.T) {
+	src := `div(data-x="false")`
+	out := renderTest(t, src, nil)
+	assertContains(t, out, `data-x="false"`)
+}
+
+// TestAttributeBooleanFalseExprOmittedSelected verifies a boolean attribute
+// other than disabled/checked (here: selected) is still omitted when its
+// dynamic value is falsy.
+func TestAttributeBooleanFalseExprOmittedSelected(t *testing.T) {
+	src := `option(selected=sel) A`
+	out := renderTest(t, src, map[string]interface{}{"sel": "false"})
+	if strings.Contains(out, "selected") {
+		t.Errorf("selected attribute should be omitted when false, got: %q", out)
+	}
+}
+
 // TestAttributeClassArray verifies multiple shorthand classes are joined with
 // a space in the class attribute.
 func TestAttributeClassShorthandMultiple(t *testing.T) {

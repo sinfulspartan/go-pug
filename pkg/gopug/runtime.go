@@ -759,7 +759,14 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 			}
 		}
 
-		if evaluated == "false" {
+		// Omit a falsy attribute only for HTML boolean attributes (checked,
+		// disabled, selected, …), mirroring pugjs's omit-on-false. For every
+		// other attribute (data-*, aria-*, value, custom) a value of "false"
+		// is a legitimate string and must be rendered (e.g. data-x="false").
+		// go-pug is stringly-typed, so it cannot distinguish a real boolean
+		// false from the string "false"; the boolean-attribute name set is the
+		// heuristic. A quoted literal ("false") is always kept.
+		if evaluated == "false" && isBooleanAttribute(name) {
 			rawVal := strings.TrimSpace(val.Value)
 			isQuoted := len(rawVal) >= 2 &&
 				((rawVal[0] == '"' && rawVal[len(rawVal)-1] == '"') ||
@@ -1071,6 +1078,11 @@ func (r *Runtime) executeStatement(stmt string) error {
 			rhsF, ok := toFloat(rhs)
 			if ok {
 				r.setVar(varName, curF-rhsF)
+			} else {
+				// Non-numeric RHS: no meaningful subtraction — leave the
+				// variable unchanged and return an error so the template
+				// author is informed rather than silently losing the update.
+				return fmt.Errorf("operator -=: cannot subtract non-numeric value %q from %v", rhs, cur)
 			}
 			return nil
 		}
@@ -1703,6 +1715,9 @@ func (r *Runtime) renderFilter(filter *FilterNode) error {
 func (r *Runtime) lookupFilter(name string) (FilterFunc, bool) {
 	if r.opts != nil && r.opts.Filters != nil {
 		if fn, ok := r.opts.Filters[name]; ok {
+			if fn == nil {
+				return nil, false
+			}
 			return fn, true
 		}
 	}
@@ -1949,6 +1964,13 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 							depth--
 						}
 						j++
+					}
+					if depth > 0 {
+						// Unclosed ${: no matching brace found — emit the literal
+						// characters and let the rest of the string render as-is.
+						result.WriteByte(inner[i])
+						i++
+						continue
 					}
 					interp := inner[i+2 : j-1]
 					val, _ := r.evaluateExpr(strings.TrimSpace(interp))
@@ -3165,6 +3187,45 @@ func (r *Runtime) isTruthy(val string) bool {
 		return false
 	}
 	return true
+}
+
+// htmlBooleanAttributes is the set of HTML "boolean" attributes — their mere
+// presence is the value, so a falsy value omits the whole attribute (mirroring
+// pugjs's omit-on-false behaviour for these). For every other attribute name a
+// value of "false" is a legitimate string and is rendered literally
+// (e.g. data-confirm-dialogs="false"). Names are compared lowercased.
+var htmlBooleanAttributes = map[string]bool{
+	"allowfullscreen": true,
+	"async":           true,
+	"autofocus":       true,
+	"autoplay":        true,
+	"checked":         true,
+	"controls":        true,
+	"default":         true,
+	"defer":           true,
+	"disabled":        true,
+	"formnovalidate":  true,
+	"hidden":          true,
+	"inert":           true,
+	"ismap":           true,
+	"itemscope":       true,
+	"loop":            true,
+	"multiple":        true,
+	"muted":           true,
+	"nomodule":        true,
+	"novalidate":      true,
+	"open":            true,
+	"playsinline":     true,
+	"readonly":        true,
+	"required":        true,
+	"reversed":        true,
+	"selected":        true,
+}
+
+// isBooleanAttribute reports whether name is an HTML boolean attribute, for
+// which a falsy value omits the attribute entirely.
+func isBooleanAttribute(name string) bool {
+	return htmlBooleanAttributes[strings.ToLower(name)]
 }
 
 func (r *Runtime) formatDoctype(dt string) string {

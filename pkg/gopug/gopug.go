@@ -133,7 +133,10 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		opts = &Options{}
 	}
 	if opts.Basedir == "" {
-		opts.Basedir = filepath.Dir(abs)
+		// Copy the Options so we don't mutate the caller's struct.
+		copied := *opts
+		copied.Basedir = filepath.Dir(abs)
+		opts = &copied
 	}
 
 	tpl, err := Compile(string(src), opts)
