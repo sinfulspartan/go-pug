@@ -684,10 +684,12 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 								evaluated = strings.Join(activeClasses, " ")
 							default:
 								inner := rawValExpr
+								wasQuoted := false
 								if len(inner) >= 2 &&
 									((inner[0] == '"' && inner[len(inner)-1] == '"') ||
 										(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
 									inner = inner[1 : len(inner)-1]
+									wasQuoted = true
 								}
 								words := strings.Fields(inner)
 								var resolved []string
@@ -705,7 +707,12 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 									v, _ := r.evaluateExpr(word)
 									if v != "" {
 										resolved = append(resolved, v)
-									} else if word != "" {
+									} else if wasQuoted && word != "" {
+										// Static class token from a quoted list —
+										// keep it literally. An unquoted word that
+										// resolved to "" is a variable/expression
+										// whose value is empty, so drop it rather
+										// than leaking the identifier name.
 										resolved = append(resolved, word)
 									}
 								}
@@ -717,10 +724,12 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 							}
 						} else {
 							inner := rawValExpr
+							wasQuoted := false
 							if len(inner) >= 2 &&
 								((inner[0] == '"' && inner[len(inner)-1] == '"') ||
 									(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
 								inner = inner[1 : len(inner)-1]
+								wasQuoted = true
 							}
 							words := strings.Fields(inner)
 							var resolved []string
@@ -738,7 +747,9 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 								v, _ := r.evaluateExpr(word)
 								if v != "" {
 									resolved = append(resolved, v)
-								} else if word != "" {
+								} else if wasQuoted && word != "" {
+									// See note above: only keep literal tokens that
+									// came from a quoted static class list.
 									resolved = append(resolved, word)
 								}
 							}

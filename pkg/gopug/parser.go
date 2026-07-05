@@ -200,7 +200,7 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 	}
 
-	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth {
+	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth && p.cur.Line == tag.Line {
 		line := p.cur.Line
 		col := p.cur.Col
 		nodes := p.collectTextRun(currentDepth)
@@ -217,7 +217,7 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 	}
 
-	if p.cur.Type == TokenCodeBuffered && p.cur.IndentDepth == currentDepth {
+	if p.cur.Type == TokenCodeBuffered && p.cur.IndentDepth == currentDepth && p.cur.Line == tag.Line {
 		code := &CodeNode{Expression: p.cur.Value, Type: CodeBuffered, Line: p.cur.Line, Col: p.cur.Col}
 		p.advance()
 		p.skipNewlines()
@@ -225,7 +225,7 @@ func (p *Parser) parseTag() (Node, error) {
 		return tag, nil
 	}
 
-	if p.cur.Type == TokenCodeUnescaped && p.cur.IndentDepth == currentDepth {
+	if p.cur.Type == TokenCodeUnescaped && p.cur.IndentDepth == currentDepth && p.cur.Line == tag.Line {
 		code := &CodeNode{Expression: p.cur.Value, Type: CodeUnescaped, Line: p.cur.Line, Col: p.cur.Col}
 		p.advance()
 		p.skipNewlines()
