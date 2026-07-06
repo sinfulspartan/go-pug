@@ -11,8 +11,10 @@ Specifically:
 
 - Do **not** add `Co-Authored-By: Claude ...` (or any AI/assistant) trailers to
   commit messages.
-- Do **not** add "Generated with Claude Code", "🤖 Generated with ...", or any
-  similar tag, badge, or link to commit messages or pull request descriptions.
+- **Never** add the footer `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+  to any commit message or pull request description. Likewise never add
+  "Generated with Claude Code", "🤖 Generated with ...", or any similar tag,
+  badge, or link.
 - Do **not** list Claude or any AI as a co-author, author, or contributor
   anywhere in the git history.
 
