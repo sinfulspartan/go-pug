@@ -5,8 +5,11 @@
 #
 # Jobs:
 #   test    — full test suite + race detector (must pass before releasing)
-#   release — creates a GitHub Release with auto-generated notes and source
-#             archives (.tar.gz / .zip) attached
+#   release — creates a GitHub Release with auto-generated notes
+#
+# Note: go-pug is an importable library — consumers use `go get` against the
+# pushed tag, so no binaries are built or attached here. (./cmd is only a demo
+# server, not a general-purpose CLI.)
 # ---------------------------------------------------------------------------
 
 name: Release
@@ -59,56 +62,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build demo binary (linux/amd64)
-        run: |
-          GOOS=linux GOARCH=amd64 go build -v \
-            -ldflags "-X github.com/sinfulspartan/go-pug/pkg/gopug.Version=${{ github.ref_name }}" \
-            -o bin/go-pug-linux-amd64 \
-            ./cmd
-
-      - name: Build demo binary (linux/arm64)
-        run: |
-          GOOS=linux GOARCH=arm64 go build -v \
-            -ldflags "-X github.com/sinfulspartan/go-pug/pkg/gopug.Version=${{ github.ref_name }}" \
-            -o bin/go-pug-linux-arm64 \
-            ./cmd
-
-      - name: Build demo binary (windows/amd64)
-        run: |
-          GOOS=windows GOARCH=amd64 go build -v \
-            -ldflags "-X github.com/sinfulspartan/go-pug/pkg/gopug.Version=${{ github.ref_name }}" \
-            -o bin/go-pug-windows-amd64.exe \
-            ./cmd
-
-      - name: Build demo binary (darwin/amd64)
-        run: |
-          GOOS=darwin GOARCH=amd64 go build -v \
-            -ldflags "-X github.com/sinfulspartan/go-pug/pkg/gopug.Version=${{ github.ref_name }}" \
-            -o bin/go-pug-darwin-amd64 \
-            ./cmd
-
-      - name: Build demo binary (darwin/arm64)
-        run: |
-          GOOS=darwin GOARCH=arm64 go build -v \
-            -ldflags "-X github.com/sinfulspartan/go-pug/pkg/gopug.Version=${{ github.ref_name }}" \
-            -o bin/go-pug-darwin-arm64 \
-            ./cmd
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: |
-            bin/go-pug-linux-amd64
-            bin/go-pug-linux-arm64
-            bin/go-pug-windows-amd64.exe
-            bin/go-pug-darwin-amd64
-            bin/go-pug-darwin-arm64
