@@ -53,6 +53,13 @@ type Options struct {
 	Pretty  bool
 	Globals map[string]any
 	Filters map[string]FilterFunc
+
+	// entryFile is the path of the top-level template being rendered, if it
+	// came from a file (RenderFile/CompileFile). It lets top-level relative
+	// includes/extends resolve against the entry file's own directory —
+	// matching standard Pug semantics — instead of falling back to Basedir.
+	// Unexported: set internally, never by callers.
+	entryFile string
 }
 
 func Render(src string, data map[string]any, opts *Options) (string, error) {
@@ -69,14 +76,17 @@ func RenderFile(path string, data map[string]any, opts *Options) (string, error)
 		return "", fmt.Errorf("failed to read file %q: %w", path, err)
 	}
 
-	if opts == nil {
-		opts = &Options{}
+	// Copy so we never mutate the caller's Options struct.
+	copied := Options{}
+	if opts != nil {
+		copied = *opts
 	}
-	if opts.Basedir == "" {
-		opts.Basedir = filepath.Dir(path)
+	if copied.Basedir == "" {
+		copied.Basedir = filepath.Dir(path)
 	}
+	copied.entryFile = path
 
-	return Render(string(src), data, opts)
+	return Render(string(src), data, &copied)
 }
 
 func Compile(src string, opts *Options) (*Template, error) {
@@ -118,7 +128,11 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		// so the cached AST is re-used but per-call options are honoured.
 		if opts != nil {
 			merged := *tpl
-			merged.opts = opts
+			// Preserve the entry-file path for top-level relative resolution;
+			// the caller's Options never carries it.
+			mergedOpts := *opts
+			mergedOpts.entryFile = abs
+			merged.opts = &mergedOpts
 			return &merged, nil
 		}
 		return tpl, nil
@@ -129,15 +143,16 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		return nil, fmt.Errorf("failed to read file %q: %w", abs, err)
 	}
 
-	if opts == nil {
-		opts = &Options{}
+	// Copy the Options so we don't mutate the caller's struct.
+	copied := Options{}
+	if opts != nil {
+		copied = *opts
 	}
-	if opts.Basedir == "" {
-		// Copy the Options so we don't mutate the caller's struct.
-		copied := *opts
+	if copied.Basedir == "" {
 		copied.Basedir = filepath.Dir(abs)
-		opts = &copied
 	}
+	copied.entryFile = abs
+	opts = &copied
 
 	tpl, err := Compile(string(src), opts)
 	if err != nil {
