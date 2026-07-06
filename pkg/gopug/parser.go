@@ -124,6 +124,14 @@ func (p *Parser) parseTag() (Node, error) {
 
 	currentDepth := p.cur.IndentDepth
 
+	// attrEndLine is the source line where the tag's opening ends: the tag
+	// name, its last shorthand class/id, or the closing ) of a (possibly
+	// multi-line) attribute list. Trailing inline content (text, `= expr`,
+	// `!= expr`) belongs to the tag only when it sits on this line. Comparing
+	// against tag.Line instead wrongly rejects content that follows a wrapped
+	// attribute list, emitting it as a sibling (issue #24).
+	attrEndLine := tag.Line
+
 	switch p.cur.Type {
 	case TokenTag:
 		tag.Name = p.cur.Value
@@ -143,18 +151,22 @@ func (p *Parser) parseTag() (Node, error) {
 			} else {
 				tag.Attributes["class"] = &AttributeValue{Value: `"` + className + `"`}
 			}
+			attrEndLine = p.cur.Line
 			p.advance()
 
 		case TokenID:
 			idVal := p.cur.Value
 			tag.Attributes["id"] = &AttributeValue{Value: `"` + idVal + `"`}
+			attrEndLine = p.cur.Line
 			p.advance()
 
 		case TokenAttrStart:
 			p.advance() // consume (
-			if err := p.parseAttributes(tag); err != nil {
+			closeLine, err := p.parseAttributes(tag)
+			if err != nil {
 				return nil, err
 			}
+			attrEndLine = closeLine
 
 		case TokenAttrName:
 			// &attributes emitted outside an AttrStart/AttrEnd block by the lexer.
@@ -195,12 +207,13 @@ func (p *Parser) parseTag() (Node, error) {
 			return nil, fmt.Errorf("expected tag after : at line %d", p.cur.Line)
 
 		case TokenTagEnd:
+			attrEndLine = p.cur.Line
 			p.advance()
 			tag.SelfClose = true
 		}
 	}
 
-	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth && p.cur.Line == tag.Line {
+	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth && p.cur.Line == attrEndLine {
 		line := p.cur.Line
 		col := p.cur.Col
 		nodes := p.collectTextRun(currentDepth)
@@ -217,7 +230,7 @@ func (p *Parser) parseTag() (Node, error) {
 		}
 	}
 
-	if p.cur.Type == TokenCodeBuffered && p.cur.IndentDepth == currentDepth && p.cur.Line == tag.Line {
+	if p.cur.Type == TokenCodeBuffered && p.cur.IndentDepth == currentDepth && p.cur.Line == attrEndLine {
 		code := &CodeNode{Expression: p.cur.Value, Type: CodeBuffered, Line: p.cur.Line, Col: p.cur.Col}
 		p.advance()
 		p.skipNewlines()
@@ -225,7 +238,7 @@ func (p *Parser) parseTag() (Node, error) {
 		return tag, nil
 	}
 
-	if p.cur.Type == TokenCodeUnescaped && p.cur.IndentDepth == currentDepth && p.cur.Line == tag.Line {
+	if p.cur.Type == TokenCodeUnescaped && p.cur.IndentDepth == currentDepth && p.cur.Line == attrEndLine {
 		code := &CodeNode{Expression: p.cur.Value, Type: CodeUnescaped, Line: p.cur.Line, Col: p.cur.Col}
 		p.advance()
 		p.skipNewlines()
@@ -250,8 +263,10 @@ func (p *Parser) parseTag() (Node, error) {
 }
 
 // parseAttributes: for the "class" attribute, values from multiple sources
-// (shorthand + explicit) are merged rather than overwritten.
-func (p *Parser) parseAttributes(tag *TagNode) error {
+// (shorthand + explicit) are merged rather than overwritten. It returns the
+// source line of the closing ) so the caller can attach trailing inline content
+// that sits on that line even when the attribute list wrapped across lines.
+func (p *Parser) parseAttributes(tag *TagNode) (int, error) {
 	for p.cur.Type != TokenAttrEnd && p.cur.Type != TokenEOF {
 		if p.cur.Type == TokenAttrName {
 			name := p.cur.Value
@@ -305,7 +320,7 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 					}
 					p.advance()
 				} else {
-					return fmt.Errorf("expected attribute value at line %d", p.cur.Line)
+					return 0, fmt.Errorf("expected attribute value at line %d", p.cur.Line)
 				}
 			} else {
 				// Boolean attribute — no = was present; mark explicitly so the
@@ -320,10 +335,11 @@ func (p *Parser) parseAttributes(tag *TagNode) error {
 	}
 
 	if p.cur.Type != TokenAttrEnd {
-		return fmt.Errorf("expected ) at line %d", p.cur.Line)
+		return 0, fmt.Errorf("expected ) at line %d", p.cur.Line)
 	}
+	closeLine := p.cur.Line
 	p.advance()
-	return nil
+	return closeLine, nil
 }
 
 func (p *Parser) parseDoctype() (*DoctypeNode, error) {
