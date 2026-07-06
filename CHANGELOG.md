@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.1
+
+### Fixed
+
+- A tag whose **attribute list wraps across multiple lines**, followed by inline
+  content on the closing `)` line — plain text, a buffered `= expr`, or an
+  unescaped `!= expr` — now renders that content as the element's **child**
+  instead of as a following sibling. Previously
+  `button(⏎ type="button" ⏎) Actions` produced
+  `<button ...></button>Actions` (label outside the control), while the
+  single-line form rendered correctly, so the two diverged. This was a
+  regression introduced by the v0.2.3 void-element fix (`#17`). ([#24])
+
+[#24]: https://github.com/sinfulspartan/go-pug/issues/24
+
 ## v0.3.0
 
 ### Changed (breaking)
