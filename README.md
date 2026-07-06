@@ -585,6 +585,15 @@ include data.txt
 
 Files without a `.pug` extension are included verbatim. An included Pug file shares the current scope and any mixins declared in it become available to the including template.
 
+**Path resolution** (standard Pug semantics, consistent at every nesting depth):
+
+- A **relative** path (`include partials/nav.pug`) resolves against the directory of the **file doing the including** — the entry file for a top-level `include`, or the included file's own directory for a nested one.
+- A **leading slash** (`include /absolute/from/basedir.pug`) resolves against `Basedir`.
+
+The same rule applies to `extends`. This means a partial can use the *same* `include` line whether it is pulled in as a nested include or rendered directly as a top-level target.
+
+> ⚠️ **Changed in v0.3.0** — top-level relative includes/extends previously resolved against `Basedir`; they now resolve relative to the entry file, matching nested includes and standard Pug. See [`CHANGELOG.md`](CHANGELOG.md) for the migration steps.
+
 > ⚠️ **Only include plain partials** — a `.pug` file that begins with `extends` must be rendered at the top level (passed directly to `Render` / `RenderFile`). If you `include` it, the `extends` resolution runs against the top-level document's AST rather than the included file's, producing silently broken output with no error.
 >
 > ```pug
@@ -764,14 +773,14 @@ err := tpl.RenderToWriter(w io.Writer, data map[string]any) error
 
 ```go
 type Options struct {
-    Basedir string                // root directory for absolute paths
+    Basedir string                // root for leading-slash (/foo) include/extends paths
     Pretty  bool                  // pretty-print HTML output
     Globals map[string]any        // data available to all renders
     Filters map[string]FilterFunc // custom filters (receive body text + parsed options)
 }
 ```
 
-`Basedir` defaults to the directory of the template file when using `CompileFile` or `RenderFile`. When using `Compile` or `Render` with relative includes, set `Basedir` explicitly.
+`Basedir` is the root that **leading-slash** include/extends paths (`/layout/base.pug`) resolve against. **Relative** paths resolve against the including file's own directory (see [Includes](#includes)). `Basedir` defaults to the directory of the template file when using `CompileFile` or `RenderFile`. When using `Compile` or `Render` (string source, no entry file), relative top-level includes fall back to `Basedir`, so set it explicitly if you use them.
 
 `Globals` are merged into `data` before rendering; a key present in `data` takes precedence over the same key in `Globals`.
 
