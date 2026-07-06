@@ -24,6 +24,10 @@ benchmarks.csv
 .agent
 AGENTS.md
 
+# Claude Code local files (kept locally, not tracked)
+.claude/
+CLAUDE.md
+
 # Output of the go coverage tool
 coverage.out
 *.coverprofile
