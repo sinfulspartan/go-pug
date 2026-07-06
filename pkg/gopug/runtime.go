@@ -35,6 +35,7 @@ type Runtime struct {
 	opts             *Options
 	includeBase      string
 	includeStack     []string
+	entryFile        string
 	prettyIndent     int
 }
 
@@ -56,6 +57,9 @@ func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options
 	}
 	if opts != nil && opts.Basedir != "" {
 		r.includeBase = opts.Basedir
+	}
+	if opts != nil && opts.entryFile != "" {
+		r.entryFile = opts.entryFile
 	}
 	return r
 }
@@ -156,7 +160,13 @@ func (r *Runtime) renderExtends() (string, error) {
 	currentPath := ""
 	if len(r.includeStack) > 0 {
 		currentPath = r.includeStack[len(r.includeStack)-1]
+	} else if r.entryFile != "" {
+		// Top-level file render: extends resolves relative to the entry file's
+		// own directory (standard Pug), matching relative includes.
+		currentPath = r.entryFile
 	} else if r.includeBase != "" {
+		// String render (no entry file): fall back to Basedir-relative via a
+		// synthetic root path anchored at Basedir.
 		currentPath = filepath.Join(r.includeBase, "_root_.pug")
 	}
 
@@ -257,7 +267,7 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 
 	src, err := os.ReadFile(abs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("extends: cannot read %q: %w", abs, err)
+		return nil, nil, fmt.Errorf("extends: cannot read %q: %w%s", abs, err, r.basedirResolveHint(parentPath))
 	}
 	lx := NewLexer(string(src))
 	toks, err := lx.Lex()
@@ -1452,10 +1462,34 @@ func (r *Runtime) renderBlockExpansion(exp *BlockExpansionNode) error {
 
 // renderInclude resolves and renders an include directive.
 //
-// Path resolution: absolute paths are anchored to includeBase; relative paths
-// are resolved against the directory of the innermost active include, falling
-// back to includeBase. .pug files (or no extension) are lexed, parsed, and
-// rendered; all other files are written raw. Cycle detection is via includeStack.
+// basedirResolveHint returns a migration hint for a failed relative
+// include/extends when the *same* path would resolve against Basedir. It only
+// fires when such a file actually exists, so genuine typos don't get a
+// misleading "did you mean /..." suggestion. Returns "" otherwise.
+func (r *Runtime) basedirResolveHint(inclPath string) string {
+	if r.includeBase == "" {
+		return ""
+	}
+	if strings.HasPrefix(inclPath, "/") || strings.HasPrefix(inclPath, "\\") {
+		return "" // already Basedir-relative
+	}
+	cand := filepath.Join(r.includeBase, inclPath)
+	if filepath.Ext(cand) == "" {
+		cand += ".pug"
+	}
+	if _, err := os.Stat(cand); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(" — a file exists at %q; did you mean a leading-slash (Basedir-relative) path %q?",
+		cand, "/"+strings.TrimLeft(inclPath, "/\\"))
+}
+
+// Path resolution (standard Pug semantics): a leading slash is Basedir-relative;
+// every other relative path resolves against the directory of the file doing the
+// including — the innermost active include when nested, or the entry file when
+// at the top level (falling back to Basedir for string renders). .pug files (or
+// no extension) are lexed, parsed, and rendered; all other files are written
+// raw. Cycle detection is via includeStack.
 func (r *Runtime) renderInclude(inc *IncludeNode) error {
 	inclPath := inc.Path
 
@@ -1481,9 +1515,19 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 			resolved = inclPath
 		}
 	} else {
-		base := r.includeBase
-		if len(r.includeStack) > 0 {
+		// Relative include (standard Pug): resolve against the directory of the
+		// file doing the including.
+		//   - nested include → dir of the innermost active include
+		//   - top-level file → dir of the entry file (RenderFile/CompileFile)
+		//   - string render  → fall back to Basedir (no entry file to anchor to)
+		var base string
+		switch {
+		case len(r.includeStack) > 0:
 			base = filepath.Dir(r.includeStack[len(r.includeStack)-1])
+		case r.entryFile != "":
+			base = filepath.Dir(r.entryFile)
+		default:
+			base = r.includeBase
 		}
 		if base == "" {
 			base = "."
@@ -1512,7 +1556,7 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 	if ext == ".pug" {
 		src, err := os.ReadFile(abs)
 		if err != nil {
-			return fmt.Errorf("include: cannot read %q: %w", abs, err)
+			return fmt.Errorf("include: cannot read %q: %w%s", abs, err, r.basedirResolveHint(inclPath))
 		}
 
 		lexer := NewLexer(string(src))
@@ -1539,7 +1583,7 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 
 	raw, err := os.ReadFile(abs)
 	if err != nil {
-		return fmt.Errorf("include: cannot read %q: %w", abs, err)
+		return fmt.Errorf("include: cannot read %q: %w%s", abs, err, r.basedirResolveHint(inclPath))
 	}
 
 	if inc.FilterName != "" {
