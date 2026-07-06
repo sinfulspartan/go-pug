@@ -211,21 +211,44 @@ func TestMultilineAttributesBasic(t *testing.T) {
 }
 
 // TestMultilineAttributesWithInlineText verifies that a tag with multiline
-// attributes followed by inline text content renders correctly.
+// attributes followed by inline text content renders the text as the element's
+// child, not as a following sibling (issue #24).
 func TestMultilineAttributesWithInlineText(t *testing.T) {
 	out := renderTest(t, "button(\n  type=\"button\"\n  id=\"my-btn\"\n) Click Me", nil)
 	assertContains(t, out, `type="button"`)
 	assertContains(t, out, `id="my-btn"`)
-	assertContains(t, out, "Click Me")
+	// The text must be INSIDE the element, not a sibling after </button>.
+	assertContains(t, out, ">Click Me</button>")
 }
 
 // TestMultilineAttributesWithBufferedOutput verifies that a tag with multiline
-// attributes followed by a buffered `= expr` output renders correctly.
+// attributes followed by a buffered `= expr` output renders the output as the
+// element's child, not as a following sibling (issue #24).
 func TestMultilineAttributesWithBufferedOutput(t *testing.T) {
 	out := renderTest(t, "span(\n  data-id=\"1\"\n  style=\"cursor:pointer;\"\n)= \"hello world\"", nil)
 	assertContains(t, out, `data-id="1"`)
 	assertContains(t, out, `style="cursor:pointer;"`)
-	assertContains(t, out, "hello world")
+	// The output must be INSIDE the element, not a sibling after </span>.
+	assertContains(t, out, ">hello world</span>")
+}
+
+// TestMultilineAttributesWithUnescapedOutput verifies that a tag with multiline
+// attributes followed by an unescaped `!= expr` output renders the output as
+// the element's child, not as a following sibling (issue #24).
+func TestMultilineAttributesWithUnescapedOutput(t *testing.T) {
+	out := renderTest(t, "span(\n  data-id=\"1\"\n)!= \"<b>hi</b>\"", nil)
+	assertContains(t, out, `data-id="1"`)
+	// The unescaped output must be INSIDE the element, not a sibling.
+	assertContains(t, out, "><b>hi</b></span>")
+}
+
+// TestMultilineAttributesInlineTextMatchesSingleLine is the core issue #24
+// regression: multiline-attribute and single-line-attribute forms of the same
+// tag with trailing inline text must render identically.
+func TestMultilineAttributesInlineTextMatchesSingleLine(t *testing.T) {
+	multi := renderTest(t, "button(\n  type=\"button\"\n  id=\"b\"\n) Actions", nil)
+	single := renderTest(t, `button(type="button" id="b") Actions`, nil)
+	assertEqual(t, multi, single)
 }
 
 // TestMultilineAttributesNested verifies multiline attributes work correctly
