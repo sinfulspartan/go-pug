@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.2
+
+### Fixed
+
+- Assigning a non-literal value to a variable in an unbuffered code block —
+  `- var xs = data.Items` — now **preserves the value's type** (slice, map, or
+  struct) instead of coercing it to a string. Previously the alias held the
+  `fmt`-stringified form, so `xs.length` and `each … in xs` operated on that
+  string rather than the original collection, even though the direct
+  `each … in data.Items` worked — a divergence from reference Pug, where a `-`
+  block is raw JavaScript that keeps the reference. Ternary right-hand sides
+  (`- var xs = cond ? a : b`) and ternary collections (`each x in cond ? a : b`)
+  are type-preserved as well. ([#26])
+
+[#26]: https://github.com/sinfulspartan/go-pug/issues/26
+
 ## v0.3.1
 
 ### Fixed
