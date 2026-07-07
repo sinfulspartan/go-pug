@@ -47,7 +47,7 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 - **Method expressions** — `s.toUpperCase()`, `s.trim()`, `s.slice(0,3)`, `price.toFixed(2)`, `id.padStart(5,"0")`, `items.length`, and more
 - **`&attributes` spread** — merge a map into a tag's attribute list at render time
 - **No external dependencies** — pure Go, standard library only
-- **Interactive demo server** — `make run` launches a local web server showing all 34 syntax examples side-by-side (Pug source, HTML output, live preview)
+- **Interactive demo server** — `make run` launches a local web server showing all 42 syntax examples side-by-side (Pug source, HTML output, live preview)
 
 ---
 
@@ -839,6 +839,7 @@ The expression evaluator supports:
 | `.padEnd(n[, ch])`             | Right-pad to length `n` with character `ch` (default space); no-op if already long enough                               |
 | `.split(sep)`                  | Split into a slice (usable as an `each` collection or chained into `.join`)                                              |
 | `.join(sep)`                   | Join a slice into a string; works on Go slice variables and on chained expressions such as `csv.split(",").join(" \| ")` |
+| `.toString()` / `.String()`    | Return the value as a string                                                                                             |
 
 **Number methods**
 
