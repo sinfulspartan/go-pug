@@ -1112,19 +1112,8 @@ func (r *Runtime) executeStatement(stmt string) error {
 	if idx := findAssignOp(stmt); idx >= 0 {
 		varName := strings.TrimSpace(stmt[:idx])
 		rhsExpr := strings.TrimSpace(stmt[idx+1:])
-		rhs := strings.TrimSpace(rhsExpr)
-		if (len(rhs) >= 2 && rhs[0] == '{' && rhs[len(rhs)-1] == '}') ||
-			(len(rhs) >= 2 && rhs[0] == '[' && rhs[len(rhs)-1] == ']') ||
-			findIndexOp(rhs) >= 0 {
-			rawVal := r.evaluateExprRaw(rhs)
-			r.setVar(varName, rawVal)
-			return nil
-		}
-		val, err := r.evaluateExpr(rhsExpr)
-		if err != nil {
-			return err
-		}
-		r.setVar(varName, val)
+		rawVal := r.evaluateExprRaw(rhsExpr)
+		r.setVar(varName, rawVal)
 		return nil
 	}
 
@@ -1787,6 +1776,19 @@ func (r *Runtime) evaluateExprRaw(expr string) any {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return nil
+	}
+
+	if idx := findTernary(expr); idx >= 0 {
+		cond, err := r.evaluateExpr(expr[:idx])
+		if err == nil {
+			rest := expr[idx+1:]
+			if colonIdx := findBinaryOp(rest, ":"); colonIdx >= 0 {
+				if r.isTruthy(cond) {
+					return r.evaluateExprRaw(rest[:colonIdx])
+				}
+				return r.evaluateExprRaw(rest[colonIdx+1:])
+			}
+		}
 	}
 
 	if dotIdx := findTopLevelDot(expr); dotIdx > 0 {
