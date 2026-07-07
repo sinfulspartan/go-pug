@@ -62,7 +62,7 @@ go get github.com/sinfulspartan/go-pug@latest
 Or pin to a specific version:
 
 ```sh
-go get github.com/sinfulspartan/go-pug@v0.1.0
+go get github.com/sinfulspartan/go-pug@v0.3.1
 ```
 
 Import path: `github.com/sinfulspartan/go-pug/pkg/gopug`
@@ -70,7 +70,7 @@ Import path: `github.com/sinfulspartan/go-pug/pkg/gopug`
 The current version is also available at runtime via the `Version` constant:
 
 ```go
-fmt.Println(gopug.Version) // e.g. "v0.1.0"
+fmt.Println(gopug.Version) // e.g. "v0.3.1"
 ```
 
 ---
@@ -313,6 +313,17 @@ p!= htmlContent
 != rawFragment
 ```
 
+**Increment, decrement, and compound assignment** — `++`, `--`, `+=`, and `-=` are supported on numeric variables
+
+```pug
+- n = 5
+- n++
+- n--
+- n += 3
+- n -= 2
+p= n
+```
+
 ### Interpolation
 
 **Inside text**
@@ -408,18 +419,12 @@ each color in ["red", "green", "blue"]
   span= color
 ```
 
-> ⚠️ **Ternary in the collection expression** — the `each` collection only supports a plain variable name or an inline array literal. A ternary expression in that position is not evaluated correctly. Resolve the collection into a variable first with an unbuffered code line.
->
-> ```pug
-> //- ✗ Broken — ternary in collection is not supported
-> each v in useAlt ? altList : mainList
->   li= v
->
-> //- ✓ Fix — resolve the collection first
-> - var list = useAlt ? altList : mainList
-> each v in list
->   li= v
-> ```
+A ternary expression is also accepted directly in the collection position:
+
+```pug
+each v in useAlt ? altList : mainList
+  li= v
+```
 
 **`while`**
 
@@ -744,7 +749,7 @@ html, err := gopug.RenderFile(path string, data map[string]any, opts *gopug.Opti
 gopug.ClearCache()
 
 // The current engine version (mirrors the latest git tag).
-gopug.Version // e.g. "v0.1.0"
+gopug.Version // e.g. "v0.3.1"
 ```
 
 > ⚠️ **`CompileFile` caches by path only** — the cache key is the absolute file path. If you call `CompileFile` with the same path but different `Options` (e.g. different `Globals` or `Filters`), the cached `*Template` from the first call is returned with the new options shallow-copied in, but the AST is shared. Call `ClearCache()` before a second compile of the same file if you need a fresh result under different options.
@@ -848,7 +853,7 @@ The expression evaluator supports:
 | `.toFixed(n)`    | Format to `n` decimal places (default 0); rounds as `fmt.Sprintf` | `price.toFixed(2)` → `"9.99"`     |
 | `.toPrecision(n)`| Format to `n` significant figures (default 6)                     | `rate.toPrecision(3)` → `"0.175"` |
 
-> **Unsupported method calls** — calling a method that is not in the tables above on a string or numeric value returns a render error. Calling a method on a variable that does not exist in scope silently returns `""` (the variable is absent, not a typed value with an unknown method).
+> **Unsupported method calls** — an unrecognized method name always produces a render error, whether the receiver exists or not (e.g. `missingVar.notamethod()` and `s.notamethod()` both fail with `unsupported string method: "notamethod"`). A *recognized* method name called on a variable that does not exist in scope treats the missing value as an empty string, so `missingVar.trim()` renders `""` without error.
 
 ---
 
@@ -951,7 +956,6 @@ The gotchas below are documented inline in the relevant reference sections. This
 | Limitation                                          | Where to find the details               |
 | --------------------------------------------------- | --------------------------------------- |
 | Unquoted attribute values containing spaces         | [Attributes](#attributes)               |
-| Ternary expression in an `each` collection          | [Loops](#loops)                         |
 | Mixin declarations must be at the top level         | [Mixins](#mixins)                       |
 | `include:filter` silently ignored on `.pug` files   | [Includes](#includes)                   |
 | Including a file that itself uses `extends`         | [Includes](#includes)                   |
