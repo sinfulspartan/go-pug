@@ -286,10 +286,11 @@ func (p *Parser) parseAttributes(tag *TagNode) (int, error) {
 								existingInner[len(existingInner)-1] == '"' {
 								existingInner = existingInner[1 : len(existingInner)-1]
 							}
+							newValueWasQuoted := len(value) >= 2 &&
+								value[0] == '"' &&
+								value[len(value)-1] == '"'
 							newInner := value
-							if len(newInner) >= 2 &&
-								newInner[0] == '"' &&
-								newInner[len(newInner)-1] == '"' {
+							if newValueWasQuoted {
 								newInner = newInner[1 : len(newInner)-1]
 							}
 							isExprValue := len(newInner) > 0 && (newInner[0] == '!' || newInner[0] == '(' || newInner[0] == '[' || newInner[0] == '{')
@@ -301,14 +302,32 @@ func (p *Parser) parseAttributes(tag *TagNode) (int, error) {
 							if !isExprValue {
 								isExprValue = isOperatorExprParser(newInner)
 							}
-							if isExprValue {
+							switch {
+							case isExprValue:
 								tag.Attributes["class"] = &AttributeValue{
 									Value:     existingInner + " " + newInner,
 									Unescaped: unescaped,
 								}
-							} else {
+							case newValueWasQuoted:
 								tag.Attributes["class"] = &AttributeValue{
 									Value:     `"` + existingInner + " " + newInner + `"`,
+									Unescaped: unescaped,
+								}
+							default:
+								// A bare dynamic value (e.g. class=cls) must not be
+								// blanket-quoted with the existing shorthand tokens,
+								// or the runtime would treat the whole list as a
+								// static literal and keep an empty variable's name
+								// as a literal token. Quote each existing shorthand
+								// token individually and leave the new bare value
+								// unquoted so the runtime evaluates it as a real
+								// expression and drops it when empty.
+								merged := newInner
+								if existingInner != "" {
+									merged = quoteClassTokens(existingInner) + " " + newInner
+								}
+								tag.Attributes["class"] = &AttributeValue{
+									Value:     merged,
 									Unescaped: unescaped,
 								}
 							}
@@ -1295,6 +1314,20 @@ func (p *Parser) advance() {
 		p.pos++
 		p.cur = p.tokens[p.pos]
 	}
+}
+
+// quoteClassTokens splits a space-separated list of static class names and
+// double-quotes each one individually, e.g. "text-end fw-bold" becomes
+// `"text-end" "fw-bold"`. It is used when merging shorthand classes with a
+// bare dynamic class= value so the runtime can evaluate each token
+// independently instead of treating the merged list as one static literal.
+func quoteClassTokens(s string) string {
+	fields := strings.Fields(s)
+	quoted := make([]string, len(fields))
+	for i, f := range fields {
+		quoted[i] = `"` + f + `"`
+	}
+	return strings.Join(quoted, " ")
 }
 
 // isOperatorExprParser reports whether expr contains a top-level operator
