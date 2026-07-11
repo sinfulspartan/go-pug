@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.3
+
+### Fixed
+
+- A **class shorthand combined with an empty dynamic `class=` variable** no longer
+  leaks the variable's name into the rendered class list. `div.text-end(class=cls)`
+  with `cls == ""` produced `<div class="text-end cls">` — the literal identifier
+  `cls` leaked as a class token — while the plain `div(class=cls)` form (fixed in
+  v0.2.3, [#18]) was already correct. Now the shorthand class survives and the empty
+  variable contributes nothing: `<div class="text-end">`. This was a partial
+  regression of [#18]; the `- var cls = ""` assignment form is fixed as well. ([#27])
+
+[#27]: https://github.com/sinfulspartan/go-pug/issues/27
+
 ## v0.3.2
 
 ### Fixed
