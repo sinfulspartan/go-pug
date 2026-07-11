@@ -517,27 +517,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		}
 	}
 
-	names := make([]string, 0, len(merged))
-	for k := range merged {
-		names = append(names, k)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		order := func(n string) int {
-			switch n {
-			case "id":
-				return 0
-			case "class":
-				return 1
-			default:
-				return 2
-			}
-		}
-		oi, oj := order(names[i]), order(names[j])
-		if oi != oj {
-			return oi < oj
-		}
-		return names[i] < names[j]
-	})
+	names := sortAttrNames(merged)
 
 	for _, name := range names {
 		val := merged[name]
@@ -900,6 +880,48 @@ func htmlEscapeAttr(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// EscapeAttr escapes s for safe inclusion inside a double-quoted HTML
+// attribute value, with exactly the same semantics Runtime.renderTag uses
+// for a dynamic attribute value: it escapes <, >, ", and bare & but leaves a
+// single quote untouched, and it never double-escapes an already-valid
+// &entity; reference. It is exported so codegen-generated code can call it
+// directly, keeping attribute escaping single-sourced in htmlEscapeAttr
+// rather than duplicating (and risking diverging from) that logic in
+// generated code.
+func EscapeAttr(s string) string {
+	return htmlEscapeAttr(s)
+}
+
+// sortAttrNames returns the keys of attrs ordered the way HTML tag output
+// renders them: id first, then class, then every other attribute name
+// alphabetically. Runtime.renderTag and the codegen backend's genAttributes
+// both call this single helper so the two attribute-serialisation paths
+// cannot drift apart.
+func sortAttrNames(attrs map[string]*AttributeValue) []string {
+	names := make([]string, 0, len(attrs))
+	for k := range attrs {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		order := func(n string) int {
+			switch n {
+			case "id":
+				return 0
+			case "class":
+				return 1
+			default:
+				return 2
+			}
+		}
+		oi, oj := order(names[i]), order(names[j])
+		if oi != oj {
+			return oi < oj
+		}
+		return names[i] < names[j]
+	})
+	return names
 }
 
 // htmlEscapeText escapes only the characters that must be escaped in HTML

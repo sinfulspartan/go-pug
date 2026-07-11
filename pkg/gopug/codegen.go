@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"go/format"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 )
+
+// gopugImportPath is the module path generated code imports (aliased to its
+// own package name, "gopug") when it needs a support function such as
+// EscapeAttr. Generated files live in the caller's package, never in this
+// one, so they always reach EscapeAttr through this qualified import.
+const gopugImportPath = "github.com/sinfulspartan/go-pug/pkg/gopug"
 
 // Config configures GenerateGo's output: the package the generated file
 // belongs to, the name of the render function it defines, and the Go type
@@ -47,18 +52,25 @@ type Config struct {
 // interpolation (string, bool, every sized int/uint kind, and float64 — see
 // genInterpolation) and per-type truthiness for conditions (bool used bare,
 // numeric kinds compared against zero — see genConditional), matching the
-// interpreter's Runtime.lookupAndStringify/isTruthy exactly. Any other field
-// type (struct, slice, map, pointer, interface, float32, …) is out of scope
-// and returns an error rather than guessing. When DataReflectType is nil,
-// every field is assumed to be a string (the original untyped skeleton
-// behavior), unchanged.
+// interpreter's Runtime.lookupAndStringify/isTruthy exactly. It also emits a
+// runtime write for a dynamic scalar attribute value on a non-"class"
+// attribute (a bare field or dot-path resolving to a scalar type — see
+// genAttributes), escaped through the exported EscapeAttr for a string value
+// and via bare strconv for every other scalar kind, and a conditional bare
+// write for a bool-typed field on an HTML boolean-attribute name (present
+// iff true, matching pug's omit-on-false). Any other field type (struct,
+// slice, map, pointer, interface, float32, …) is out of scope and returns an
+// error rather than guessing. When DataReflectType is nil, every field is
+// assumed to be a string (the original untyped skeleton behavior), and only
+// static/bare attributes are supported, unchanged.
 //
 // GenerateGo assumes complete, well-typed data and does no nil-guarding —
 // like Pug itself, and unlike the interpreter's lenient missing-value
 // handling. Any node or expression shape outside the supported subset (mixins,
-// includes/extends, dynamic attributes, operators, method calls, unless/case,
-// unescaped output, comments, …) returns a descriptive error instead of
-// silently emitting something incorrect; those shapes are later increments.
+// includes/extends, dynamic class/style attributes, &attributes spreads,
+// operators, method calls, unless/case, unescaped output, comments, …)
+// returns a descriptive error instead of silently emitting something
+// incorrect; those shapes are later increments.
 func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if cfg.PackageName == "" {
 		return nil, fmt.Errorf("codegen: Config.PackageName is required")
@@ -81,6 +93,9 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	var src strings.Builder
 	fmt.Fprintf(&src, "package %s\n\n", cfg.PackageName)
 	src.WriteString("import (\n")
+	if g.needsGopug {
+		fmt.Fprintf(&src, "\t%q\n", gopugImportPath)
+	}
 	if g.needsHTML {
 		src.WriteString("\t\"html\"\n")
 	}
@@ -119,11 +134,13 @@ type generator struct {
 	// non-nil, resolveFieldExpr walks it (and each scope entry's typ) to
 	// resolve every field expression's Go type.
 	rootType reflect.Type
-	// needsHTML/needsStrconv track whether the generated body actually calls
-	// html.EscapeString/strconv.* anywhere, so GenerateGo only imports those
-	// packages when they are used (an unused import fails to compile).
+	// needsHTML/needsStrconv/needsGopug track whether the generated body
+	// actually calls html.EscapeString/strconv.*/gopug.EscapeAttr anywhere,
+	// so GenerateGo only imports those packages when they are used (an
+	// unused import fails to compile).
 	needsHTML    bool
 	needsStrconv bool
+	needsGopug   bool
 }
 
 // scopeVar is one entry in the generator's each-loop variable scope stack: a
@@ -284,11 +301,9 @@ func (g *generator) genNode(n Node) error {
 func (g *generator) genTag(tag *TagNode) error {
 	g.writeStatic("<" + tag.Name)
 
-	attrStr, err := staticAttrsString(tag.Attributes)
-	if err != nil {
+	if err := g.genAttributes(tag.Attributes); err != nil {
 		return fmt.Errorf("tag %q: %w", tag.Name, err)
 	}
-	g.writeStatic(attrStr)
 
 	if tag.SelfClose {
 		g.writeStatic(" />")
@@ -310,65 +325,115 @@ func (g *generator) genTag(tag *TagNode) error {
 	return nil
 }
 
-// staticAttrsString serialises a tag's attributes exactly the way
-// Runtime.renderTag does for the static-only subset this increment supports:
-// same id/class/alphabetical ordering, same quoting, same htmlEscapeAttr
-// escaping. Every value must be a plain quoted string literal (or a bare
-// boolean attribute); anything else — &attributes spreads, unescaped
-// attributes, or an expression — is a later increment and returns an error.
-func staticAttrsString(attrs map[string]*AttributeValue) (string, error) {
+// genAttributes streams a tag's attribute list — in the same id/class/
+// alphabetical order sortAttrNames and Runtime.renderTag use — interleaving
+// static baked chunks (bare attributes, quoted-literal values) with dynamic
+// writes so a tag mixing static and dynamic attributes still shares the
+// generator's single static-buffer-then-flush machinery. Per attribute:
+//
+//   - a bare attribute (no value) emits its static " name" form, unchanged
+//     from increment 1;
+//   - a plain quoted string literal is escaped and baked into the static
+//     buffer at generate time (htmlEscapeAttr), also unchanged;
+//   - a dynamic value whose name IS an HTML boolean attribute
+//     (isBooleanAttribute) requires a bool-typed field: it emits a
+//     conditional bare write — ` name="true"` iff the field is true, nothing
+//     at all iff false — matching the interpreter's omit-on-false behaviour
+//     for these names. A non-bool-typed value on such a name is deferred
+//     (error) rather than risking a byte-identical breach: the interpreter
+//     also omits a boolean-attribute-named value that merely stringifies to
+//     "false" (e.g. a string field literally holding "false"), a general
+//     rule this increment doesn't reproduce;
+//   - a dynamic value on any other, non-"class" name that resolves (via
+//     resolveFieldExpr) to a scalar field type emits a runtime write: a
+//     string field is escaped through the exported EscapeAttr (never
+//     html.EscapeString — attribute escaping has different rules from text
+//     escaping); every other scalar kind stringifies with strconv, unescaped,
+//     since none of those stringifications can contain an HTML-special
+//     character;
+//
+// A dynamic "class" value, a style object, `&attributes`, an unescaped
+// attribute, or any value that isn't a static literal / bare identifier /
+// dot-path scalar (an operator, method call, index expression, or a
+// class/style object) is out of scope for this increment and returns an
+// error rather than guessing at output that might not match the
+// interpreter. With a nil Config.DataReflectType (type-blind mode), a
+// dynamic value can't be classified as scalar or bool at all, so only
+// static/bare attributes are supported there, matching increment 1
+// unchanged.
+func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 	if _, ok := attrs["&attributes"]; ok {
-		return "", fmt.Errorf("unsupported dynamic &attributes in codegen")
+		return fmt.Errorf("unsupported dynamic &attributes in codegen")
 	}
 
-	names := make([]string, 0, len(attrs))
-	for k := range attrs {
-		names = append(names, k)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		order := func(n string) int {
-			switch n {
-			case "id":
-				return 0
-			case "class":
-				return 1
-			default:
-				return 2
-			}
-		}
-		oi, oj := order(names[i]), order(names[j])
-		if oi != oj {
-			return oi < oj
-		}
-		return names[i] < names[j]
-	})
-
-	var b strings.Builder
-	for _, name := range names {
+	for _, name := range sortAttrNames(attrs) {
 		val := attrs[name]
 
 		if val.IsBare {
-			b.WriteString(" ")
-			b.WriteString(name)
+			g.writeStatic(" " + name)
 			continue
 		}
 
 		if val.Unescaped {
-			return "", fmt.Errorf("unsupported unescaped attribute %q in codegen", name)
+			return fmt.Errorf("unsupported unescaped attribute %q in codegen", name)
 		}
 
-		lit, ok := unwrapQuotedLiteral(strings.TrimSpace(val.Value))
-		if !ok {
-			return "", fmt.Errorf("unsupported dynamic attribute %q in codegen (only static quoted values are supported in this increment)", name)
+		trimmed := strings.TrimSpace(val.Value)
+		if lit, ok := unwrapQuotedLiteral(trimmed); ok {
+			g.writeStatic(" " + name + `="` + htmlEscapeAttr(lit) + `"`)
+			continue
 		}
 
-		b.WriteString(" ")
-		b.WriteString(name)
-		b.WriteString(`="`)
-		b.WriteString(htmlEscapeAttr(lit))
-		b.WriteString(`"`)
+		if name == "class" {
+			return fmt.Errorf("unsupported dynamic class attribute in codegen (only static quoted values are supported in this increment)")
+		}
+
+		if g.rootType == nil {
+			return fmt.Errorf("unsupported dynamic attribute %q in codegen (only static quoted values are supported in this increment)", name)
+		}
+
+		goExpr, typ, err := g.resolveFieldExpr(trimmed)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+
+		if isBooleanAttribute(name) {
+			if typ.Kind() != reflect.Bool {
+				return fmt.Errorf("unsupported dynamic attribute %q in codegen (only a bool-typed value is supported for an HTML boolean attribute name in this increment)", name)
+			}
+			boolExpr := convertExpr(goExpr, typ, reflectTypeBool, "bool")
+			g.writeRaw(fmt.Sprintf("if %s {\n", boolExpr))
+			g.body.WriteString("io.WriteString(w, " + strconv.Quote(" "+name+`="true"`) + ")\n")
+			g.body.WriteString("}\n")
+			continue
+		}
+
+		g.writeStatic(" " + name + `="`)
+		switch typ.Kind() {
+		case reflect.String:
+			g.needsGopug = true
+			g.writeExprWrite("gopug.EscapeAttr(" + convertExpr(goExpr, typ, reflectTypeString, "string") + ")")
+		case reflect.Bool:
+			g.needsStrconv = true
+			g.writeExprWrite("strconv.FormatBool(" + convertExpr(goExpr, typ, reflectTypeBool, "bool") + ")")
+		case reflect.Int:
+			g.needsStrconv = true
+			g.writeExprWrite("strconv.Itoa(" + convertExpr(goExpr, typ, reflectTypeInt, "int") + ")")
+		case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			g.needsStrconv = true
+			g.writeExprWrite("strconv.FormatInt(int64(" + goExpr + "), 10)")
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			g.needsStrconv = true
+			g.writeExprWrite("strconv.FormatUint(uint64(" + goExpr + "), 10)")
+		case reflect.Float64:
+			g.needsStrconv = true
+			g.writeExprWrite("strconv.FormatFloat(" + convertExpr(goExpr, typ, reflectTypeFloat64, "float64") + ", 'f', -1, 64)")
+		default:
+			return fmt.Errorf("unsupported non-scalar field type %s in codegen attribute %q", typ, name)
+		}
+		g.writeStatic(`"`)
 	}
-	return b.String(), nil
+	return nil
 }
 
 // genInterpolation emits a write of a #{expr} interpolation, where expr must

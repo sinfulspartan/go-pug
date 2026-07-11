@@ -1,4 +1,4 @@
-package gopug
+package gopug_test
 
 import (
 	"bytes"
@@ -6,13 +6,18 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sinfulspartan/go-pug/pkg/gopug"
 )
 
 // skelTemplate exercises every shape this codegen increment supports:
 // doctype, nested tags, a void element, static attributes plus .class#id
 // shorthand, plain text, #{bareField} and #{obj.field} interpolation of
 // string/int/float64/bool fields, a single-variable each over a slice
-// field, and if/else on both a bool field and a numeric field.
+// field, if/else on both a bool field and a numeric field, a dynamic
+// string attribute (bare field and dot-path), a dynamic numeric attribute,
+// a boolean attribute driven by a bool field, and a bool field rendered on
+// a non-boolean attribute name.
 const skelTemplate = `doctype html
 html
   head
@@ -25,6 +30,11 @@ html
       p Price: #{Price}
       p Flag: #{Flag}
       img(src="/logo.png" alt="logo")
+      a#profile(href=Link) Profile
+      img(src=Author.Avatar)
+      div(data-count=Count) Count attr
+      input(checked=Flag)
+      div(data-flag=Flag) Flag attr
       br
       ul
         each item in Items
@@ -50,10 +60,12 @@ type SkelData struct {
 	Flag   bool
 	Count  int
 	Price  float64
+	Link   string
 }
 
 type SkelAuthor struct {
-	Bio string
+	Bio    string
+	Avatar string
 }
 
 type SkelItem struct {
@@ -76,11 +88,12 @@ func skelDataToMap(d SkelData) map[string]any {
 	}
 	return map[string]any{
 		"Name":   d.Name,
-		"Author": map[string]any{"Bio": d.Author.Bio},
+		"Author": map[string]any{"Bio": d.Author.Bio, "Avatar": d.Author.Avatar},
 		"Items":  items,
 		"Flag":   d.Flag,
 		"Count":  d.Count,
 		"Price":  d.Price,
+		"Link":   d.Link,
 	}
 }
 
@@ -88,13 +101,13 @@ func skelDataToMap(d SkelData) map[string]any {
 // GenerateGo on skelTemplate must reproduce the exact bytes of the checked-in
 // codegen_skel_gen_test.go, byte for byte.
 func TestCodegenSkelGolden(t *testing.T) {
-	ast, err := Parse(skelTemplate, nil)
+	ast, err := gopug.Parse(skelTemplate, nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	got, err := GenerateGo(ast, Config{
-		PackageName:     "gopug",
+	got, err := gopug.GenerateGo(ast, gopug.Config{
+		PackageName:     "gopug_test",
 		FuncName:        "RenderSkel",
 		DataType:        "SkelData",
 		DataReflectType: skelDataReflectType,
@@ -116,11 +129,13 @@ func TestCodegenSkelGolden(t *testing.T) {
 // TestCodegenSkelByteIdentical is the increment's correctness bar: for
 // several data shapes (empty/populated slice, flag true/false, zero/non-zero
 // Count to exercise `if Count` both ways, a negative int, a fractional
-// float, and strings containing HTML-significant characters), the committed
-// generated RenderSkel must produce output byte-identical to the
-// interpreter rendering the equivalent, identically typed map.
+// float, strings containing HTML-significant characters, and attribute
+// values proving EscapeAttr's entity-aware, apostrophe-preserving escaping
+// diverges from html.EscapeString), the committed generated RenderSkel must
+// produce output byte-identical to the interpreter rendering the
+// equivalent, identically typed map.
 func TestCodegenSkelByteIdentical(t *testing.T) {
-	tpl, err := Compile(skelTemplate, nil)
+	tpl, err := gopug.Compile(skelTemplate, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -133,44 +148,72 @@ func TestCodegenSkelByteIdentical(t *testing.T) {
 			name: "populated slice, flag true, non-zero count",
 			data: SkelData{
 				Name:   "World",
-				Author: SkelAuthor{Bio: "A short bio"},
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
 				Items:  []SkelItem{{Label: "one"}, {Label: "two"}},
 				Flag:   true,
 				Count:  3,
 				Price:  9.99,
+				Link:   "/profile",
 			},
 		},
 		{
 			name: "empty slice, flag false, zero count",
 			data: SkelData{
 				Name:   "World",
-				Author: SkelAuthor{Bio: "A short bio"},
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
 				Items:  nil,
 				Flag:   false,
 				Count:  0,
 				Price:  0,
+				Link:   "/profile",
 			},
 		},
 		{
 			name: "negative count, fractional price",
 			data: SkelData{
 				Name:   "World",
-				Author: SkelAuthor{Bio: "A short bio"},
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
 				Items:  []SkelItem{{Label: "one"}},
 				Flag:   true,
 				Count:  -5,
 				Price:  2.5,
+				Link:   "/profile",
 			},
 		},
 		{
 			name: "escaping-sensitive strings",
 			data: SkelData{
 				Name:   `<b>&"`,
-				Author: SkelAuthor{Bio: `it's <i>italic</i> & more`},
+				Author: SkelAuthor{Bio: `it's <i>italic</i> & more`, Avatar: `/a?x=1&y=2`},
 				Items:  []SkelItem{{Label: `<script>&"'`}},
 				Flag:   true,
 				Count:  1,
 				Price:  1.5,
+				Link:   `a"b&c<d`,
+			},
+		},
+		{
+			name: "attribute value with an apostrophe (must not be escaped, unlike html.EscapeString)",
+			data: SkelData{
+				Name:   "World",
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:  nil,
+				Flag:   true,
+				Count:  1,
+				Price:  1.5,
+				Link:   `it's a link`,
+			},
+		},
+		{
+			name: "attribute value with a valid entity (must not be double-escaped)",
+			data: SkelData{
+				Name:   "World",
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:  nil,
+				Flag:   false,
+				Count:  0,
+				Price:  0,
+				Link:   `x&amp;y`,
 			},
 		},
 	}
@@ -198,11 +241,12 @@ func TestCodegenSkelByteIdentical(t *testing.T) {
 func BenchmarkCodegenSkel(b *testing.B) {
 	data := SkelData{
 		Name:   "World",
-		Author: SkelAuthor{Bio: "A short bio"},
+		Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
 		Items:  []SkelItem{{Label: "one"}, {Label: "two"}, {Label: "three"}},
 		Flag:   true,
 		Count:  3,
 		Price:  9.99,
+		Link:   "/profile",
 	}
 
 	var buf bytes.Buffer
@@ -219,18 +263,19 @@ func BenchmarkCodegenSkel(b *testing.B) {
 // BenchmarkInterpretSkel measures the interpreter rendering the same
 // template and equivalent data, as the baseline codegen is compared against.
 func BenchmarkInterpretSkel(b *testing.B) {
-	tpl, err := Compile(skelTemplate, nil)
+	tpl, err := gopug.Compile(skelTemplate, nil)
 	if err != nil {
 		b.Fatalf("Compile: %v", err)
 	}
 
 	data := skelDataToMap(SkelData{
 		Name:   "World",
-		Author: SkelAuthor{Bio: "A short bio"},
+		Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
 		Items:  []SkelItem{{Label: "one"}, {Label: "two"}, {Label: "three"}},
 		Flag:   true,
 		Count:  3,
 		Price:  9.99,
+		Link:   "/profile",
 	})
 
 	b.ReportAllocs()
