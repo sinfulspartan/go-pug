@@ -1047,6 +1047,20 @@ func (r *Runtime) evaluateCode(code *CodeNode) (string, error) {
 	return r.evaluateExpr(code.Expression)
 }
 
+// evaluateMixinArg returns the same string r.evaluateExpr(call.Arguments[i])
+// would, using the closure-compiled version of that argument when
+// classifyExpr found one at Compile time, and falling back to the string
+// interpreter otherwise. Mixin arguments are stringified today (never typed
+// values), so both paths return a string.
+func (r *Runtime) evaluateMixinArg(call *MixinCallNode, i int) (string, error) {
+	if call.compiledArgs != nil {
+		if fn := call.compiledArgs[i]; fn != nil {
+			return fn(r)
+		}
+	}
+	return r.evaluateExpr(call.Arguments[i])
+}
+
 // executeStatement executes an unbuffered code statement, handling assignment
 // (var = expr), increment (var++), and decrement (var--).
 // For anything else the expression is evaluated and the result discarded.
@@ -1650,7 +1664,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
-			val, err := r.evaluateExpr(call.Arguments[i])
+			val, err := r.evaluateMixinArg(call, i)
 			if err != nil {
 				return err
 			}
@@ -1673,7 +1687,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	if decl.RestParamName != "" {
 		rest := make([]any, 0)
 		for i := len(decl.Parameters); i < len(call.Arguments); i++ {
-			val, err := r.evaluateExpr(call.Arguments[i])
+			val, err := r.evaluateMixinArg(call, i)
 			if err != nil {
 				return err
 			}
