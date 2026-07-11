@@ -1925,6 +1925,14 @@ NOT_ARRAY_LITERAL:
 	return s
 }
 
+// exprFastPathDisabledForTests forces evaluateExpr (including every
+// recursive sub-expression call it makes) to skip the tryEvalSimple
+// fast-path and run the full operator-scan chain below, regardless of
+// shape. It exists solely so tests can reconstruct evaluateExpr's
+// pre-fast-path behavior for differential comparison; production code must
+// never set it.
+var exprFastPathDisabledForTests bool
+
 // evaluateExpr evaluates an expression string against the current scope and
 // returns a string result. Operator precedence (low to high): ternary,
 // logical OR/AND, comparison, logical NOT, arithmetic, index/dot access.
@@ -1933,6 +1941,12 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 
 	if expr == "" {
 		return "", nil
+	}
+
+	if !exprFastPathDisabledForTests {
+		if s, ok := r.tryEvalSimple(expr); ok {
+			return s, nil
+		}
 	}
 
 	if len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {

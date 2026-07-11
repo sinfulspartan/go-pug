@@ -39,10 +39,25 @@ var reservedBareIdentifiers = map[string]bool{
 	"block": true,
 }
 
-// classifyExpr returns a compiledExpr for expressions whose shape is
-// unambiguous enough to prove, by construction, that it produces the exact
-// same string evaluateExpr would. Anything else returns nil, which tells
-// renderCode to keep using the string interpreter for that node.
+// simpleShape identifies which of the three trivial expression shapes
+// classifySimpleShape recognized, if any.
+type simpleShape int
+
+const (
+	shapeNone simpleShape = iota
+	shapeLiteral
+	shapeIdentifier
+	shapeDotPath
+)
+
+// classifySimpleShape is the single, non-allocating detection routine shared
+// by classifyExpr (compile-time closure construction) and tryEvalSimple
+// (render-time interpreter fast-path). It reports which trivial shape expr
+// matches — a quoted string literal, a bare identifier, or a plain dot-path —
+// along with the value each caller needs to produce a result: the unwrapped
+// literal text for shapeLiteral, or expr itself (to hand to
+// lookupAndStringify) for shapeIdentifier/shapeDotPath. It returns
+// shapeNone for anything else, doing no allocation in any case.
 //
 // Supported shapes:
 //   - a quoted string literal with no unescaped interior quote
@@ -52,33 +67,59 @@ var reservedBareIdentifiers = map[string]bool{
 //     interpreter's builtin method/property names
 //
 // Anything with operators, ternary, parens, indexing, method calls,
-// interpolation, or that doesn't match one of the shapes above falls back
-// to nil, unchanged.
+// interpolation, or that doesn't match one of the shapes above yields
+// shapeNone, unchanged.
+func classifySimpleShape(expr string) (simpleShape, string) {
+	if lit, ok := unwrapQuotedLiteral(expr); ok {
+		return shapeLiteral, lit
+	}
+	if isPlainIdentifier(expr) {
+		return shapeIdentifier, expr
+	}
+	if isPlainDotPath(expr) {
+		return shapeDotPath, expr
+	}
+	return shapeNone, ""
+}
+
+// classifyExpr returns a compiledExpr for expressions whose shape is
+// unambiguous enough to prove, by construction, that it produces the exact
+// same string evaluateExpr would. Anything else returns nil, which tells
+// renderCode to keep using the string interpreter for that node.
 func classifyExpr(expr string) compiledExpr {
 	expr = strings.TrimSpace(expr)
 
-	if lit, ok := unwrapQuotedLiteral(expr); ok {
-		value := lit
+	switch shape, value := classifySimpleShape(expr); shape {
+	case shapeLiteral:
 		return func(*Runtime) (string, error) {
 			return value, nil
 		}
-	}
-
-	if isPlainIdentifier(expr) {
-		name := expr
+	case shapeIdentifier, shapeDotPath:
+		name := value
 		return func(r *Runtime) (string, error) {
 			return r.lookupAndStringify(name), nil
 		}
+	default:
+		return nil
 	}
+}
 
-	if isPlainDotPath(expr) {
-		path := expr
-		return func(r *Runtime) (string, error) {
-			return r.lookupAndStringify(path), nil
-		}
+// tryEvalSimple is evaluateExpr's non-allocating fast-path: it detects the
+// same three trivial shapes classifyExpr recognizes and, if expr matches
+// one, evaluates it directly — short-circuiting the paren-unwrap/ternary/
+// operator-scan chain the general interpreter runs. It returns ok=false for
+// anything else, in which case the caller must fall back to the full
+// evaluateExpr logic unchanged. Unlike classifyExpr, it never builds a
+// closure, so it is safe to call on every evaluateExpr invocation.
+func (r *Runtime) tryEvalSimple(expr string) (string, bool) {
+	switch shape, value := classifySimpleShape(expr); shape {
+	case shapeLiteral:
+		return value, true
+	case shapeIdentifier, shapeDotPath:
+		return r.lookupAndStringify(value), true
+	default:
+		return "", false
 	}
-
-	return nil
 }
 
 // isIdentByte reports whether b can appear in a bare identifier segment
