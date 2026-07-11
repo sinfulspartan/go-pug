@@ -3,6 +3,7 @@ package gopug
 import (
 	"fmt"
 	"go/format"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,15 @@ type Config struct {
 	// DataType is the Go type of the data parameter, e.g. "HomeData" or
 	// "*HomeData". It is emitted verbatim into the function signature.
 	DataType string
+	// DataReflectType is the reflect.Type of the data struct DataType names
+	// (e.g. reflect.TypeOf(HomeData{})). When non-nil the generator is
+	// type-aware: it walks this type through field dot-paths and each-loop
+	// element types to learn each expression's Go type, and emits per-type
+	// stringify and truthiness that matches the interpreter's semantics
+	// (Runtime.lookupAndStringify, Runtime.isTruthy) exactly. When nil, the
+	// generator falls back to the string-assuming behavior of the untyped
+	// codegen skeleton, unchanged.
+	DataReflectType reflect.Type
 }
 
 // GenerateGo translates ast into a gofmt-ed Go source file defining
@@ -26,11 +36,22 @@ type Config struct {
 //	func <FuncName>(w io.Writer, d <DataType>) error
 //
 // which writes the same HTML byte sequence the interpreter (Template.Render)
-// would produce for equivalent data, for the minimal grammar subset this
-// increment supports: doctype, nested tags including void elements, static
-// attributes and class/id shorthand, plain text, #{field-or-dot-path}
-// interpolation of string fields, one level of `each item in <slice field>`,
-// and `if <bool field>` with an optional `else`.
+// would produce for equivalent data, for the grammar subset this increment
+// supports: doctype, nested tags including void elements, static attributes
+// and class/id shorthand, plain text, #{field-or-dot-path} interpolation,
+// one level of `each item in <slice field>`, and `if <field>` with an
+// optional `else`.
+//
+// When cfg.DataReflectType is set, GenerateGo is type-aware: it resolves
+// every field expression's Go type and emits per-type stringify for
+// interpolation (string, bool, every sized int/uint kind, and float64 — see
+// genInterpolation) and per-type truthiness for conditions (bool used bare,
+// numeric kinds compared against zero — see genConditional), matching the
+// interpreter's Runtime.lookupAndStringify/isTruthy exactly. Any other field
+// type (struct, slice, map, pointer, interface, float32, …) is out of scope
+// and returns an error rather than guessing. When DataReflectType is nil,
+// every field is assumed to be a string (the original untyped skeleton
+// behavior), unchanged.
 //
 // GenerateGo assumes complete, well-typed data and does no nil-guarding —
 // like Pug itself, and unlike the interpreter's lenient missing-value
@@ -49,7 +70,7 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 		return nil, fmt.Errorf("codegen: Config.DataType is required")
 	}
 
-	g := &generator{}
+	g := &generator{rootType: cfg.DataReflectType}
 	for _, child := range ast.Children {
 		if err := g.genNode(child); err != nil {
 			return nil, err
@@ -59,7 +80,15 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 
 	var src strings.Builder
 	fmt.Fprintf(&src, "package %s\n\n", cfg.PackageName)
-	src.WriteString("import (\n\t\"html\"\n\t\"io\"\n)\n\n")
+	src.WriteString("import (\n")
+	if g.needsHTML {
+		src.WriteString("\t\"html\"\n")
+	}
+	src.WriteString("\t\"io\"\n")
+	if g.needsStrconv {
+		src.WriteString("\t\"strconv\"\n")
+	}
+	src.WriteString(")\n\n")
 	fmt.Fprintf(&src, "func %s(w io.Writer, d %s) error {\n", cfg.FuncName, cfg.DataType)
 	src.WriteString(g.body.String())
 	src.WriteString("\treturn nil\n}\n")
@@ -80,28 +109,108 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 type generator struct {
 	body   strings.Builder
 	static strings.Builder
-	// scope holds the names of each-loop item variables currently in scope,
-	// innermost last, so a bare identifier or dot-path whose first segment
-	// matches one of them resolves to the Go loop variable directly instead
-	// of being treated as a field of d.
-	scope []string
+	// scope holds each-loop item variables currently in scope, innermost
+	// last, so a bare identifier or dot-path whose first segment matches one
+	// of them resolves to the Go loop variable directly instead of being
+	// treated as a field of d.
+	scope []scopeVar
+	// rootType is the reflect.Type of the data struct (Config.DataReflectType).
+	// When nil, the generator is in type-blind, string-assuming mode; when
+	// non-nil, resolveFieldExpr walks it (and each scope entry's typ) to
+	// resolve every field expression's Go type.
+	rootType reflect.Type
+	// needsHTML/needsStrconv track whether the generated body actually calls
+	// html.EscapeString/strconv.* anywhere, so GenerateGo only imports those
+	// packages when they are used (an unused import fails to compile).
+	needsHTML    bool
+	needsStrconv bool
+}
+
+// scopeVar is one entry in the generator's each-loop variable scope stack: a
+// Go loop variable name paired with its element reflect.Type (nil in
+// type-blind mode).
+type scopeVar struct {
+	name string
+	typ  reflect.Type
+}
+
+// lookupScope searches the scope stack innermost-first for name, returning
+// its bound type and whether it was found. A found entry's typ is nil only
+// when the generator itself is in type-blind mode (rootType == nil).
+func (g *generator) lookupScope(name string) (reflect.Type, bool) {
+	for i := len(g.scope) - 1; i >= 0; i-- {
+		if g.scope[i].name == name {
+			return g.scope[i].typ, true
+		}
+	}
+	return nil, false
 }
 
 func (g *generator) isBound(name string) bool {
-	for _, b := range g.scope {
-		if b == name {
-			return true
-		}
-	}
-	return false
+	_, ok := g.lookupScope(name)
+	return ok
 }
 
-func (g *generator) pushScope(name string) {
-	g.scope = append(g.scope, name)
+func (g *generator) pushScope(name string, typ reflect.Type) {
+	g.scope = append(g.scope, scopeVar{name: name, typ: typ})
 }
 
 func (g *generator) popScope() {
 	g.scope = g.scope[:len(g.scope)-1]
+}
+
+// derefType unwraps t through any number of pointer indirections, returning
+// the first non-pointer type reached (or nil if t is nil).
+func derefType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t
+}
+
+// typeForPath walks a dot-path of already-split field-name segments starting
+// from typ, dereferencing pointers at each step, and returns the resolved
+// leaf reflect.Type. path is the original dotted expression, used only for
+// the error message. An empty segments slice returns typ unchanged (the
+// path is exactly the starting type itself, e.g. a bound each-loop scalar
+// used bare).
+func typeForPath(typ reflect.Type, path string, segments []string) (reflect.Type, error) {
+	cur := typ
+	for _, seg := range segments {
+		cur = derefType(cur)
+		if cur == nil || cur.Kind() != reflect.Struct {
+			return nil, fmt.Errorf("unsupported field path %q: %s is not a field of a struct", path, seg)
+		}
+		f, ok := cur.FieldByName(seg)
+		if !ok {
+			return nil, fmt.Errorf("unsupported field path %q: %q is not a field of %s", path, seg, cur)
+		}
+		cur = f.Type
+	}
+	return cur, nil
+}
+
+// Basic (unnamed) reflect.Types for the scalar kinds resolveFieldExpr's
+// callers need to distinguish from a named type of the same kind (e.g. a
+// bare bool field vs a `type Flag bool` field): the stringify calls the
+// latter needs still type-check, but only once wrapped in an explicit
+// conversion, whereas the exact builtin type doesn't need one.
+var (
+	reflectTypeString  = reflect.TypeOf("")
+	reflectTypeBool    = reflect.TypeOf(false)
+	reflectTypeInt     = reflect.TypeOf(int(0))
+	reflectTypeFloat64 = reflect.TypeOf(float64(0))
+)
+
+// convertExpr returns goExpr unchanged when typ is exactly builtin (no
+// conversion needed to satisfy a function parameter of that builtin type),
+// or wraps it in an explicit conversion (goTypeName + "(" + goExpr + ")")
+// when typ is merely a named type with the same underlying kind.
+func convertExpr(goExpr string, typ, builtin reflect.Type, goTypeName string) string {
+	if typ == builtin {
+		return goExpr
+	}
+	return goTypeName + "(" + goExpr + ")"
 }
 
 // writeStatic appends literal text to the pending static chunk.
@@ -262,53 +371,114 @@ func staticAttrsString(attrs map[string]*AttributeValue) (string, error) {
 	return b.String(), nil
 }
 
-// genInterpolation emits an escaped write of a #{expr} interpolation, where
-// expr must be a bare identifier or dot-path (resolveFieldExpr enforces
-// that); unescaped interpolation is not yet supported.
+// genInterpolation emits a write of a #{expr} interpolation, where expr must
+// be a bare identifier or dot-path (resolveFieldExpr enforces that);
+// unescaped interpolation is not yet supported. In type-aware mode (a
+// non-nil Config.DataReflectType), the emitted stringify matches
+// Runtime.lookupAndStringify's per-type cases exactly: string is
+// html.EscapeString'd, every numeric/bool scalar is a bare strconv.* call
+// (none of their stringifications can contain HTML-special characters, so
+// escaping them would be wasted work); any non-scalar field type (struct,
+// slice, map, pointer, interface, float32, complex, …) is unsupported and
+// returns an error rather than guessing at a stringification the interpreter
+// wouldn't produce. In type-blind mode (nil DataReflectType), the field is
+// assumed to be a string, matching the untyped codegen skeleton.
 func (g *generator) genInterpolation(n *InterpolationNode) error {
 	if n.Unescaped {
 		return fmt.Errorf("unsupported unescaped interpolation !{%s} in codegen", n.Expression)
 	}
-	goExpr, err := g.resolveFieldExpr(n.Expression)
+	goExpr, typ, err := g.resolveFieldExpr(n.Expression)
 	if err != nil {
 		return err
 	}
-	g.writeExprWrite("html.EscapeString(" + goExpr + ")")
+
+	if typ == nil {
+		g.needsHTML = true
+		g.writeExprWrite("html.EscapeString(" + goExpr + ")")
+		return nil
+	}
+
+	switch typ.Kind() {
+	case reflect.String:
+		g.needsHTML = true
+		g.writeExprWrite("html.EscapeString(" + convertExpr(goExpr, typ, reflectTypeString, "string") + ")")
+	case reflect.Bool:
+		g.needsStrconv = true
+		g.writeExprWrite("strconv.FormatBool(" + convertExpr(goExpr, typ, reflectTypeBool, "bool") + ")")
+	case reflect.Int:
+		g.needsStrconv = true
+		g.writeExprWrite("strconv.Itoa(" + convertExpr(goExpr, typ, reflectTypeInt, "int") + ")")
+	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		g.needsStrconv = true
+		g.writeExprWrite("strconv.FormatInt(int64(" + goExpr + "), 10)")
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		g.needsStrconv = true
+		g.writeExprWrite("strconv.FormatUint(uint64(" + goExpr + "), 10)")
+	case reflect.Float64:
+		g.needsStrconv = true
+		g.writeExprWrite("strconv.FormatFloat(" + convertExpr(goExpr, typ, reflectTypeFloat64, "float64") + ", 'f', -1, 64)")
+	default:
+		return fmt.Errorf("unsupported non-scalar field type %s in codegen interpolation #{%s}", typ, n.Expression)
+	}
 	return nil
 }
 
 // resolveFieldExpr translates a Pug bare identifier or dot-path into the
 // equivalent Go expression against the data parameter d, taking any
-// currently bound each-loop variables into account. Anything that isn't one
-// of those two trivial shapes (an operator, method call, literal, index
-// expression, …) is out of scope for this increment and returns an error.
-func (g *generator) resolveFieldExpr(expr string) (string, error) {
+// currently bound each-loop variables into account, and — when the
+// generator is type-aware (rootType != nil) — resolves the expression's
+// reflect.Type by walking the struct fields along the path (an each-loop
+// variable's own type if the first segment is bound, otherwise rootType),
+// dereferencing pointers at each step. In type-blind mode (rootType == nil)
+// the returned type is always nil, preserving the untyped skeleton's
+// behavior exactly. Anything that isn't a bare identifier or dot-path (an
+// operator, method call, literal, index expression, …), or a dot-path
+// segment that isn't a field of the struct type it's resolved against, is
+// out of scope for this increment and returns an error.
+func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) {
 	expr = strings.TrimSpace(expr)
 
 	shape, val := classifySimpleShape(expr)
+	var segments []string
 	switch shape {
 	case shapeIdentifier:
-		if g.isBound(val) {
-			return val, nil
-		}
-		return "d." + val, nil
+		segments = []string{val}
 	case shapeDotPath:
-		first := val
-		if idx := strings.IndexByte(val, '.'); idx >= 0 {
-			first = val[:idx]
-		}
-		if g.isBound(first) {
-			return val, nil
-		}
-		return "d." + val, nil
+		segments = strings.Split(val, ".")
 	default:
-		return "", fmt.Errorf("unsupported expression in codegen: %q (only bare identifiers and dot-paths of fields are supported in this increment)", expr)
+		return "", nil, fmt.Errorf("unsupported expression in codegen: %q (only bare identifiers and dot-paths of fields are supported in this increment)", expr)
 	}
+
+	first := segments[0]
+	if boundTyp, ok := g.lookupScope(first); ok {
+		if g.rootType == nil {
+			return val, nil, nil
+		}
+		typ, err := typeForPath(boundTyp, expr, segments[1:])
+		if err != nil {
+			return "", nil, err
+		}
+		return val, typ, nil
+	}
+
+	goExpr := "d." + val
+	if g.rootType == nil {
+		return goExpr, nil, nil
+	}
+	typ, err := typeForPath(g.rootType, expr, segments)
+	if err != nil {
+		return "", nil, err
+	}
+	return goExpr, typ, nil
 }
 
 // genEach emits a for-range loop over a slice field. Only the single-variable
 // form (`each x in <field>`) with no index variable and no `each`/`else`
-// empty-collection body is supported in this increment.
+// empty-collection body is supported in this increment. In type-aware mode,
+// the loop item variable is scoped to the collection field's element type
+// (dereferencing pointers on the collection and/or its element), so a
+// dot-path rooted at the item variable inside the loop body resolves
+// correctly too.
 func (g *generator) genEach(n *EachNode) error {
 	if n.ItemVar == "" {
 		return fmt.Errorf("unsupported each without an item variable in codegen")
@@ -320,13 +490,22 @@ func (g *generator) genEach(n *EachNode) error {
 		return fmt.Errorf("unsupported each/else in codegen")
 	}
 
-	collExpr, err := g.resolveFieldExpr(n.CollectionExpr)
+	collExpr, collTyp, err := g.resolveFieldExpr(n.CollectionExpr)
 	if err != nil {
 		return err
 	}
 
+	var elemTyp reflect.Type
+	if collTyp != nil {
+		ct := derefType(collTyp)
+		if ct.Kind() != reflect.Slice && ct.Kind() != reflect.Array {
+			return fmt.Errorf("unsupported each over non-slice field %q (%s) in codegen", n.CollectionExpr, collTyp)
+		}
+		elemTyp = derefType(ct.Elem())
+	}
+
 	g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
-	g.pushScope(n.ItemVar)
+	g.pushScope(n.ItemVar, elemTyp)
 	for _, child := range n.Body {
 		if err := g.genNode(child); err != nil {
 			g.popScope()
@@ -339,8 +518,15 @@ func (g *generator) genEach(n *EachNode) error {
 	return nil
 }
 
-// genConditional emits a Go if/else for `if <bool field>` with an optional
-// plain `else`. `unless` and else-if chains are later increments.
+// genConditional emits a Go if/else for `if <bool or numeric field>` with an
+// optional plain `else`. `unless` and else-if chains are later increments.
+// In type-aware mode, a numeric condition field (any int/uint kind or
+// float64) is compared against zero to match the interpreter's stringify-
+// then-isTruthy semantics (a numeric field stringifies to "0" only when it
+// is zero); a bool field is used bare, as before. Any other condition field
+// type — string, slice, map, pointer, struct, float32 — has quirky
+// stringify-based truthiness (see the codegen design notes) and is a later
+// increment, so it returns an error rather than guessing.
 func (g *generator) genConditional(n *ConditionalNode) error {
 	if n.IsUnless {
 		return fmt.Errorf("unsupported unless in codegen")
@@ -351,12 +537,27 @@ func (g *generator) genConditional(n *ConditionalNode) error {
 		}
 	}
 
-	condExpr, err := g.resolveFieldExpr(n.Condition)
+	condExpr, condTyp, err := g.resolveFieldExpr(n.Condition)
 	if err != nil {
 		return err
 	}
 
-	g.writeRaw(fmt.Sprintf("if %s {\n", condExpr))
+	cond := condExpr
+	if condTyp != nil {
+		switch condTyp.Kind() {
+		case reflect.Bool:
+			// Used bare: already the exact form Runtime.isTruthy's
+			// FormatBool-derived "true"/"false" mirrors.
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float64:
+			cond = condExpr + " != 0"
+		default:
+			return fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool and numeric fields are supported in this increment)", condTyp, n.Condition)
+		}
+	}
+
+	g.writeRaw(fmt.Sprintf("if %s {\n", cond))
 	for _, child := range n.Consequent {
 		if err := g.genNode(child); err != nil {
 			return err
