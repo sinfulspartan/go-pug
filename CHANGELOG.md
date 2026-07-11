@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.4
+
+### Fixed
+
+- Bare positional mixin-call arguments that contain an operator, ternary, or
+  bracket index — `+item(a + b)`, `+card(c ? x : y)`, `+m(arr[0])` — are now passed
+  as a **single** argument instead of being mis-split into several. Named attribute
+  values already handled this; the bare positional path did not.
+- Fully-parenthesized expressions of any nesting depth now resolve correctly:
+  `((flag))` renders the value of `flag` (previously empty) and `((a ? b : c))`
+  evaluates the ternary. Redundant parentheses around a whole expression are
+  transparent, matching standard Pug.
+
+### Changed
+
+- **Rendering is substantially faster and allocates far less, with byte-identical
+  output.** A representative full-page template renders ~4.4× faster (≈345µs →
+  ≈78µs) with ~62% fewer allocations per render (1,980 → 762). The gains come from
+  compiling `= expr` output nodes, mixin-call arguments, and trivial attribute/
+  expression shapes into reusable closures at compile time; a scalar value-stringify
+  fast path; an allocation-free variable lookup; and elimination of a per-tag map
+  allocation. No template behavior changes.
+
 ## v0.3.3
 
 ### Fixed
