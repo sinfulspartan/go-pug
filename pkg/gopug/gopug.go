@@ -89,11 +89,14 @@ func RenderFile(path string, data map[string]any, opts *Options) (string, error)
 	return Render(string(src), data, &copied)
 }
 
-func Compile(src string, opts *Options) (*Template, error) {
-	if opts == nil {
-		opts = &Options{}
-	}
-
+// Parse lexes and parses src into a *DocumentNode without any of the
+// render-time preparation Compile does on top (closure-compiling expressions
+// and mixin arguments). It exists so callers other than the interpreter —
+// most notably the typed-codegen backend — can obtain the same AST the
+// runtime walks without going through Compile/Template at all. opts is
+// accepted for symmetry with Compile and future use; the lex/parse stages
+// do not currently consult it.
+func Parse(src string, opts *Options) (*DocumentNode, error) {
 	lexer := NewLexer(src)
 	tokens, err := lexer.Lex()
 	if err != nil {
@@ -104,6 +107,19 @@ func Compile(src string, opts *Options) (*Template, error) {
 	ast, err := parser.Parse()
 	if err != nil {
 		return nil, fmt.Errorf("parser error: %w", err)
+	}
+
+	return ast, nil
+}
+
+func Compile(src string, opts *Options) (*Template, error) {
+	if opts == nil {
+		opts = &Options{}
+	}
+
+	ast, err := Parse(src, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// Compile buffered/unescaped expressions and mixin-call arguments into
