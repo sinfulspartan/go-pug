@@ -2619,19 +2619,54 @@ CHECK_INDEX_OP:
 // lookup and stringifies the result exactly as evaluateExpr's fallback path
 // does: a missing variable or nil value renders as "", a float64 uses
 // FormatFloat (matching the rest of the interpreter's number formatting),
-// and anything else uses fmt.Sprintf("%v", ...). It's factored out so the
-// closure-compiled identifier/dot-path shapes in expr_compile.go can call
-// the exact same resolution/stringification code evaluateExpr uses, rather
-// than reimplementing it.
+// and everything else falls back to fmt.Sprintf("%v", ...). It's factored
+// out so the closure-compiled identifier/dot-path shapes in expr_compile.go
+// can call the exact same resolution/stringification code evaluateExpr
+// uses, rather than reimplementing it.
+//
+// string, bool, and the sized int/uint kinds get dedicated strconv
+// fast-paths ahead of the Sprintf fallback, since this is the single
+// value-to-string site every buffered output on the render hot path funnels
+// through. Each fast-path case is chosen to be byte-identical to what
+// fmt.Sprintf("%v", val) would produce for that exact static type; a value
+// whose type is merely string/int/etc.-shaped but implements fmt.Stringer or
+// error (or is a distinct named type) does not match these cases and still
+// falls through to Sprintf, so its String()/Error() method is honored.
 func (r *Runtime) lookupAndStringify(expr string) string {
 	val, ok := r.lookup(expr)
 	if !ok || val == nil {
 		return ""
 	}
-	if f, ok := val.(float64); ok {
-		return strconv.FormatFloat(f, 'f', -1, 64)
+	switch t := val.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case int8:
+		return strconv.FormatInt(int64(t), 10)
+	case int16:
+		return strconv.FormatInt(int64(t), 10)
+	case int32:
+		return strconv.FormatInt(int64(t), 10)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case uint:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint64:
+		return strconv.FormatUint(t, 10)
+	default:
+		return fmt.Sprintf("%v", val)
 	}
-	return fmt.Sprintf("%v", val)
 }
 
 // isOperatorExpr reports whether expr contains a top-level operator (ternary,
