@@ -78,19 +78,23 @@ func (r *Runtime) prettyNewline() {
 	}
 }
 
+// inlineTagNames is the set of HTML tag names treated as inline for pretty
+// printing (rendered without child indentation). Built once at package init
+// so prettyInline doesn't allocate a fresh map on every call.
+var inlineTagNames = map[string]bool{
+	"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
+	"big": true, "br": true, "button": true, "cite": true, "code": true,
+	"dfn": true, "em": true, "i": true, "img": true, "input": true,
+	"kbd": true, "label": true, "map": true, "object": true, "output": true,
+	"q": true, "samp": true, "select": true, "small": true, "span": true,
+	"strong": true, "sub": true, "sup": true, "textarea": true, "time": true,
+	"tt": true, "var": true,
+}
+
 // prettyInline returns true when the tag should be rendered without child
 // indentation (inline elements and tags whose only child is a text node).
 func prettyInline(tag *TagNode) bool {
-	inline := map[string]bool{
-		"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
-		"big": true, "br": true, "button": true, "cite": true, "code": true,
-		"dfn": true, "em": true, "i": true, "img": true, "input": true,
-		"kbd": true, "label": true, "map": true, "object": true, "output": true,
-		"q": true, "samp": true, "select": true, "small": true, "span": true,
-		"strong": true, "sub": true, "sup": true, "textarea": true, "time": true,
-		"tt": true, "var": true,
-	}
-	if inline[tag.Name] {
+	if inlineTagNames[tag.Name] {
 		return true
 	}
 	// Single text-only child — keep on one line
@@ -823,7 +827,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 	r.htmlBuf.WriteString(">")
 
-	isInline := prettyInline(tag)
+	isInline := r.pretty() && prettyInline(tag)
 	if r.pretty() && !isInline {
 		r.prettyIndent++
 	}
@@ -1015,14 +1019,14 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 	case CodeUnbuffered:
 		return r.executeStatement(code.Expression)
 	case CodeBuffered:
-		val, err := r.evaluateExpr(code.Expression)
+		val, err := r.evaluateCode(code)
 		if err != nil {
 			return err
 		}
 		r.htmlBuf.WriteString(html.EscapeString(val))
 		return nil
 	case CodeUnescaped:
-		val, err := r.evaluateExpr(code.Expression)
+		val, err := r.evaluateCode(code)
 		if err != nil {
 			return err
 		}
@@ -1030,6 +1034,31 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 		return nil
 	}
 	return nil
+}
+
+// evaluateCode returns the same string evaluateExpr(code.Expression) would,
+// using the closure-compiled version of the expression when classifyExpr
+// found one at Compile time, and falling back to the string interpreter
+// otherwise.
+func (r *Runtime) evaluateCode(code *CodeNode) (string, error) {
+	if code.compiled != nil {
+		return code.compiled(r)
+	}
+	return r.evaluateExpr(code.Expression)
+}
+
+// evaluateMixinArg returns the same string r.evaluateExpr(call.Arguments[i])
+// would, using the closure-compiled version of that argument when
+// classifyExpr found one at Compile time, and falling back to the string
+// interpreter otherwise. Mixin arguments are stringified today (never typed
+// values), so both paths return a string.
+func (r *Runtime) evaluateMixinArg(call *MixinCallNode, i int) (string, error) {
+	if call.compiledArgs != nil {
+		if fn := call.compiledArgs[i]; fn != nil {
+			return fn(r)
+		}
+	}
+	return r.evaluateExpr(call.Arguments[i])
 }
 
 // executeStatement executes an unbuffered code statement, handling assignment
@@ -1161,6 +1190,26 @@ func findAssignOp(stmt string) int {
 	return -1
 }
 
+// mayBeFloat reports whether a trimmed string could possibly be a valid
+// strconv.ParseFloat input, based on its first byte alone. A valid float
+// (decimal, hex, or one of the inf/infinity/nan spellings) must start with
+// a digit, a sign, a decimal point, or the first letter of "inf"/"nan"
+// (case-insensitive). Anything else can never parse, so callers can skip
+// the ParseFloat call — and the error allocation it makes on failure —
+// entirely. This is a cheap pre-filter only; it does not itself validate
+// the rest of the string.
+func mayBeFloat(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	switch trimmed[0] {
+	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+		'+', '-', '.', 'i', 'I', 'n', 'N':
+		return true
+	}
+	return false
+}
+
 func toFloat(v any) (float64, bool) {
 	if v == nil {
 		return 0, false
@@ -1175,7 +1224,11 @@ func toFloat(v any) (float64, bool) {
 	case int64:
 		return float64(val), true
 	case string:
-		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		trimmed := strings.TrimSpace(val)
+		if !mayBeFloat(trimmed) {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(trimmed, 64)
 		return f, err == nil
 	}
 	return 0, false
@@ -1611,7 +1664,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
-			val, err := r.evaluateExpr(call.Arguments[i])
+			val, err := r.evaluateMixinArg(call, i)
 			if err != nil {
 				return err
 			}
@@ -1634,7 +1687,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	if decl.RestParamName != "" {
 		rest := make([]any, 0)
 		for i := len(decl.Parameters); i < len(call.Arguments); i++ {
-			val, err := r.evaluateExpr(call.Arguments[i])
+			val, err := r.evaluateMixinArg(call, i)
 			if err != nil {
 				return err
 			}
@@ -1872,6 +1925,14 @@ NOT_ARRAY_LITERAL:
 	return s
 }
 
+// exprFastPathDisabledForTests forces evaluateExpr (including every
+// recursive sub-expression call it makes) to skip the tryEvalSimple
+// fast-path and run the full operator-scan chain below, regardless of
+// shape. It exists solely so tests can reconstruct evaluateExpr's
+// pre-fast-path behavior for differential comparison; production code must
+// never set it.
+var exprFastPathDisabledForTests bool
+
 // evaluateExpr evaluates an expression string against the current scope and
 // returns a string result. Operator precedence (low to high): ternary,
 // logical OR/AND, comparison, logical NOT, arithmetic, index/dot access.
@@ -1882,7 +1943,13 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		return "", nil
 	}
 
-	if len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
+	if !exprFastPathDisabledForTests {
+		if s, ok := r.tryEvalSimple(expr); ok {
+			return s, nil
+		}
+	}
+
+	for len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
 		depth := 0
 		isWrapped := true
 		for i, ch := range expr {
@@ -1896,9 +1963,10 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 				}
 			}
 		}
-		if isWrapped {
-			expr = strings.TrimSpace(expr[1 : len(expr)-1])
+		if !isWrapped {
+			break
 		}
+		expr = strings.TrimSpace(expr[1 : len(expr)-1])
 	}
 
 	if idx := findTernary(expr); idx >= 0 {
@@ -1971,25 +2039,8 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 	if len(expr) >= 2 {
 		q := rune(expr[0])
 		if q == '"' || q == '\'' {
-			escaped := false
-			closeIdx := -1
-			for byteIdx, ch := range expr[1:] {
-				realIdx := byteIdx + 1 // offset back into expr
-				if escaped {
-					escaped = false
-					continue
-				}
-				if ch == '\\' {
-					escaped = true
-					continue
-				}
-				if ch == q {
-					closeIdx = realIdx
-					break
-				}
-			}
-			if closeIdx == len(expr)-1 {
-				return expr[1 : len(expr)-1], nil
+			if lit, ok := unwrapQuotedLiteral(expr); ok {
+				return lit, nil
 			}
 		}
 
@@ -2590,17 +2641,61 @@ CHECK_INDEX_OP:
 		}
 	}
 
-	if val, ok := r.lookup(expr); ok {
-		if val == nil {
-			return "", nil
-		}
-		if f, ok := val.(float64); ok {
-			return strconv.FormatFloat(f, 'f', -1, 64), nil
-		}
-		return fmt.Sprintf("%v", val), nil
-	}
+	return r.lookupAndStringify(expr), nil
+}
 
-	return "", nil
+// lookupAndStringify resolves expr (a plain variable name or dot-path) via
+// lookup and stringifies the result exactly as evaluateExpr's fallback path
+// does: a missing variable or nil value renders as "", a float64 uses
+// FormatFloat (matching the rest of the interpreter's number formatting),
+// and everything else falls back to fmt.Sprintf("%v", ...). It's factored
+// out so the closure-compiled identifier/dot-path shapes in expr_compile.go
+// can call the exact same resolution/stringification code evaluateExpr
+// uses, rather than reimplementing it.
+//
+// string, bool, and the sized int/uint kinds get dedicated strconv
+// fast-paths ahead of the Sprintf fallback, since this is the single
+// value-to-string site every buffered output on the render hot path funnels
+// through. Each fast-path case is chosen to be byte-identical to what
+// fmt.Sprintf("%v", val) would produce for that exact static type; a value
+// whose type is merely string/int/etc.-shaped but implements fmt.Stringer or
+// error (or is a distinct named type) does not match these cases and still
+// falls through to Sprintf, so its String()/Error() method is honored.
+func (r *Runtime) lookupAndStringify(expr string) string {
+	val, ok := r.lookup(expr)
+	if !ok || val == nil {
+		return ""
+	}
+	switch t := val.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case int8:
+		return strconv.FormatInt(int64(t), 10)
+	case int16:
+		return strconv.FormatInt(int64(t), 10)
+	case int32:
+		return strconv.FormatInt(int64(t), 10)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case uint:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint64:
+		return strconv.FormatUint(t, 10)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 // isOperatorExpr reports whether expr contains a top-level operator (ternary,
@@ -3065,9 +3160,22 @@ func parseNumber(s string) (float64, bool) {
 // lookup retrieves a value by name from the scope stack (innermost first),
 // falling back to globals. Dot notation ("user.name") is resolved by walking
 // the chain with getField.
+//
+// The key is split on "." without allocating a []string: a bare identifier
+// (no dot) resolves directly, and a dotted path is walked segment-by-segment
+// with strings.IndexByte. Every segment (including the root) is trimmed with
+// strings.TrimSpace, matching what strings.Split(key, ".") plus a per-part
+// TrimSpace would have produced, degenerate inputs (leading/trailing/doubled
+// dots) included.
 func (r *Runtime) lookup(key string) (any, bool) {
-	parts := strings.Split(key, ".")
-	root := strings.TrimSpace(parts[0])
+	dot := strings.IndexByte(key, '.')
+
+	var root string
+	if dot < 0 {
+		root = strings.TrimSpace(key)
+	} else {
+		root = strings.TrimSpace(key[:dot])
+	}
 
 	var rootVal any
 	found := false
@@ -3098,13 +3206,30 @@ func (r *Runtime) lookup(key string) (any, bool) {
 		return nil, false
 	}
 
+	if dot < 0 {
+		return rootVal, true
+	}
+
 	current := rootVal
-	for j := 1; j < len(parts); j++ {
-		part := strings.TrimSpace(parts[j])
+	rest := key[dot+1:]
+	for {
+		next := strings.IndexByte(rest, '.')
+		var part string
+		if next < 0 {
+			part = strings.TrimSpace(rest)
+		} else {
+			part = strings.TrimSpace(rest[:next])
+		}
+
 		current = r.getField(current, part)
 		if current == nil {
 			return nil, false
 		}
+
+		if next < 0 {
+			break
+		}
+		rest = rest[next+1:]
 	}
 
 	return current, true

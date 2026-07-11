@@ -873,6 +873,14 @@ func (l *Lexer) scanAttributes() error {
 			if name == "" {
 				return l.errorf("expected attribute name")
 			}
+			// A bare positional value (e.g. a mixin-call argument or a
+			// boolean attribute) may itself be a top-level operator/ternary
+			// expression, such as `a + b` in `+item(a + b)`.  Stitch any
+			// operator continuation onto it before emitting the token, the
+			// same way a named attribute's value does — this is a no-op
+			// when no operator follows (e.g. the two booleans in
+			// `div(a b)` are left as separate tokens).
+			name = l.scanAttrOperatorContinuation(name)
 			l.addToken(TokenAttrName, name)
 			l.skipAttrWhitespace()
 			if l.peek() == ',' {
@@ -882,17 +890,35 @@ func (l *Lexer) scanAttributes() error {
 			continue
 		}
 
-		l.addToken(TokenAttrName, name)
 		l.skipAttrWhitespace()
 
 		if l.peek() == '=' {
+			l.addToken(TokenAttrName, name)
 			l.advance()
 			l.addToken(TokenAttrEqual, "=")
 		} else if l.peek() == '!' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '=' {
+			l.addToken(TokenAttrName, name)
 			l.advance()
 			l.advance()
 			l.addToken(TokenAttrEqualUnescape, "!=")
 		} else {
+			// Not a named attribute. scanAttrName's charset stops at '[' or
+			// '(', so a bare positional argument like `arr[0]` or `fn(x)`
+			// (which reaches this branch via scanAttrName because it starts
+			// with an identifier character) is only partially scanned so
+			// far — extend it across any directly-attached bracket-index or
+			// call suffix (and further dotted continuations of one, e.g.
+			// `arr[0].name`) before treating it as a single argument.
+			for l.peek() == '[' || l.peek() == '(' {
+				name += l.scanAttrBracketSuffix()
+				if l.peek() == '.' {
+					name += l.scanAttrName()
+				}
+			}
+			// Then stitch across a following top-level operator, so that
+			// `a + b` (or `arr[0] + 1`) is likewise emitted as one token.
+			name = l.scanAttrOperatorContinuation(name)
+			l.addToken(TokenAttrName, name)
 			if l.peek() == ',' {
 				l.advance()
 				l.addToken(TokenAttrComma, ",")
@@ -923,7 +949,7 @@ func (l *Lexer) scanAttributes() error {
 
 // scanAttributeValue scans a single operand: a quoted string or an unquoted
 // token (identifier, number, bare keyword).  Operator stitching across spaces
-// is handled by the caller, scanAttrValueFull.
+// is handled by the caller via scanAttrOperatorContinuation.
 func (l *Lexer) scanAttributeValue() string {
 	if l.peek() == '"' || l.peek() == '\'' || l.peek() == '`' {
 		q := l.peek()
@@ -932,8 +958,8 @@ func (l *Lexer) scanAttributeValue() string {
 
 	// Unquoted value: read until whitespace (at depth 0), comma, closing
 	// paren, or end of line.  Whitespace at depth 0 is a potential attribute
-	// separator; the caller (scanAttrValueFull) will decide whether to extend
-	// the value across an operator that follows the space.
+	// separator; the caller decides whether to extend the value across an
+	// operator that follows the space (scanAttrOperatorContinuation).
 	var valueB strings.Builder
 	depth := 0
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
@@ -970,23 +996,41 @@ func isAttrOpChar(ch byte) bool {
 // scanAttrValueFull scans a complete attribute value expression, including
 // space-separated operator continuations such as `a || b` and `x ? "y" : "z"`.
 //
-// The ambiguity between attribute separators and expression operators is
-// resolved by peeking at the first non-space character after each token:
-//
-//   - If it is an infix operator char, we are still inside the expression →
-//     consume the space, operator, and the next operand, then repeat.
-//   - If it is anything else (letter, digit, _, @, :, ), ,, newline, EOF) →
-//     we have reached the boundary between attributes → stop.
-//
 // Operands may themselves be quoted strings, bracket-balanced sub-expressions,
 // or bare identifiers / numbers; scanAttributeValue handles all of those cases
-// for the initial token, and the extension loop handles subsequent ones.
+// for the initial token, and scanAttrOperatorContinuation handles subsequent
+// ones.
 func (l *Lexer) scanAttrValueFull() string {
 	// Scan the first operand.
 	first := l.scanAttributeValue()
 	if first == "" {
 		return ""
 	}
+	return l.scanAttrOperatorContinuation(first)
+}
+
+// scanAttrOperatorContinuation extends an already-scanned operand across any
+// top-level infix operators that follow it, e.g. turning "a" into "a + b"
+// when the lexer is positioned right after "a" in "a + b)". It is shared by
+// scanAttrValueFull (named attribute values) and the bare-positional-argument
+// paths in scanAttributes (mixin-call arguments and boolean attributes),
+// since both need the same rule for telling an expression operator apart
+// from an attribute boundary.
+//
+// The ambiguity between attribute separators and expression operators is
+// resolved by peeking at the first non-space character after each token:
+//
+//   - If it is an infix operator char, we are still inside the expression →
+//     consume the space, operator, and the next operand, then repeat.
+//   - If it is anything else (letter, digit, _, @, :, ), ,, newline, EOF) →
+//     we have reached the boundary between attributes → stop, leaving the
+//     lexer positioned right after first (or after the last stitched
+//     operand) with no further input consumed.
+//
+// When no operator follows, first is returned unchanged and the lexer
+// position is left exactly where it was on entry — so calling this
+// unconditionally after scanning a bare token is always safe.
+func (l *Lexer) scanAttrOperatorContinuation(first string) string {
 	var b strings.Builder
 	b.WriteString(first)
 
@@ -1059,6 +1103,31 @@ func (l *Lexer) scanAttrValueFull() string {
 		b.WriteString(operand)
 	}
 
+	return b.String()
+}
+
+// scanAttrBracketSuffix consumes a single depth-balanced bracket group —
+// `[...]` or `(...)` — starting at the current position, which must be on
+// the opening bracket. It is used to extend a bare identifier already
+// scanned by scanAttrName (whose character set does not include brackets)
+// across a directly-attached bracket-index or call expression, such as the
+// `[0]` in `arr[0]` or the `(x)` in `fn(x)`. Nested brackets of any of the
+// three kinds are balanced so a group like `arr[a[1]]` is consumed whole.
+func (l *Lexer) scanAttrBracketSuffix() string {
+	var b strings.Builder
+	depth := 0
+	for l.pos < len(l.input) {
+		switch l.peek() {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+		l.advanceInto(&b)
+		if depth == 0 {
+			break
+		}
+	}
 	return b.String()
 }
 

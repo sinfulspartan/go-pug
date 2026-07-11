@@ -106,6 +106,13 @@ func Compile(src string, opts *Options) (*Template, error) {
 		return nil, fmt.Errorf("parser error: %w", err)
 	}
 
+	// Compile buffered/unescaped expressions and mixin-call arguments into
+	// closures once, here, so renderCode/renderMixinCall never re-parse
+	// their strings on every render. These are one-time passes over the AST
+	// at compile time, not per render.
+	compileExprs(ast.Children)
+	compileMixinArgs(ast.Children)
+
 	return &Template{
 		ast:  ast,
 		opts: opts,
