@@ -161,8 +161,16 @@ func isPlainIdentifier(expr string) bool {
 	if reservedBareIdentifiers[expr] {
 		return false
 	}
-	if _, err := strconv.ParseFloat(expr, 64); err == nil {
-		return false
+	// isIdentSegment already guarantees expr starts with a letter, '_', or
+	// '$', so ParseFloat can only ever succeed for the inf/infinity/nan
+	// spellings; mayBeFloat's first-byte check gates on exactly that same
+	// letter subset, so skipping the call otherwise avoids the syntaxError
+	// allocation ParseFloat makes on every failed parse without changing
+	// which identifiers are accepted.
+	if mayBeFloat(expr) {
+		if _, err := strconv.ParseFloat(expr, 64); err == nil {
+			return false
+		}
 	}
 	return true
 }

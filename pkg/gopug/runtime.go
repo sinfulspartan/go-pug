@@ -3159,9 +3159,22 @@ func parseNumber(s string) (float64, bool) {
 // lookup retrieves a value by name from the scope stack (innermost first),
 // falling back to globals. Dot notation ("user.name") is resolved by walking
 // the chain with getField.
+//
+// The key is split on "." without allocating a []string: a bare identifier
+// (no dot) resolves directly, and a dotted path is walked segment-by-segment
+// with strings.IndexByte. Every segment (including the root) is trimmed with
+// strings.TrimSpace, matching what strings.Split(key, ".") plus a per-part
+// TrimSpace would have produced, degenerate inputs (leading/trailing/doubled
+// dots) included.
 func (r *Runtime) lookup(key string) (any, bool) {
-	parts := strings.Split(key, ".")
-	root := strings.TrimSpace(parts[0])
+	dot := strings.IndexByte(key, '.')
+
+	var root string
+	if dot < 0 {
+		root = strings.TrimSpace(key)
+	} else {
+		root = strings.TrimSpace(key[:dot])
+	}
 
 	var rootVal any
 	found := false
@@ -3192,13 +3205,30 @@ func (r *Runtime) lookup(key string) (any, bool) {
 		return nil, false
 	}
 
+	if dot < 0 {
+		return rootVal, true
+	}
+
 	current := rootVal
-	for j := 1; j < len(parts); j++ {
-		part := strings.TrimSpace(parts[j])
+	rest := key[dot+1:]
+	for {
+		next := strings.IndexByte(rest, '.')
+		var part string
+		if next < 0 {
+			part = strings.TrimSpace(rest)
+		} else {
+			part = strings.TrimSpace(rest[:next])
+		}
+
 		current = r.getField(current, part)
 		if current == nil {
 			return nil, false
 		}
+
+		if next < 0 {
+			break
+		}
+		rest = rest[next+1:]
 	}
 
 	return current, true
