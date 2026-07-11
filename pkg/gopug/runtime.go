@@ -1949,7 +1949,7 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		}
 	}
 
-	if len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
+	for len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
 		depth := 0
 		isWrapped := true
 		for i, ch := range expr {
@@ -1963,9 +1963,10 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 				}
 			}
 		}
-		if isWrapped {
-			expr = strings.TrimSpace(expr[1 : len(expr)-1])
+		if !isWrapped {
+			break
 		}
+		expr = strings.TrimSpace(expr[1 : len(expr)-1])
 	}
 
 	if idx := findTernary(expr); idx >= 0 {
