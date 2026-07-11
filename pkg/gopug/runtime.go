@@ -78,19 +78,23 @@ func (r *Runtime) prettyNewline() {
 	}
 }
 
+// inlineTagNames is the set of HTML tag names treated as inline for pretty
+// printing (rendered without child indentation). Built once at package init
+// so prettyInline doesn't allocate a fresh map on every call.
+var inlineTagNames = map[string]bool{
+	"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
+	"big": true, "br": true, "button": true, "cite": true, "code": true,
+	"dfn": true, "em": true, "i": true, "img": true, "input": true,
+	"kbd": true, "label": true, "map": true, "object": true, "output": true,
+	"q": true, "samp": true, "select": true, "small": true, "span": true,
+	"strong": true, "sub": true, "sup": true, "textarea": true, "time": true,
+	"tt": true, "var": true,
+}
+
 // prettyInline returns true when the tag should be rendered without child
 // indentation (inline elements and tags whose only child is a text node).
 func prettyInline(tag *TagNode) bool {
-	inline := map[string]bool{
-		"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
-		"big": true, "br": true, "button": true, "cite": true, "code": true,
-		"dfn": true, "em": true, "i": true, "img": true, "input": true,
-		"kbd": true, "label": true, "map": true, "object": true, "output": true,
-		"q": true, "samp": true, "select": true, "small": true, "span": true,
-		"strong": true, "sub": true, "sup": true, "textarea": true, "time": true,
-		"tt": true, "var": true,
-	}
-	if inline[tag.Name] {
+	if inlineTagNames[tag.Name] {
 		return true
 	}
 	// Single text-only child — keep on one line
@@ -823,7 +827,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 	r.htmlBuf.WriteString(">")
 
-	isInline := prettyInline(tag)
+	isInline := r.pretty() && prettyInline(tag)
 	if r.pretty() && !isInline {
 		r.prettyIndent++
 	}
@@ -1161,6 +1165,26 @@ func findAssignOp(stmt string) int {
 	return -1
 }
 
+// mayBeFloat reports whether a trimmed string could possibly be a valid
+// strconv.ParseFloat input, based on its first byte alone. A valid float
+// (decimal, hex, or one of the inf/infinity/nan spellings) must start with
+// a digit, a sign, a decimal point, or the first letter of "inf"/"nan"
+// (case-insensitive). Anything else can never parse, so callers can skip
+// the ParseFloat call — and the error allocation it makes on failure —
+// entirely. This is a cheap pre-filter only; it does not itself validate
+// the rest of the string.
+func mayBeFloat(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	switch trimmed[0] {
+	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+		'+', '-', '.', 'i', 'I', 'n', 'N':
+		return true
+	}
+	return false
+}
+
 func toFloat(v any) (float64, bool) {
 	if v == nil {
 		return 0, false
@@ -1175,7 +1199,11 @@ func toFloat(v any) (float64, bool) {
 	case int64:
 		return float64(val), true
 	case string:
-		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		trimmed := strings.TrimSpace(val)
+		if !mayBeFloat(trimmed) {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(trimmed, 64)
 		return f, err == nil
 	}
 	return 0, false
