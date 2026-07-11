@@ -100,6 +100,17 @@ type CodeNode struct {
 	Type       CodeType
 	Line       int
 	Col        int
+
+	// compiled holds a closure-compiled version of Expression for the
+	// buffered/unescaped output shapes classifyExpr recognizes as safe to
+	// precompute at Compile time (see expr_compile.go). It is nil for any
+	// expression the classifier can't prove identical to the string
+	// interpreter, in which case renderCode falls back to evaluateExpr.
+	// It is populated exactly once, by compileExprs during Compile, before
+	// the AST is ever rendered, and is read-only afterward — so concurrent
+	// renders of the same compiled Template may read it safely without
+	// synchronization.
+	compiled compiledExpr
 }
 
 func (n *CodeNode) node() {}

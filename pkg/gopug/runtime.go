@@ -1019,14 +1019,14 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 	case CodeUnbuffered:
 		return r.executeStatement(code.Expression)
 	case CodeBuffered:
-		val, err := r.evaluateExpr(code.Expression)
+		val, err := r.evaluateCode(code)
 		if err != nil {
 			return err
 		}
 		r.htmlBuf.WriteString(html.EscapeString(val))
 		return nil
 	case CodeUnescaped:
-		val, err := r.evaluateExpr(code.Expression)
+		val, err := r.evaluateCode(code)
 		if err != nil {
 			return err
 		}
@@ -1034,6 +1034,17 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 		return nil
 	}
 	return nil
+}
+
+// evaluateCode returns the same string evaluateExpr(code.Expression) would,
+// using the closure-compiled version of the expression when classifyExpr
+// found one at Compile time, and falling back to the string interpreter
+// otherwise.
+func (r *Runtime) evaluateCode(code *CodeNode) (string, error) {
+	if code.compiled != nil {
+		return code.compiled(r)
+	}
+	return r.evaluateExpr(code.Expression)
 }
 
 // executeStatement executes an unbuffered code statement, handling assignment
@@ -1999,25 +2010,8 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 	if len(expr) >= 2 {
 		q := rune(expr[0])
 		if q == '"' || q == '\'' {
-			escaped := false
-			closeIdx := -1
-			for byteIdx, ch := range expr[1:] {
-				realIdx := byteIdx + 1 // offset back into expr
-				if escaped {
-					escaped = false
-					continue
-				}
-				if ch == '\\' {
-					escaped = true
-					continue
-				}
-				if ch == q {
-					closeIdx = realIdx
-					break
-				}
-			}
-			if closeIdx == len(expr)-1 {
-				return expr[1 : len(expr)-1], nil
+			if lit, ok := unwrapQuotedLiteral(expr); ok {
+				return lit, nil
 			}
 		}
 
@@ -2618,17 +2612,26 @@ CHECK_INDEX_OP:
 		}
 	}
 
-	if val, ok := r.lookup(expr); ok {
-		if val == nil {
-			return "", nil
-		}
-		if f, ok := val.(float64); ok {
-			return strconv.FormatFloat(f, 'f', -1, 64), nil
-		}
-		return fmt.Sprintf("%v", val), nil
-	}
+	return r.lookupAndStringify(expr), nil
+}
 
-	return "", nil
+// lookupAndStringify resolves expr (a plain variable name or dot-path) via
+// lookup and stringifies the result exactly as evaluateExpr's fallback path
+// does: a missing variable or nil value renders as "", a float64 uses
+// FormatFloat (matching the rest of the interpreter's number formatting),
+// and anything else uses fmt.Sprintf("%v", ...). It's factored out so the
+// closure-compiled identifier/dot-path shapes in expr_compile.go can call
+// the exact same resolution/stringification code evaluateExpr uses, rather
+// than reimplementing it.
+func (r *Runtime) lookupAndStringify(expr string) string {
+	val, ok := r.lookup(expr)
+	if !ok || val == nil {
+		return ""
+	}
+	if f, ok := val.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprintf("%v", val)
 }
 
 // isOperatorExpr reports whether expr contains a top-level operator (ternary,

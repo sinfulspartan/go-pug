@@ -106,6 +106,11 @@ func Compile(src string, opts *Options) (*Template, error) {
 		return nil, fmt.Errorf("parser error: %w", err)
 	}
 
+	// Compile buffered/unescaped expressions into closures once, here, so
+	// renderCode never re-parses their strings on every render. This is a
+	// one-time pass over the AST at compile time, not per render.
+	compileExprs(ast.Children)
+
 	return &Template{
 		ast:  ast,
 		opts: opts,
