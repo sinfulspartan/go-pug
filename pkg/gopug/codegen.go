@@ -839,20 +839,17 @@ const (
 // detail genComparison needs to decide whether two operands can be compared
 // the way the interpreter's compareValues would: the exact numeric
 // reflect.Type for a numeric field (direct Go comparison requires identical
-// numeric types, not just the same reflect.Kind), the parsed value AND the
-// original token text for a numeric literal (checkLiteralAgainstFieldKind
-// needs the exact text — a plain decimal integer token like
-// "9223372036854775807" carries more precision than float64 can hold, so a
-// range check based only on the parsed float64 can't reliably tell a
-// boundary-valid literal from an out-of-range one), and whether a string
-// literal's text itself looks numeric (parseNumber), since the
+// numeric types, not just the same reflect.Kind), the parsed value for a
+// numeric literal — genOperand emits the literal's canonical decimal text
+// (never the original Pug token), so numLiteralVal is the single source of
+// truth checkLiteralAgainstFieldKind range-checks against — and whether a
+// string literal's text itself looks numeric (parseNumber), since the
 // interpreter's compareValues numeric-compares a numeric-looking string
 // operand rather than string-comparing it.
 type operandKind struct {
 	shape          operandShape
 	numType        reflect.Type
 	numLiteralVal  float64
-	numLiteralText string
 	numericLiteral bool
 }
 
@@ -864,54 +861,25 @@ func (k operandKind) isStringish() bool {
 	return k.shape == shapeOperandStringField || k.shape == shapeOperandStringLiteral
 }
 
-// checkLiteralGoSafe rejects a numeric literal token that Go's compiler
-// would read as a different value than the interpreter does. The
-// interpreter always parses a numeric token as base-10 (via parseNumber /
-// strconv.ParseFloat), but a numeric literal emitted verbatim into
-// generated Go source is parsed by Go's own literal rules: a token
-// beginning with "0x"/"0X" (hex), "0o"/"0O" (octal), or "0b"/"0B" (binary)
-// is read in that base, and a plain integer token with a leading "0"
-// followed by more digits (no "." or exponent) is read as legacy octal —
-// e.g. "0100" is decimal 100 to the interpreter but octal 64 (= decimal 64)
-// to Go. Emitting such a literal verbatim would compile cleanly yet
-// silently compare against the wrong value, breaking bounded agreement. A
-// leading sign ("-" or "+") is stripped before the check, since Go applies
-// the same base rules to the digits that follow either unary sign, and both
-// Go and the interpreter's parseNumber accept a "+"-prefixed literal.
-// Within the remaining digits, an underscore digit separator ("0_100") is
-// tolerated as part of the octal-integer run rather than treated as an
-// "unrecognized character, must be safe" signal — Go's octal grammar allows
-// "_" separators, and parseNumber's strconv.ParseFloat accepts them too, so
-// a token like "0_100" is just as much an octal/decimal disagreement as
-// "0100". Forms Go reads identically to the interpreter — "0" alone, and
-// any literal containing "." or "e"/"E" (always decimal floating-point in
-// Go, regardless of a leading zero) — are left untouched.
-func checkLiteralGoSafe(token string) error {
-	digits := strings.TrimLeft(token, "+-")
-
-	if len(digits) < 2 || digits[0] != '0' {
-		return nil
-	}
-
-	switch digits[1] {
-	case 'x', 'X', 'o', 'O', 'b', 'B':
-		return fmt.Errorf("unsupported numeric literal %q in codegen (leading-zero/base-prefixed literals are read differently by Go)", token)
-	}
-
-	if strings.ContainsAny(digits, ".eE") {
-		return nil
-	}
-
-	if strings.Trim(digits, "0123456789_") == "" {
-		return fmt.Errorf("unsupported numeric literal %q in codegen (leading-zero/base-prefixed literals are read differently by Go)", token)
-	}
-	return nil
+// formatCanonicalLiteral renders f — a value genOperand parsed from a Pug
+// numeric-literal token with parseJSNumber — as the plain base-10 Go literal
+// text GenerateGo emits for it. genOperand never emits the original Pug
+// token verbatim: Go's own numeric-literal grammar disagrees with sloppy
+// JS's for several forms a Pug template can contain (a leading "0" followed
+// by more digits is legacy octal to Go but, per parseJSNumber, only
+// sometimes octal to JS; "08" is not valid Go syntax at all), so emitting
+// the token as-is would either silently compare against the wrong value or
+// fail to compile. Deriving the emitted text from the already-parsed
+// float64 instead sidesteps every such mismatch at the cost of never
+// round-tripping the token's original spelling into the generated source.
+func formatCanonicalLiteral(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // genOperand resolves a single condition operand — one side of a
 // comparison, or the whole condition when it's bare — to a Go expression
 // plus its operandKind classification. The supported shapes, checked in
-// this order: a `.length` expression, a numeric literal (parseNumber
+// this order: a `.length` expression, a numeric literal (parseJSNumber
 // succeeds), a quoted string literal (unwrapQuotedLiteral succeeds), and a
 // bare field/dot-path resolving (via resolveFieldExpr) to a bool, string, or
 // numeric scalar. Anything else — including a non-scalar field, an operator
@@ -923,11 +891,17 @@ func (g *generator) genOperand(expr string) (string, operandKind, error) {
 		return g.genLengthOperand(expr[:dotIdx], expr)
 	}
 
-	if f, ok := parseNumber(expr); ok {
-		if err := checkLiteralGoSafe(expr); err != nil {
-			return "", operandKind{}, err
-		}
-		return expr, operandKind{shape: shapeOperandNumericLiteral, numLiteralVal: f, numLiteralText: expr}, nil
+	// parseJSNumber parses expr exactly the way the interpreter's
+	// evaluateExpr does (runtime.go), so a token it rejects — an
+	// underscore digit separator, or an octal-looking leading-zero prefix
+	// directly followed by "." or an exponent ("00.5", "017.5") — falls
+	// through to the field-resolution path below and fails there instead,
+	// with no special-cased guard needed: those tokens aren't valid Pug
+	// field names either, so resolveFieldExpr's own "not a field" error
+	// already describes them correctly.
+	if f, ok := parseJSNumber(expr); ok {
+		lit := formatCanonicalLiteral(f)
+		return lit, operandKind{shape: shapeOperandNumericLiteral, numLiteralVal: f}, nil
 	}
 
 	if lit, ok := unwrapQuotedLiteral(expr); ok {
@@ -1077,9 +1051,9 @@ func checkNumericComparable(left, right operandKind) error {
 		}
 		return nil
 	case left.shape == shapeOperandNumericField:
-		return checkLiteralAgainstFieldKind(right.numLiteralText, right.numLiteralVal, left.numType)
+		return checkLiteralAgainstFieldKind(right.numLiteralVal, left.numType)
 	case right.shape == shapeOperandNumericField:
-		return checkLiteralAgainstFieldKind(left.numLiteralText, left.numLiteralVal, right.numType)
+		return checkLiteralAgainstFieldKind(left.numLiteralVal, right.numType)
 	default:
 		// Two numeric literals: always a valid (if pointless) Go constant
 		// comparison.
@@ -1105,53 +1079,47 @@ func integerKindBits(kind reflect.Kind) int {
 	}
 }
 
-// float64IntBoundary and float64UintBoundary are the exact float64 values
-// of 2^63 and 2^64 — the first magnitude that no longer fits in int64/
-// uint64, respectively. Both are exact powers of two, so — unlike
-// math.MaxInt64/math.MaxUint64 — they round-trip through float64 with no
-// precision loss, which matters here: math.MaxInt64 (2^63-1) itself is NOT
-// exactly representable in float64 and rounds UP to 2^63 when converted, so
-// comparing a parsed literal's float64 approximation against a
-// float64-rounded math.MaxInt64 cannot distinguish the valid literal
-// "9223372036854775807" from the invalid "9223372036854775808" — both parse
-// to the identical float64 value 2^63. These exact boundary constants are
-// only used as a fallback for a literal form checkLiteralAgainstFieldKind
-// can't range-check exactly (see its doc comment); the common plain-decimal
-// case never reaches them.
-const (
-	float64IntBoundary  = 9223372036854775808.0  // 2^63
-	float64UintBoundary = 18446744073709551616.0 // 2^64
-)
+// maxSafeCodegenInteger is the largest integer magnitude checkLiteralAgainstFieldKind
+// will accept for an Int/Uint-kind field comparison: 2^53 − 1, JS's
+// Number.MAX_SAFE_INTEGER — the largest integer magnitude for which NO
+// distinct integer can round to the same float64. It matters here because
+// the interpreter's compareValues doesn't compare a numeric field's value
+// directly — it stringifies the field, then reparses that string with
+// strconv.ParseFloat, exactly the way a literal itself is evaluated
+// (parseJSNumber, runtime.go). The divergence this bound guards against
+// originates on the FIELD side, not the literal side: 2^53 itself IS
+// exactly representable in a float64, but an int64/uint64 field can hold
+// 2^53 + 1 — a value float64 CANNOT represent exactly, which rounds
+// (half-to-even) back down to 2^53 when the field is stringified and
+// reparsed. So a literal of exactly 2^53 would compare equal, via the
+// interpreter's lossy round trip, to a field actually holding 2^53 + 1,
+// while codegen's direct, unrounded Go integer comparison would not. Below
+// 2^53 (i.e. up to and including 2^53 − 1) every adjacent integer — the
+// literal's neighbors on both sides — is still exactly representable, so no
+// field value can alias onto it and the round trip is always exact.
+// Refusing any literal beyond the boundary keeps every comparison codegen
+// DOES emit provably byte-identical to compareValues, at the cost of the
+// (vanishingly rare in real templates) literal comparison against an
+// actual int64/uint64-range field value.
+const maxSafeCodegenInteger = (1 << 53) - 1 // 9007199254740991, JS Number.MAX_SAFE_INTEGER
 
 // checkLiteralAgainstFieldKind reports an error unless the numeric literal
-// — litText its original token text, f its strconv.ParseFloat value — is
-// representable as fieldType without truncation or overflow: a fractional
+// value f (parseJSNumber's parsed value — the exact value genOperand emits
+// as f's canonical decimal text, see formatCanonicalLiteral) is
+// representable as fieldType without truncation, overflow, or a precision
+// loss codegen can't prove matches the interpreter's own: a fractional
 // value against an integer-kind field, a negative value against an
-// unsigned-kind field, or a magnitude beyond what the field's sized kind
-// (int8, uint8, int32, …) can hold would either fail to compile as a direct
-// Go comparison or silently change the field's meaning, so all three are
-// rejected rather than emitted.
+// unsigned-kind field, a magnitude beyond what the field's sized kind
+// (int8, uint8, int32, …) can hold, or an integer magnitude beyond
+// maxSafeCodegenInteger are all rejected rather than emitted.
 //
-// The range check is exact whenever litText is a plain base-10 integer
-// token (optionally signed): strconv.ParseInt/ParseUint, given the field
-// kind's own bit width, parses litText's arbitrary-precision decimal digits
-// directly and returns a range error if it doesn't fit — the identical test
-// the Go compiler itself applies to an integer constant, so it correctly
-// tells "9223372036854775807" (int64 field, fits exactly) apart from
-// "9223372036854775808" (one more, doesn't) even though both round to the
-// SAME float64 value (2^63) and are therefore indistinguishable by any
-// float64-only check.
-//
-// A literal that ISN'T a plain base-10 integer token (scientific notation
-// like "1e19", underscores, a whole-valued decimal like "3.0") falls back
-// to an approximate float64 bound check against the exact power-of-two
-// boundary constants above, then reflect.Value.OverflowInt/OverflowUint for
-// a sized kind narrower than the field's own comparison type. This fallback
-// carries the same float64-precision residual near the int64/uint64
-// boundary as the exact path avoids, but it's unreachable for the plain
-// decimal literals this increment's tests (and realistic Pug templates)
-// actually use.
-func checkLiteralAgainstFieldKind(litText string, f float64, fieldType reflect.Type) error {
+// Because genOperand only ever hands this function a literal it has itself
+// already reduced to a canonical, exact decimal integer string when f is
+// whole-valued, the strconv.ParseInt/ParseUint range check below always
+// runs against a plain base-10 token — there is no scientific-notation or
+// underscore-separator form left to fall back for by the time a literal
+// reaches here.
+func checkLiteralAgainstFieldKind(f float64, fieldType reflect.Type) error {
 	switch fieldType.Kind() {
 	case reflect.Float64, reflect.Float32:
 		return nil
@@ -1159,40 +1127,22 @@ func checkLiteralAgainstFieldKind(litText string, f float64, fieldType reflect.T
 		if f != math.Trunc(f) {
 			return fmt.Errorf("a fractional numeric literal cannot be compared directly to integer field type %s", fieldType)
 		}
-		if _, err := strconv.ParseInt(litText, 10, integerKindBits(fieldType.Kind())); err != nil {
-			numErr, ok := err.(*strconv.NumError)
-			if !ok || numErr.Err != strconv.ErrRange {
-				// Not a plain base-10 integer token — fall back to the
-				// approximate float64 bound check.
-				if f < -float64IntBoundary || f >= float64IntBoundary {
-					return fmt.Errorf("numeric literal %v is out of range for integer field type %s", f, fieldType)
-				}
-				if reflect.New(fieldType).Elem().OverflowInt(int64(f)) {
-					return fmt.Errorf("numeric literal %v is out of range for integer field type %s", f, fieldType)
-				}
-				return nil
-			}
-			return fmt.Errorf("numeric literal %s is out of range for integer field type %s", litText, fieldType)
+		if math.Abs(f) > maxSafeCodegenInteger {
+			return fmt.Errorf("numeric literal %v is out of range for codegen's safe-integer precision (integer literals compared to field type %s are limited to ±2^53 to guarantee agreement with the interpreter)", f, fieldType)
+		}
+		if _, err := strconv.ParseInt(formatCanonicalLiteral(f), 10, integerKindBits(fieldType.Kind())); err != nil {
+			return fmt.Errorf("numeric literal %v is out of range for integer field type %s", f, fieldType)
 		}
 		return nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		if f != math.Trunc(f) || f < 0 {
 			return fmt.Errorf("numeric literal %v is not a valid value of unsigned field type %s", f, fieldType)
 		}
-		if _, err := strconv.ParseUint(litText, 10, integerKindBits(fieldType.Kind())); err != nil {
-			numErr, ok := err.(*strconv.NumError)
-			if !ok || numErr.Err != strconv.ErrRange {
-				// Not a plain base-10 integer token — fall back to the
-				// approximate float64 bound check.
-				if f >= float64UintBoundary {
-					return fmt.Errorf("numeric literal %v is out of range for unsigned field type %s", f, fieldType)
-				}
-				if reflect.New(fieldType).Elem().OverflowUint(uint64(f)) {
-					return fmt.Errorf("numeric literal %v is out of range for unsigned field type %s", f, fieldType)
-				}
-				return nil
-			}
-			return fmt.Errorf("numeric literal %s is out of range for unsigned field type %s", litText, fieldType)
+		if f > maxSafeCodegenInteger {
+			return fmt.Errorf("numeric literal %v is out of range for codegen's safe-integer precision (integer literals compared to field type %s are limited to 2^53 to guarantee agreement with the interpreter)", f, fieldType)
+		}
+		if _, err := strconv.ParseUint(formatCanonicalLiteral(f), 10, integerKindBits(fieldType.Kind())); err != nil {
+			return fmt.Errorf("numeric literal %v is out of range for unsigned field type %s", f, fieldType)
 		}
 		return nil
 	default:
