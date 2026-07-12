@@ -51,14 +51,18 @@ type Config struct {
 // When cfg.DataReflectType is set, GenerateGo is type-aware: it resolves
 // every field expression's Go type and emits per-type stringify for
 // interpolation (string, bool, every sized int/uint kind, and float64 — see
-// genInterpolation) and per-type truthiness for conditions (bool used bare,
-// numeric kinds compared against zero — see genConditional), matching the
-// interpreter's Runtime.lookupAndStringify/isTruthy exactly. A condition may
-// also use a numeric comparison, a string-equality comparison, or a
-// `.length` operand (see genCondition) — but only for the bounded-agreement
-// subset provably byte-identical to the interpreter's compareValues; the
-// combinators `&&`/`||`/`!`, arithmetic, ternary, and every other operand
-// combination return an error instead. It also emits a runtime write for a
+// genInterpolation) and per-type truthiness for conditions (bool and numeric
+// kinds native — bare, and compared against zero, respectively — a string
+// kind routed through the exported gopug.Truthy — see genConditional),
+// matching the interpreter's Runtime.lookupAndStringify/isTruthy exactly. A
+// condition may also use a numeric comparison, a string-equality comparison,
+// a `.length` operand, or the `&&`/`||`/`!` combinators over any of those
+// (see genCondition, which emits native Go `&&`/`||`/`!` — provably
+// equivalent to the interpreter's own value-returning combinators once
+// isTruthy is applied) — but only for the bounded-agreement subset provably
+// byte-identical to the interpreter's compareValues/isTruthy; a top-level
+// ternary, arithmetic, and every other operand combination still return an
+// error instead. It also emits a runtime write for a
 // dynamic attribute value on a non-"class" attribute — built the same way
 // interpolation is, by genValueExpr (a bare field/dot-path, a `+` concat, or
 // a backtick template literal), then always escaped through the exported
@@ -871,8 +875,9 @@ func (g *generator) genEach(n *EachNode) error {
 // genConditional emits a Go if/else for `if <condition>` with an optional
 // plain `else`. `unless` and else-if chains are later increments. The
 // condition itself is translated by genCondition, which supports bare
-// bool/numeric-field truthiness (as before), `.length` truthiness, and a
-// bounded set of comparison operators; anything else returns an error.
+// bool/numeric/string-field truthiness, `.length` truthiness, a bounded set
+// of comparison operators, and the `&&`/`||`/`!` combinators over any of
+// those; anything else returns an error.
 func (g *generator) genConditional(n *ConditionalNode) error {
 	if n.IsUnless {
 		return fmt.Errorf("unsupported unless in codegen")
@@ -952,25 +957,62 @@ func stripBalancedOuterParens(expr string) string {
 // It mirrors Runtime.evaluateExpr's own operator-precedence scan, in the
 // same order: strip balanced outer parens, then check (in turn) for a
 // top-level ternary, `||`, `&&`, one of the eight comparison operators, and
-// a leading unary `!`. A ternary/`||`/`&&`/`!` — and, later, arithmetic —
-// changes evaluateExpr's returned VALUE, not just a boolean result, so
-// reproducing it exactly would require reproducing the interpreter's
-// string-valued operator semantics in full; that is a later increment, so
-// each of these returns an error here. A comparison operator is handed to
-// genComparison. With none of those present, the whole expression is a
-// single operand (a bare field, or a `.length` expression) used for
-// truthiness.
+// a leading unary `!`.
+//
+// A top-level ternary changes evaluateExpr's returned VALUE in a way
+// genCondition can't yet reproduce (it would need a value-context ternary
+// compiler), so that still returns an error. `||`, `&&`, and a leading `!`
+// are different: in CONDITION position the only thing that matters about
+// their result is its truthiness, and applying isTruthy to each of the
+// interpreter's own value-returning definitions collapses to native
+// boolean-combinator semantics —
+//
+//	isTruthy(a || b) == isTruthy(a) || isTruthy(b)   (evaluateExpr's || returns
+//	                                                   left if isTruthy(left),
+//	                                                   else right)
+//	isTruthy(a && b) == isTruthy(a) && isTruthy(b)   (evaluateExpr's && returns
+//	                                                   "false" if !isTruthy(left),
+//	                                                   else right)
+//	isTruthy(!a)     == !isTruthy(a)                 (evaluateExpr's ! returns
+//	                                                   "false"/"true" from
+//	                                                   isTruthy(inner))
+//
+// — so genCondition can emit NATIVE Go `&&`/`||`/`!` (with Go's own
+// short-circuit evaluation) recursing genCondition on each operand, where
+// each operand's truthiness is exactly what genCondition already yields for
+// it. A comparison operator is handed to genComparison, unchanged from
+// before this recursion was added. With none of those present, the whole
+// expression is a single operand (a bare field, or a `.length` expression)
+// used for truthiness (genOperandTruthiness).
 func (g *generator) genCondition(expr string) (string, error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
 	if idx := findTernary(expr); idx >= 0 {
 		return "", fmt.Errorf("unsupported ternary operator in codegen condition %q", expr)
 	}
+
 	if idx := findBinaryOp(expr, "||"); idx >= 0 {
-		return "", fmt.Errorf("unsupported || operator in codegen condition %q", expr)
+		left, err := g.genCondition(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		right, err := g.genCondition(expr[idx+2:])
+		if err != nil {
+			return "", err
+		}
+		return "(" + left + ") || (" + right + ")", nil
 	}
+
 	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
-		return "", fmt.Errorf("unsupported && operator in codegen condition %q", expr)
+		left, err := g.genCondition(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		right, err := g.genCondition(expr[idx+2:])
+		if err != nil {
+			return "", err
+		}
+		return "(" + left + ") && (" + right + ")", nil
 	}
 
 	for _, op := range conditionComparisonOps {
@@ -983,7 +1025,11 @@ func (g *generator) genCondition(expr string) (string, error) {
 	}
 
 	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
-		return "", fmt.Errorf("unsupported ! operator in codegen condition %q", expr)
+		inner, err := g.genCondition(expr[1:])
+		if err != nil {
+			return "", err
+		}
+		return "!(" + inner + ")", nil
 	}
 
 	return g.genOperandTruthiness(expr)
@@ -992,10 +1038,18 @@ func (g *generator) genCondition(expr string) (string, error) {
 // genOperandTruthiness emits the truthiness form of a single condition
 // operand with no top-level operator: a `.length` expression (needs
 // Config.DataReflectType, since classifying its base requires a type), or a
-// bare field/dot-path — unchanged from increment 2a's genConditional (and,
-// in type-blind mode, from increment 1's): a bool field is used bare, a
-// numeric field is compared against zero, and any other field type is an
-// error rather than guessing at its stringify-based truthiness.
+// bare field/dot-path. A bool field is used bare (native, already the exact
+// "true"/"false" form Runtime.isTruthy's FormatBool-derived check mirrors,
+// with no need for gopug.Truthy) and a numeric field is compared against
+// zero (also native — a numeric field's stringify can never produce one of
+// isTruthy's falsy strings other than by being exactly zero). A string field
+// routes through the exported gopug.Truthy, reproducing isTruthy's exact
+// falsy set ("", "false", "0", "null", "undefined", "nil") for a value that,
+// unlike bool/numeric, can actually contain one of those strings. Any other
+// field type (slice/map/struct/pointer/…) is an error rather than guessing
+// at its stringify-based truthiness — the interpreter would stringify it
+// with fmt and isTruthy-test that (e.g. an empty slice stringifies to "[]",
+// which is truthy, a footgun this increment doesn't try to reproduce).
 func (g *generator) genOperandTruthiness(expr string) (string, error) {
 	if dotIdx := findTopLevelDot(expr); dotIdx > 0 && expr[dotIdx+1:] == "length" {
 		if g.rootType == nil {
@@ -1017,15 +1071,16 @@ func (g *generator) genOperandTruthiness(expr string) (string, error) {
 	}
 	switch condTyp.Kind() {
 	case reflect.Bool:
-		// Used bare: already the exact form Runtime.isTruthy's
-		// FormatBool-derived "true"/"false" mirrors.
 		return condExpr, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float64:
 		return condExpr + " != 0", nil
+	case reflect.String:
+		g.needsGopug = true
+		return "gopug.Truthy(" + convertExpr(condExpr, condTyp, reflectTypeString, "string") + ")", nil
 	default:
-		return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool and numeric fields are supported in this increment)", condTyp, expr)
+		return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool, numeric, and string fields are supported in this increment)", condTyp, expr)
 	}
 }
 

@@ -29,12 +29,17 @@ import (
 // `+`-disambiguation cases. Firms is a slice of a nested struct with its own
 // int field, used by the attribute template-literal differential test to
 // prove a dot-path rooted at an each-loop variable (`firm.ID`) resolves
-// correctly inside a `${...}` interpolation.
+// correctly inside a `${...}` interpolation. FlagB/FlagC are a second and
+// third independent bool field (Flag already being the first), used by the
+// `&&`/`||`/`!` condition-combinator differential tests to exercise
+// multi-operand truth tables and `||`-before-`&&` precedence.
 type opsData struct {
 	Name    string
 	Count   int
 	Price   float64
 	Flag    bool
+	FlagB   bool
+	FlagC   bool
 	Items   []string
 	Age     int8
 	B       uint8
@@ -66,6 +71,8 @@ type opsData struct {
 	Count   int
 	Price   float64
 	Flag    bool
+	FlagB   bool
+	FlagC   bool
 	Items   []string
 	Age     int8
 	B       uint8
@@ -194,29 +201,23 @@ func runGeneratedGo(t *testing.T, generated []byte, dataLiteral string) string {
 }
 
 // TestCodegenConditionOperatorUnsupported asserts that every condition
-// construct outside 2d-ops-1's bounded-agreement subset — the `&&`/`||`/`!`
-// combinators, arithmetic, ternary, string ordering compares, a
-// numeric-looking string literal compared to a string field, an
-// incompatible numeric-field-vs-numeric-field comparison, and an operator
-// used in interpolation rather than condition position — returns an error
-// instead of emitting a comparison that might not agree with the
-// interpreter's compareValues.
+// construct outside the bounded-agreement subset — arithmetic, ternary,
+// string ordering compares, a numeric-looking string literal compared to a
+// string field, an incompatible numeric-field-vs-numeric-field comparison,
+// and an operator used in interpolation rather than condition position —
+// returns an error instead of emitting a comparison that might not agree
+// with the interpreter's compareValues. The `&&`/`||`/`!` combinators are
+// NOT in this list: they are supported (see
+// TestCodegenConditionLogicDifferentialMatchesInterpreter in
+// codegen_condition_logic_test.go).
 func TestCodegenConditionOperatorUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
 		{
-			name: "&& combinator",
-			src:  "if Flag && Count\n  p yes\n",
-		},
-		{
-			name: "|| combinator",
-			src:  "if Flag || Count\n  p yes\n",
-		},
-		{
-			name: "leading ! operator",
-			src:  "if !Flag\n  p yes\n",
+			name: "&& combinator with an operand codegen still can't resolve (a non-scalar field)",
+			src:  "if Flag && Items\n  p yes\n",
 		},
 		{
 			name: "arithmetic in a comparison operand",

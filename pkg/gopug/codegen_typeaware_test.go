@@ -60,17 +60,20 @@ func TestCodegenInterpolationTypeErrors(t *testing.T) {
 }
 
 // TestCodegenConditionTypeErrors asserts that `if <field>` on a field type
-// whose stringify-then-isTruthy truthiness isn't cleanly reproducible by a
-// bare Go condition (string, slice) is rejected rather than emitting a Go
-// if that would diverge from the interpreter (e.g. a string field holding
-// "false" is falsy in the interpreter but every non-empty Go string is
-// truthy).
+// whose stringify-then-isTruthy truthiness isn't reproducible by a Go
+// condition — a slice field, whose interpreter truthiness stringifies to
+// something like "[]" (truthy) rather than testing emptiness — is rejected
+// rather than emitting a Go if that would diverge from the interpreter. A
+// string field is NOT in this list: it routes through the exported
+// gopug.Truthy, which reproduces isTruthy's exact falsy set (including a
+// string field holding "false" or "0") — see
+// TestCodegenConditionLogicStringTruthiness in
+// codegen_condition_logic_test.go.
 func TestCodegenConditionTypeErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
-		{name: "string field", src: "if Name\n  p yes\n"},
 		{name: "slice field", src: "if Tags\n  p yes\n"},
 	}
 

@@ -3560,12 +3560,24 @@ func parseInlineObject(s string) map[string]string {
 	return result
 }
 
-func (r *Runtime) isTruthy(val string) bool {
+// Truthy reports whether val — an already-stringified expression result —
+// is truthy under the interpreter's rules: false for exactly "", "false",
+// "0", "null", "undefined", and "nil"; true for every other string. This is
+// the single source of truth for that falsy set: Runtime.isTruthy is a thin
+// wrapper around it, and it is exported so codegen-generated code can call
+// it directly for a string-typed field/operand's truthiness, keeping that
+// quirky falsy set single-sourced rather than duplicated (and risking
+// diverging) in generated code.
+func Truthy(val string) bool {
 	switch val {
 	case "", "false", "0", "null", "undefined", "nil":
 		return false
 	}
 	return true
+}
+
+func (r *Runtime) isTruthy(val string) bool {
+	return Truthy(val)
 }
 
 // htmlBooleanAttributes is the set of HTML "boolean" attributes — their mere
