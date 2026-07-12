@@ -409,12 +409,14 @@ func TestCodegenMethodMultibyte(t *testing.T) {
 	}
 }
 
-// TestCodegenMethodDeferredAndUnknown proves the 8b-deferred methods
-// (length in value context, join, toFixed, toPrecision) and an unrecognized
-// method name each return a clear error from GenerateGo, instead of
-// silently emitting something that might not match the interpreter — index
-// expressions (`arr[0]`) are covered separately (they never reach
-// genMethodCall at all; findIndexOp rejects them earlier in genValueExpr).
+// TestCodegenMethodDeferredAndUnknown proves the still-deferred methods
+// (join, toFixed, toPrecision) and an unrecognized method name each return a
+// clear error from GenerateGo, instead of silently emitting something that
+// might not match the interpreter. `.length` (bare property and method-call
+// spelling) and index expressions (`arr[0]`) are no longer deferred — see
+// codegen_index_length_test.go for their differential coverage — but a
+// non-scalar `.length` receiver (a struct-typed field) still errors, since
+// genLengthOperand only supports slice/array/map/string.
 func TestCodegenMethodDeferredAndUnknown(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -424,9 +426,7 @@ func TestCodegenMethodDeferredAndUnknown(t *testing.T) {
 		{name: "toFixed", src: "p= Name.toFixed(2)\n", wantSubstring: "unsupported"},
 		{name: "toPrecision", src: "p= Name.toPrecision(3)\n", wantSubstring: "unsupported"},
 		{name: "join", src: "p= Items.join(',')\n", wantSubstring: "unsupported"},
-		{name: "length as a method call", src: "p= Name.length()\n", wantSubstring: "unsupported"},
-		{name: "length as a bare property", src: "p= Items.length\n", wantSubstring: "unsupported"},
-		{name: "index expression", src: "p= Items[0]\n", wantSubstring: "unsupported"},
+		{name: "length on an unsupported (struct) receiver", src: "p= User.length\n", wantSubstring: "unsupported"},
 		{name: "unknown method", src: "p= Name.frobnicate()\n", wantSubstring: "unsupported string method"},
 		{name: "fallible receiver", src: "p= (Count / Zero).toUpperCase()\n", wantSubstring: "fallible"},
 		{name: "fallible argument", src: "p= Name.repeat(Count / Zero)\n", wantSubstring: "fallible"},

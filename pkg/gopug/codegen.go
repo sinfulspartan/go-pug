@@ -79,10 +79,21 @@ type Config struct {
 // zero) is never evaluated, and never errors, when it isn't needed (see
 // genOrValueExpr/genAndValueExpr); a leading `!` returns "true"/"false" via
 // the exported gopug.Not; a comparison delegates to genCondition and wraps
-// its bool result in strconv.FormatBool. Any value genValueExpr can't build
-// (a method call, an index expression, an array/object literal, …), or a
+// its bool result in strconv.FormatBool. genValueExpr also supports a
+// top-level index expression (`arr[i]`, a total IIFE over native Go
+// slice/map indexing that collapses out-of-range/absent to "" exactly like
+// Runtime's indexValue, and stringifies a present result with
+// fmt.Sprintf("%v", …) — the interpreter's own index-path stringify, which
+// is intentionally NOT the scalar-restricted genScalarStringify, so an
+// indexed element's type is otherwise unrestricted — see genIndexValueExpr)
+// and value-context `.length`/`.length()` (strconv.Itoa of the same
+// type-directed len()/RuneCountInString logic genCondition's `.length`
+// truthiness already uses — see genLengthValueExpr). Any value genValueExpr
+// still can't build (a non-string-keyed map index, an index-then-dot
+// receiver, most other method calls, an array/object literal, …), or a
 // non-scalar field type (struct, slice, map, pointer, interface, float32,
-// …), is out of scope and returns an error rather than guessing. When
+// …) reached outside of index/`.length`, is out of scope and returns an
+// error rather than guessing. When
 // DataReflectType is nil, every field is assumed to be a string (the
 // original untyped skeleton behavior), and only static/bare attributes and
 // bare-field conditions are supported, unchanged.
@@ -118,6 +129,9 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	src.WriteString("import (\n")
 	if g.needsGopug {
 		fmt.Fprintf(&src, "\t%q\n", gopugImportPath)
+	}
+	if g.needsFmt {
+		src.WriteString("\t\"fmt\"\n")
 	}
 	if g.needsHTML {
 		src.WriteString("\t\"html\"\n")
@@ -171,6 +185,12 @@ type generator struct {
 	needsStrconv bool
 	needsGopug   bool
 	needsUtf8    bool
+	// needsFmt tracks whether the generated body calls fmt.Sprintf directly
+	// (the value-context index accessor stringifies its result with
+	// fmt.Sprintf("%v", …), matching Runtime's own index path exactly — the
+	// scalar-restricted genScalarStringify path never needs it), so
+	// GenerateGo only imports "fmt" when it is actually used.
+	needsFmt bool
 	// needsStrings tracks whether the generated body calls a strings.*
 	// function directly (the trivial string methods — toUpperCase et al. —
 	// emit the stdlib call inline rather than through a gopug helper), so
@@ -606,13 +626,14 @@ func (g *generator) genTag(tag *TagNode) error {
 //     the joined result with EscapeAttr;
 //
 // A style object, `&attributes`, an unescaped attribute, a class-object/
-// array/ternary value, or any value genValueExpr can't build (a ternary, a
-// method call, an index expression, …) is out of scope for this increment
-// and returns an error rather than guessing at output that might not match
-// the interpreter. With a nil Config.DataReflectType (type-blind mode), a
-// dynamic value can't be classified as scalar or bool at all (nor a class
-// token confirmed a string field), so only static/bare attributes are
-// supported there, matching increment 1 unchanged.
+// array value, or any value genValueExpr still can't build (a
+// non-string-keyed map index, most method calls, an array/object literal,
+// …) is out of scope for this increment and returns an error rather than
+// guessing at output that might not match the interpreter. With a nil
+// Config.DataReflectType (type-blind mode), a dynamic value can't be
+// classified as scalar or bool at all (nor a class token confirmed a string
+// field), so only static/bare attributes are supported there, matching
+// increment 1 unchanged.
 func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 	if _, ok := attrs["&attributes"]; ok {
 		return fmt.Errorf("unsupported dynamic &attributes in codegen")
@@ -853,11 +874,14 @@ func (g *generator) genCode(n *CodeNode) error {
 // Runtime.evaluateExpr's own template-literal walk discards a part's error
 // rather than propagating it, so genTemplateLiteral matches that by
 // discarding it too, via genFallibleTemplatePart, rather than erroring).
-// Every other construct evaluateExpr supports beyond these (a method call, an
-// index expression, an array/object literal) is a later increment and
-// returns a descriptive "unsupported" error here instead of emitting
-// something that might not match — the correctness bar is byte-identical to
-// the interpreter, not a best guess.
+// Every other construct evaluateExpr supports beyond these — most string
+// method calls, index expressions (`arr[i]`, see genIndexValueExpr), and
+// value-context `.length` (see genLengthValueExpr) ARE now supported (see
+// genMethodCall); a non-string-keyed map index, an index-then-dot receiver,
+// `.join`/`.toFixed`/`.toPrecision`, and an array/object literal remain a
+// later increment — returns a descriptive "unsupported" error here instead
+// of emitting something that might not match — the correctness bar is
+// byte-identical to the interpreter, not a best guess.
 func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
@@ -1022,13 +1046,21 @@ func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err
 		return "gopug.Mod(" + leftExpr + ", " + rightExpr + ")", true, nil
 	}
 	if idx := findIndexOp(expr); idx >= 0 {
-		return "", false, fmt.Errorf("unsupported index expression in codegen value expression %q", expr)
+		return g.genIndexValueExpr(expr, idx)
 	}
 
 	if dotIdx := findTopLevelDot(expr); dotIdx > 0 {
+		objExpr := expr[:dotIdx]
 		rest := expr[dotIdx+1:]
+		methodName := rest
+		if before, _, found := strings.Cut(rest, "("); found {
+			methodName = strings.TrimSpace(before)
+		}
+		if methodName == "length" {
+			return g.genLengthValueExpr(objExpr, expr)
+		}
 		if strings.Contains(rest, "(") {
-			return g.genMethodCall(expr[:dotIdx], rest)
+			return g.genMethodCall(objExpr, rest)
 		}
 	}
 
@@ -1038,6 +1070,94 @@ func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err
 	}
 	goExpr, err = g.genScalarStringify(resolvedExpr, typ)
 	return goExpr, false, err
+}
+
+// genIndexValueExpr emits genValueExpr's handling of a top-level index
+// expression `<objExpr>[<keyExpr>]` (idx is the position of the opening `[`
+// findIndexOp already located), reproducing Runtime.evaluateExpr's own index
+// branch (which evaluates objExpr RAW, keyExpr stringified, calls
+// indexValue, and stringifies a non-nil result with fmt.Sprintf("%v", …))
+// exactly, as a TOTAL immediately-invoked function literal — nil/absent/
+// out-of-range all collapse to "" the same way a nil slice or a nil map read
+// would, with no explicit nil guard needed. objExpr must resolve via
+// resolveFieldExpr (a bare identifier or dot-path with a known reflect.Type)
+// and keyExpr must be a TOTAL genValueExpr result; anything else — a
+// fallible key, an untyped/index-then-dot receiver, a non-string-keyed map,
+// or any other operand kind — returns an error rather than guessing, since
+// the interpreter's key is always a string (so a non-string map key can
+// never match, and silently emitting an always-"" constant would be a
+// surprising trap for the generator's caller, not a helpful optimization).
+func (g *generator) genIndexValueExpr(expr string, idx int) (string, bool, error) {
+	objExpr := strings.TrimSpace(expr[:idx])
+	keyExpr := strings.TrimSpace(expr[idx+1 : len(expr)-1])
+
+	keyGoExpr, keyFallible, err := g.genValueExpr(keyExpr)
+	if err != nil {
+		return "", false, err
+	}
+	if keyFallible {
+		return "", false, fmt.Errorf("unsupported index expression with a fallible key in codegen value expression %q (fallible index keys are not yet supported)", expr)
+	}
+
+	objGoExpr, typ, err := g.resolveFieldExpr(objExpr)
+	if err != nil {
+		return "", false, fmt.Errorf("index operand %q: %w", expr, err)
+	}
+	if typ == nil {
+		return "", false, fmt.Errorf("unsupported index expression %q in codegen (Config.DataReflectType is required to classify the indexed operand)", expr)
+	}
+
+	switch typ.Kind() {
+	case reflect.Slice, reflect.Array:
+		g.needsStrconv = true
+		g.needsStrings = true
+		g.needsFmt = true
+		n := g.nextTmp()
+		iv := fmt.Sprintf("__i%d", n)
+		ev := fmt.Sprintf("__e%d", n)
+		var b strings.Builder
+		b.WriteString("func() string {\n")
+		fmt.Fprintf(&b, "%s, %s := strconv.Atoi(strings.TrimSpace(%s))\n", iv, ev, keyGoExpr)
+		fmt.Fprintf(&b, "if %s != nil || %s < 0 || %s >= len(%s) {\nreturn \"\"\n}\n", ev, iv, iv, objGoExpr)
+		fmt.Fprintf(&b, "return fmt.Sprintf(\"%%v\", (%s)[%s])\n", objGoExpr, iv)
+		b.WriteString("}()")
+		return b.String(), false, nil
+	case reflect.Map:
+		if typ.Key().Kind() != reflect.String {
+			return "", false, fmt.Errorf("unsupported index expression %q in codegen (map key type %s is not string; the interpreter's index key is always a string so this could never match)", expr, typ.Key())
+		}
+		g.needsFmt = true
+		n := g.nextTmp()
+		vv := fmt.Sprintf("__v%d", n)
+		okv := fmt.Sprintf("__ok%d", n)
+		var b strings.Builder
+		b.WriteString("func() string {\n")
+		fmt.Fprintf(&b, "%s, %s := (%s)[%s]\n", vv, okv, objGoExpr, keyGoExpr)
+		fmt.Fprintf(&b, "if !%s {\nreturn \"\"\n}\n", okv)
+		fmt.Fprintf(&b, "return fmt.Sprintf(\"%%v\", %s)\n", vv)
+		b.WriteString("}()")
+		return b.String(), false, nil
+	default:
+		return "", false, fmt.Errorf("unsupported index expression %q in codegen (indexed operand type %s is not a slice, array, or map)", expr, typ)
+	}
+}
+
+// genLengthValueExpr emits genValueExpr's handling of a value-context
+// `.length`/`.length()` property (objExpr is everything before the final
+// top-level dot findTopLevelDot located; fullExpr is the whole expression,
+// used only for error messages), reusing genLengthOperand's exact
+// type-directed len()/utf8.RuneCountInString(…) logic — the same
+// interpreter property genOperandTruthiness/genComparison already reproduce
+// for CONDITION position — and wrapping its int result in strconv.Itoa to
+// match Runtime.evaluateExpr's own `.length` case, which stringifies with
+// strconv.Itoa in VALUE position instead of comparing it against zero.
+func (g *generator) genLengthValueExpr(objExpr, fullExpr string) (string, bool, error) {
+	lenExpr, _, err := g.genLengthOperand(objExpr, fullExpr)
+	if err != nil {
+		return "", false, err
+	}
+	g.needsStrconv = true
+	return "strconv.Itoa(" + lenExpr + ")", false, nil
 }
 
 // genMethodCall emits genValueExpr's handling of a string method call
@@ -1057,9 +1177,11 @@ func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err
 // findBinaryOp locates for a two-argument method. Both the receiver and
 // every argument must be TOTAL in this increment — a fallible receiver or
 // argument (e.g. `(a/b).toUpperCase()`) returns an error rather than
-// growing the IIFE machinery for methods yet. `length`, `join`, `toFixed`,
-// and `toPrecision` are recognized but explicitly deferred (they need
-// type-aware/fallible handling this increment doesn't build); any other
+// growing the IIFE machinery for methods yet. `length` is intercepted by
+// genValueExpr's own dot-handling before this function is ever reached (see
+// genLengthValueExpr), so it never appears in the switch below; `join`,
+// `toFixed`, and `toPrecision` are recognized but explicitly deferred (they
+// need type-aware/fallible handling this increment doesn't build); any other
 // unrecognized name errors the same way Runtime.evaluateExpr's own
 // "unsupported string method" fallback does.
 func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
@@ -1247,7 +1369,7 @@ func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
 		}
 		return helper + "(" + recvExpr + ", " + lenArg + `, "")`, false, nil
 
-	case "length", "join", "toFixed", "toPrecision":
+	case "join", "toFixed", "toPrecision":
 		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (deferred to a later increment)", methodName, fullExpr)
 
 	default:

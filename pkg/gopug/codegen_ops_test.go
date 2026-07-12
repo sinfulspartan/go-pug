@@ -37,25 +37,39 @@ import (
 // tests to exercise `/`/`%`'s one error case (a numeric zero divisor). User
 // is a nested struct with its own string field, used by the string-method
 // differential tests to prove a dot-path receiver (`User.Name.toUpperCase()`)
-// resolves correctly.
+// resolves correctly. Nums is a plain int slice, Prices a plain float64
+// slice (proving an indexed float element stringifies via bare fmt.Sprintf's
+// "%v", not FormatFloat), Meta a string-keyed string map, Counts a
+// string-keyed int map, and Idx an int field — all used by the value-context
+// index (`arr[i]`) and `.length` differential tests in
+// codegen_index_length_test.go. IntKeyMap is an int-keyed map used only to
+// exercise the non-string-keyed-map index deferral (an index expression
+// against it is never expected to build/render, so it needs no interpreter
+// counterpart).
 type opsData struct {
-	Name    string
-	Count   int
-	Price   float64
-	Flag    bool
-	FlagB   bool
-	FlagC   bool
-	Items   []string
-	Age     int8
-	B       uint8
-	BigInt  int64
-	BigUint uint64
-	Str1    string
-	Str2    string
-	Slug    string
-	Firms   []opsFirm
-	Zero    int
-	User    opsUser
+	Name      string
+	Count     int
+	Price     float64
+	Flag      bool
+	FlagB     bool
+	FlagC     bool
+	Items     []string
+	Age       int8
+	B         uint8
+	BigInt    int64
+	BigUint   uint64
+	Str1      string
+	Str2      string
+	Slug      string
+	Firms     []opsFirm
+	Zero      int
+	User      opsUser
+	Nums      []int
+	Prices    []float64
+	Meta      map[string]string
+	Counts    map[string]int
+	Idx       int
+	IntKeyMap map[int]string
 }
 
 // opsFirm is opsData.Firms's element type.
@@ -83,23 +97,29 @@ type opsUser struct {
 }
 
 type opsData struct {
-	Name    string
-	Count   int
-	Price   float64
-	Flag    bool
-	FlagB   bool
-	FlagC   bool
-	Items   []string
-	Age     int8
-	B       uint8
-	BigInt  int64
-	BigUint uint64
-	Str1    string
-	Str2    string
-	Slug    string
-	Firms   []opsFirm
-	Zero    int
-	User    opsUser
+	Name      string
+	Count     int
+	Price     float64
+	Flag      bool
+	FlagB     bool
+	FlagC     bool
+	Items     []string
+	Age       int8
+	B         uint8
+	BigInt    int64
+	BigUint   uint64
+	Str1      string
+	Str2      string
+	Slug      string
+	Firms     []opsFirm
+	Zero      int
+	User      opsUser
+	Nums      []int
+	Prices    []float64
+	Meta      map[string]string
+	Counts    map[string]int
+	Idx       int
+	IntKeyMap map[int]string
 }
 `
 
