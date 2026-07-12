@@ -72,12 +72,20 @@ type Config struct {
 // through genValueExpr). genValueExpr also supports a top-level ternary
 // (`cond ? a : b`, emitted as an immediately-invoked function literal — see
 // genTernaryValueExpr — reusing genCondition for the condition and
-// recursing for each branch). Any value genValueExpr can't build (`&&`/`||`/
-// `!`, comparisons, a method call, …), or a non-scalar field type (struct,
-// slice, map, pointer, interface, float32, …), is out of scope and returns
-// an error rather than guessing. When DataReflectType is nil, every field is
-// assumed to be a string (the original untyped skeleton behavior), and only
-// static/bare attributes and bare-field conditions are supported, unchanged.
+// recursing for each branch) and, in the interpreter's own precedence order,
+// value-context `||`/`&&`/`!`/comparison: `||` and `&&` return the operand
+// VALUE (the classic `name || "anon"` default-value idiom), short-circuited
+// exactly like the interpreter — a fallible right operand (e.g. a division by
+// zero) is never evaluated, and never errors, when it isn't needed (see
+// genOrValueExpr/genAndValueExpr); a leading `!` returns "true"/"false" via
+// the exported gopug.Not; a comparison delegates to genCondition and wraps
+// its bool result in strconv.FormatBool. Any value genValueExpr can't build
+// (a method call, an index expression, an array/object literal, …), or a
+// non-scalar field type (struct, slice, map, pointer, interface, float32,
+// …), is out of scope and returns an error rather than guessing. When
+// DataReflectType is nil, every field is assumed to be a string (the
+// original untyped skeleton behavior), and only static/bare attributes and
+// bare-field conditions are supported, unchanged.
 //
 // GenerateGo assumes complete, well-typed data and does no nil-guarding —
 // like Pug itself, and unlike the interpreter's lenient missing-value
@@ -257,6 +265,98 @@ func (g *generator) genArithCombinerIIFE(leftExpr string, leftFallible bool, rig
 	}
 	b.WriteString("}()")
 	return b.String()
+}
+
+// genLogicalLeftVar emits a plain (non-fallible) `:= leftExpr` assignment
+// into a value-context `||`/`&&` IIFE body under construction and returns the
+// freshly named local it assigned, or, when leftExpr is itself fallible,
+// delegates to genFallibleExtractionInline so the local is only bound once
+// its (string, error) result is known to be nil-error. Factoring this choice
+// out keeps genOrValueExpr and genAndValueExpr's fallible branch identical
+// apart from the truthiness test and the falsy-side return value.
+func (g *generator) genLogicalLeftVar(b *strings.Builder, leftExpr string, leftFallible bool) string {
+	if leftFallible {
+		return g.genFallibleExtractionInline(b, leftExpr)
+	}
+	n := g.nextTmp()
+	lv := fmt.Sprintf("__l%d", n)
+	fmt.Fprintf(b, "%s := %s\n", lv, leftExpr)
+	return lv
+}
+
+// genOrValueExpr builds the short-circuit IIFE for a value-context `||`
+// (leftExpr, rightExpr are genValueExpr's own results for each operand; *Fallible
+// reports whether that operand's goExpr is (string, error)-typed rather than a
+// plain string). It mirrors Runtime.evaluateExpr's own `||` branch
+// (runtime.go: eval left, propagate its error; if isTruthy(left), return left
+// UNCHANGED — the value, not a boolean; otherwise evaluate and return right)
+// exactly, including the short-circuit: right is only ever evaluated when
+// left is falsy.
+//
+// When both operands are total, the result is a plain string IIFE:
+//
+//	func() string {
+//		__lN := <leftExpr>
+//		if gopug.Truthy(__lN) {
+//			return __lN
+//		}
+//		return <rightExpr>
+//	}()
+//
+// When either operand is fallible, the result is a (string, error) IIFE.
+// Left's extraction (if leftExpr is itself fallible) happens up front, since
+// left is unconditionally evaluated either way; right's extraction (if
+// rightExpr is fallible) is written only in the code that runs after the
+// truthy-left early return — i.e., inside the falsy arm — so a fallible right
+// operand (e.g. a division by zero) is never reached, and never errors, when
+// left is truthy. This is the same in-arm short-circuit placement
+// genTernaryValueExpr uses for its own branches.
+func (g *generator) genOrValueExpr(leftExpr string, leftFallible bool, rightExpr string, rightFallible bool) (goExpr string, fallible bool) {
+	if !leftFallible && !rightFallible {
+		n := g.nextTmp()
+		lv := fmt.Sprintf("__l%d", n)
+		return fmt.Sprintf("func() string {\n%s := %s\nif gopug.Truthy(%s) {\nreturn %s\n}\nreturn %s\n}()", lv, leftExpr, lv, lv, rightExpr), false
+	}
+
+	var b strings.Builder
+	b.WriteString("func() (string, error) {\n")
+	lv := g.genLogicalLeftVar(&b, leftExpr, leftFallible)
+	fmt.Fprintf(&b, "if gopug.Truthy(%s) {\nreturn %s, nil\n}\n", lv, lv)
+	resolvedRight := rightExpr
+	if rightFallible {
+		resolvedRight = g.genFallibleExtractionInline(&b, rightExpr)
+	}
+	fmt.Fprintf(&b, "return %s, nil\n", resolvedRight)
+	b.WriteString("}()")
+	return b.String(), true
+}
+
+// genAndValueExpr is genOrValueExpr's `&&` counterpart, mirroring
+// Runtime.evaluateExpr's own `&&` branch exactly: eval left, propagate its
+// error; if left is NOT truthy, return the literal string "false" (not "" and
+// not left's own value) without evaluating right at all; otherwise evaluate
+// and return right. The short-circuit placement is the same as
+// genOrValueExpr's — a fallible right operand's extraction sits in the code
+// that runs after the falsy-left early return, i.e. inside the truthy arm, so
+// it is only ever reached when left is truthy.
+func (g *generator) genAndValueExpr(leftExpr string, leftFallible bool, rightExpr string, rightFallible bool) (goExpr string, fallible bool) {
+	if !leftFallible && !rightFallible {
+		n := g.nextTmp()
+		lv := fmt.Sprintf("__l%d", n)
+		return fmt.Sprintf("func() string {\n%s := %s\nif !gopug.Truthy(%s) {\nreturn \"false\"\n}\nreturn %s\n}()", lv, leftExpr, lv, rightExpr), false
+	}
+
+	var b strings.Builder
+	b.WriteString("func() (string, error) {\n")
+	lv := g.genLogicalLeftVar(&b, leftExpr, leftFallible)
+	fmt.Fprintf(&b, "if !gopug.Truthy(%s) {\nreturn \"false\", nil\n}\n", lv)
+	resolvedRight := rightExpr
+	if rightFallible {
+		resolvedRight = g.genFallibleExtractionInline(&b, rightExpr)
+	}
+	fmt.Fprintf(&b, "return %s, nil\n", resolvedRight)
+	b.WriteString("}()")
+	return b.String(), true
 }
 
 // genFallibleTemplatePart wraps a fallible ${} interpolation part's goExpr
@@ -689,45 +789,67 @@ func (g *generator) genCode(n *CodeNode) error {
 // genValueExpr emits a Go expression equal to what Runtime.evaluateExpr(expr)
 // would return, for the grammar subset this increment supports: leaves (a
 // bare field/dot-path, a quoted string literal, a numeric literal,
-// true/false/null/undefined/nil), a top-level ternary, and the arithmetic
-// operators `-`, `+`, `*`, `/`, and `%`. It walks the same operator-
-// precedence order evaluateExpr does — strip balanced outer parens, then
-// check in turn for a top-level ternary, `||`, `&&`, each comparison
-// operator, a leading unary `!`, a quoted string literal, a template
-// literal, an array/object literal, a numeric literal, the true/false/null
-// keywords, subtraction, addition, multiplication, division, and finally
-// modulo — so that when two operators are both present, genValueExpr splits
-// on the same top-level one evaluateExpr would. A top-level ternary is
-// checked first (matching evaluateExpr's own order) and delegates to
-// genTernaryValueExpr, which reuses genCondition for the condition and
-// recurses into genValueExpr for each branch.
+// true/false/null/undefined/nil), a top-level ternary, value-context
+// `||`/`&&`/`!`/comparison, and the arithmetic operators `-`, `+`, `*`, `/`,
+// and `%`. It walks the same operator-precedence order evaluateExpr does —
+// strip balanced outer parens, then check in turn for a top-level ternary,
+// `||`, `&&`, each comparison operator, a leading unary `!`, a quoted string
+// literal, a template literal, an array/object literal, a numeric literal,
+// the true/false/null keywords, subtraction, addition, multiplication,
+// division, and finally modulo — so that when two operators are both
+// present, genValueExpr splits on the same top-level one evaluateExpr would.
+// A top-level ternary is checked first (matching evaluateExpr's own order)
+// and delegates to genTernaryValueExpr, which reuses genCondition for the
+// condition and recurses into genValueExpr for each branch.
+//
+// `||` and `&&` (genOrValueExpr/genAndValueExpr) return the operand VALUE,
+// matching evaluateExpr's own value-returning (not merely truthy) semantics
+// exactly: `||` returns the left operand unchanged when it is truthy,
+// otherwise the right operand's value; `&&` returns the literal string
+// "false" when the left operand is falsy, otherwise the right operand's
+// value. Both are short-circuited — the right operand is only ever evaluated
+// (and, if it is itself fallible, only ever extracted) when it is actually
+// needed, exactly like evaluateExpr's own short-circuit `||`/`&&` branches. A
+// leading `!` (guarded, like evaluateExpr's own check, against matching the
+// `!=` comparison operator) returns "true"/"false" via the exported
+// gopug.Not, wrapping a fallible inner operand in its own extraction IIFE
+// when needed. A comparison operator delegates the whole expression to
+// genCondition — the same bounded-agreement comparison compiler condition
+// position uses — and wraps its bool result in strconv.FormatBool, which is
+// byte-identical to evaluateExpr's own "true"/"false" comparison result by
+// construction; if genCondition can't compile the comparison (its operand
+// shapes are limited to the same bounded-agreement subset described on
+// genCondition), that error propagates unchanged rather than guessing.
 //
 // The returned fallible flag distinguishes the two shapes goExpr can take.
-// When fallible is false (every leaf, and every `-`/`+`/`*` combination of
-// total operands), goExpr is a plain Go expression of type string — pure,
-// inline, zero overhead. When fallible is true, goExpr is a Go expression of
-// type (string, error): either a direct gopug.Div(...)/gopug.Mod(...) call
-// (both operands total) or a `func() (string, error) {...}()` IIFE that
-// extracts a fallible operand before combining (genArithCombinerIIFE), or a
-// fallible-branch ternary IIFE (genTernaryValueExpr) — mirroring every case
-// Runtime.evaluateExpr's own combiner/ternary branches can abort Render with
-// an error (a numeric zero divisor reached through `/` or `%`, however deep
-// it sits in the expression tree). A caller consuming genValueExpr's
-// top-level result directly (genInterpolation, genCode, genAttributes)
-// extracts a fallible result via genFallibleExtraction before using it; a
-// caller composing it into another combiner or a ternary branch recurses
-// through the same uniform (string, bool, error) contract, extracting it via
-// genFallibleExtractionInline inside its own IIFE — so fallibility bubbles
-// through arbitrarily nested arithmetic and ternaries without ever losing an
-// error the interpreter would have raised (a template-literal `${}` part is
-// the one exception: Runtime.evaluateExpr's own template-literal walk
-// discards a part's error rather than propagating it, so genTemplateLiteral
-// matches that by discarding it too, via genFallibleTemplatePart, rather
-// than erroring). Every other construct evaluateExpr supports beyond these
-// (`||`/`&&`/`!`, comparisons, method calls, index expressions, array/object
-// literals) is a later increment and returns a descriptive "unsupported"
-// error here instead of emitting something that might not match — the
-// correctness bar is byte-identical to the interpreter, not a best guess.
+// When fallible is false (every leaf, every `-`/`+`/`*` combination of total
+// operands, a comparison, a `!`/`||`/`&&` whose operand(s) are all total),
+// goExpr is a plain Go expression of type string — pure, inline, zero
+// overhead. When fallible is true, goExpr is a Go expression of type (string,
+// error): either a direct gopug.Div(...)/gopug.Mod(...) call (both operands
+// total) or a `func() (string, error) {...}()` IIFE that extracts a fallible
+// operand before combining (genArithCombinerIIFE), or a fallible-branch
+// ternary/`||`/`&&`/`!` IIFE (genTernaryValueExpr, genOrValueExpr,
+// genAndValueExpr, and genValueExpr's own `!` branch) — mirroring every case
+// Runtime.evaluateExpr's own combiner/ternary/logical branches can abort
+// Render with an error (a numeric zero divisor reached through `/` or `%`,
+// however deep it sits in the expression tree). A caller consuming
+// genValueExpr's top-level result directly (genInterpolation, genCode,
+// genAttributes) extracts a fallible result via genFallibleExtraction before
+// using it; a caller composing it into another combiner, ternary branch, or
+// logical operand recurses through the same uniform (string, bool, error)
+// contract, extracting it via genFallibleExtractionInline inside its own IIFE
+// — so fallibility bubbles through arbitrarily nested arithmetic, ternaries,
+// and logical combinators without ever losing an error the interpreter would
+// have raised (a template-literal `${}` part is the one exception:
+// Runtime.evaluateExpr's own template-literal walk discards a part's error
+// rather than propagating it, so genTemplateLiteral matches that by
+// discarding it too, via genFallibleTemplatePart, rather than erroring).
+// Every other construct evaluateExpr supports beyond these (a method call, an
+// index expression, an array/object literal) is a later increment and
+// returns a descriptive "unsupported" error here instead of emitting
+// something that might not match — the correctness bar is byte-identical to
+// the interpreter, not a best guess.
 func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
@@ -735,18 +857,56 @@ func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err
 		return g.genTernaryValueExpr(expr, idx)
 	}
 	if idx := findBinaryOp(expr, "||"); idx >= 0 {
-		return "", false, fmt.Errorf("unsupported || operator in codegen value expression %q", expr)
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", false, err
+		}
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+2:])
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		goExpr, fallible := g.genOrValueExpr(leftExpr, leftFallible, rightExpr, rightFallible)
+		return goExpr, fallible, nil
 	}
 	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
-		return "", false, fmt.Errorf("unsupported && operator in codegen value expression %q", expr)
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", false, err
+		}
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+2:])
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		goExpr, fallible := g.genAndValueExpr(leftExpr, leftFallible, rightExpr, rightFallible)
+		return goExpr, fallible, nil
 	}
 	for _, op := range conditionComparisonOps {
-		if idx := findBinaryOp(expr, op); idx >= 0 {
-			return "", false, fmt.Errorf("unsupported comparison operator %q in codegen value expression %q", op, expr)
+		if findBinaryOp(expr, op) >= 0 {
+			condExpr, err := g.genCondition(expr)
+			if err != nil {
+				return "", false, err
+			}
+			g.needsStrconv = true
+			return "strconv.FormatBool(" + condExpr + ")", false, nil
 		}
 	}
 	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
-		return "", false, fmt.Errorf("unsupported ! operator in codegen value expression %q", expr)
+		innerExpr, innerFallible, err := g.genValueExpr(expr[1:])
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		if !innerFallible {
+			return "gopug.Not(" + innerExpr + ")", false, nil
+		}
+		var b strings.Builder
+		b.WriteString("func() (string, error) {\n")
+		vv := g.genFallibleExtractionInline(&b, innerExpr)
+		fmt.Fprintf(&b, "return gopug.Not(%s), nil\n", vv)
+		b.WriteString("}()")
+		return b.String(), true, nil
 	}
 
 	if lit, ok := unwrapQuotedLiteral(expr); ok {

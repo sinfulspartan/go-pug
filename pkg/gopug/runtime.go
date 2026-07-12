@@ -1028,6 +1028,21 @@ func Mod(left, right string) (string, error) {
 	return "", nil
 }
 
+// Not reproduces Runtime.evaluateExpr's unary `!` operator on an already-
+// stringified operand: "false" when Truthy(val) is true, "true" otherwise —
+// the interpreter's own `!` branch is this one-line rule, factored out here
+// as the single source of truth so it isn't duplicated (and risks diverging)
+// between Runtime.evaluateExpr's `!expr` handling and codegen-generated
+// code's own `!` value-context expressions, exactly like Add/Sub/Mul/Div/Mod
+// are shared between the two. It is exported so codegen-generated code can
+// call it directly.
+func Not(val string) string {
+	if Truthy(val) {
+		return "false"
+	}
+	return "true"
+}
+
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
 // renders them: id first, then class, then every other attribute name
 // alphabetically. Runtime.renderTag and the codegen backend's genAttributes
@@ -2186,10 +2201,7 @@ func (r *Runtime) evaluateExpr(expr string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if r.isTruthy(inner) {
-			return "false", nil
-		}
-		return "true", nil
+		return Not(inner), nil
 	}
 
 	if len(expr) >= 2 {

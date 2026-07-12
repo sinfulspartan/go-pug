@@ -444,29 +444,8 @@ func TestCodegenTernaryUnsupportedCondition(t *testing.T) {
 // codegen_fallible_compose_test.go's TestCodegenFallibleComposeTernary*
 // tests (including the headline short-circuit proof: an untaken fallible
 // branch's division by zero never executes and never errors).
-
-// TestCodegenTernaryUnrelatedLogicalStillUnsupported is a regression proof
-// that adding ternary support to genValueExpr did NOT accidentally unlock
-// value-context `&&`/`||` for expressions with no ternary at all — that
-// combinator support is a distinct, still-deferred increment.
-func TestCodegenTernaryUnrelatedLogicalStillUnsupported(t *testing.T) {
-	src := "p #{Flag && FlagB}\n"
-
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-
-	_, err = GenerateGo(ast, Config{
-		PackageName:     "gopug",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an unsupported && operator error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("GenerateGo(%q): error %q does not describe an unsupported construct", src, err.Error())
-	}
-}
+//
+// Value-context `&&`/`||` (e.g. `#{Flag && FlagB}`) is no longer unsupported
+// either — see codegen_logical_value_test.go for the differential
+// default-value-idiom, short-circuit, and precedence proofs, including
+// nesting a logical value expression inside a ternary branch and vice versa.

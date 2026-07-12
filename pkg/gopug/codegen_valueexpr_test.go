@@ -195,40 +195,37 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 
 // TestCodegenValueExprUnsupported asserts that every construct outside this
 // increment's value-context grammar — every operator besides `-`, `+`, `*`,
-// `/`, `%`, and a top-level ternary (`||`, `&&`, `!`, comparisons), an index
+// `/`, `%`, a top-level ternary, and `||`/`&&`/`!`/comparison, an index
 // expression, an array/object literal, a method call, an unbuffered code
 // statement, and unescaped buffered output — is rejected with a clear
 // "unsupported" error rather than silently emitting something that might not
 // match the interpreter. A template literal itself is no longer in this list
 // (genTemplateLiteral now supports it, see
 // codegen_valueexpr_template_test.go), but one whose `${...}` interpolation
-// contains a construct genValueExpr still can't build (a bare comparison,
-// here) still propagates that "unsupported" error. Subtraction and
-// multiplication are also no longer in this list — see
-// TestCodegenValueExprArithmetic. Division and modulo are no longer in this
-// list either — a standalone `/`/`%` is now supported (fallible) and proven
-// by differential build+run in codegen_fallible_test.go, and so is composing
-// a fallible `/`/`%` result into an arithmetic combiner, a nested `/`/`%`
-// operand, a ternary branch, or a template-literal `${}` part — see
-// codegen_fallible_compose_test.go. A top-level ternary is no longer in this
-// list either — see
+// contains a construct genValueExpr still can't build (a method call, here)
+// still propagates that "unsupported" error. Subtraction and multiplication
+// are also no longer in this list — see TestCodegenValueExprArithmetic.
+// Division and modulo are no longer in this list either — a standalone
+// `/`/`%` is now supported (fallible) and proven by differential build+run in
+// codegen_fallible_test.go, and so is composing a fallible `/`/`%` result
+// into an arithmetic combiner, a nested `/`/`%` operand, a ternary branch, or
+// a template-literal `${}` part — see codegen_fallible_compose_test.go. A
+// top-level ternary is no longer in this list either — see
 // codegen_ternary_test.go — but a ternary whose CONDITION is a shape
 // genCondition can't compile (here, arithmetic) still propagates an error,
 // since genValueExpr's ternary support reuses genCondition unchanged for the
-// condition.
+// condition. `||`, `&&`, `!`, and comparison are no longer in this list
+// either — see codegen_logical_value_test.go for the differential
+// default-value-idiom, short-circuit, and FormatBool(genCondition) proofs.
 func TestCodegenValueExprUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
 		{name: "ternary with an unsupported (arithmetic) condition", src: "p= (Count + 1) ? \"yes\" : \"no\"\n"},
-		{name: "|| combinator", src: "p= Flag || Count\n"},
-		{name: "&& combinator", src: "p= Flag && Count\n"},
-		{name: "leading ! operator", src: "p= !Flag\n"},
-		{name: "comparison", src: "p= Count > 0\n"},
 		{name: "index expression", src: "p= Items[0]\n"},
 		{name: "method call", src: "p= Name.toUpperCase()\n"},
-		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Count > 0}`\n"},
+		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Name.toUpperCase()}`\n"},
 		{name: "array literal", src: "p= [1, 2, 3]\n"},
 		{name: "object literal", src: "p= {a: 1}\n"},
 		{name: "unbuffered code statement", src: "- var x = 1\n"},

@@ -207,14 +207,17 @@ func runGeneratedGo(t *testing.T, generated []byte, dataLiteral string) string {
 // TestCodegenConditionOperatorUnsupported asserts that every condition
 // construct outside the bounded-agreement subset — arithmetic, ternary,
 // string ordering compares, a numeric-looking string literal compared to a
-// string field, an incompatible numeric-field-vs-numeric-field comparison,
-// and an operator used in interpolation rather than condition position —
-// returns an error instead of emitting a comparison that might not agree
-// with the interpreter's compareValues. The `&&`/`||`/`!` combinators are
-// NOT in this list: they are supported (see
+// string field, and an incompatible numeric-field-vs-numeric-field comparison
+// — returns an error instead of emitting a comparison that might not agree
+// with the interpreter's compareValues. The `&&`/`||`/`!` combinators are NOT
+// in this list: they are supported in CONDITION position (see
 // TestCodegenConditionLogicTruthTable, TestCodegenConditionLogicMixedOperands,
 // TestCodegenConditionLogicNegation, TestCodegenConditionLogicStringTruthiness,
-// and TestCodegenConditionLogicPrecedence in codegen_condition_logic_test.go).
+// and TestCodegenConditionLogicPrecedence in codegen_condition_logic_test.go)
+// and, as of the value-context logical/comparison increment, in VALUE
+// context too (`#{}`/`= expr` interpolation — see
+// codegen_logical_value_test.go), so "an operator used in interpolation
+// rather than condition position" is no longer in this list either.
 func TestCodegenConditionOperatorUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -243,10 +246,6 @@ func TestCodegenConditionOperatorUnsupported(t *testing.T) {
 		{
 			name: "int field compared to a float64 field",
 			src:  "if Count == Price\n  p yes\n",
-		},
-		{
-			name: "operator in interpolation rather than condition position",
-			src:  "p #{Count > 0}",
 		},
 	}
 

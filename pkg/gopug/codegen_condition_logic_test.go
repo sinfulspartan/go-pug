@@ -295,21 +295,18 @@ func TestCodegenConditionLogicPrecedence(t *testing.T) {
 }
 
 // TestCodegenConditionLogicUnsupported asserts the scope boundary this
-// increment holds: a top-level `&&`/`||`/`!` combinator IS now supported in
-// CONDITION position (unlike VALUE-context `#{...}`/`= expr`, which still
-// errors on all three — a separate, later increment), a ternary condition
-// still errors even underneath a combinator, and a non-scalar (slice) field
-// used as a bare truthiness operand — including underneath a combinator —
-// still errors rather than reproducing the interpreter's stringify-then-
-// isTruthy footgun for that shape.
+// increment holds: a top-level `&&`/`||`/`!` combinator is supported in both
+// CONDITION position and, as of the value-context logical increment, in
+// VALUE context too (`#{...}`/`= expr` — see codegen_logical_value_test.go);
+// a ternary condition still errors even underneath a combinator, and a
+// non-scalar (slice) field used as a bare truthiness operand — including
+// underneath a combinator — still errors rather than reproducing the
+// interpreter's stringify-then-isTruthy footgun for that shape.
 func TestCodegenConditionLogicUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
-		{name: "value-context #{} interpolation && combinator still errors", src: "p #{Flag && FlagB}\n"},
-		{name: "value-context #{} interpolation || combinator still errors", src: "p #{Flag || FlagB}\n"},
-		{name: "value-context #{} interpolation ! operator still errors", src: "p #{!Flag}\n"},
 		{name: "ternary condition still errors", src: "if Count > 0 ? true : false\n  p yes\n"},
 		{name: "ternary underneath && still errors", src: "if Flag && (Count > 0 ? true : false)\n  p yes\n"},
 		{name: "bare slice field condition still errors", src: "if Items\n  p yes\n"},
