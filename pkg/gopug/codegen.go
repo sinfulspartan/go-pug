@@ -555,6 +555,8 @@ func (g *generator) genNode(n Node) error {
 		return g.genEach(node)
 	case *ConditionalNode:
 		return g.genConditional(node)
+	case *CommentNode:
+		return g.genComment(node)
 	default:
 		return fmt.Errorf("unsupported node/expr in codegen: %T", n)
 	}
@@ -1850,20 +1852,35 @@ func (g *generator) genEach(n *EachNode) error {
 	return nil
 }
 
+// genComment emits a buffered (`//`) comment's rendered form as static text
+// matching renderComment exactly: "<!-- " + Content + " -->", written RAW
+// (never HTML-escaped — renderComment writes Content straight into the
+// output buffer). An unbuffered (`//-`) comment emits nothing, matching
+// renderComment's no-op branch for it.
+func (g *generator) genComment(n *CommentNode) error {
+	if n.Buffered {
+		g.writeStatic("<!-- " + n.Content + " -->")
+	}
+	return nil
+}
+
 // genConditional emits a Go if/else for `if <condition>` with an optional
-// plain `else`. `unless` and else-if chains are later increments. The
-// condition itself is translated by genCondition, which supports bare
-// bool/numeric/string-field truthiness, `.length` truthiness, a bounded set
-// of comparison operators, and the `&&`/`||`/`!` combinators over any of
-// those; anything else returns an error.
+// plain `else`, including an else-if chain (`else if`, represented in the
+// AST as a single *ConditionalNode with IsElseIf set inside Alternate — see
+// ast.go's ConditionalNode doc comment). The recursive genNode call on that
+// inner *ConditionalNode nests a second if/else inside the outer else block
+// (`if a {...} else { if b {...} else {...} }`), which is valid Go and
+// renders byte-identically to the interpreter's own equivalent nesting of
+// else-if — the extra braces only affect Go source structure, never the
+// HTML output. `unless` is a later increment. The condition itself is
+// translated by genCondition, which supports bare bool/numeric/string-field
+// truthiness, `.length` truthiness, a bounded set of comparison operators,
+// and the `&&`/`||`/`!` combinators over any of those; anything else
+// returns an error (including an else-if whose own condition genCondition
+// can't compile, which propagates that error unchanged).
 func (g *generator) genConditional(n *ConditionalNode) error {
 	if n.IsUnless {
 		return fmt.Errorf("unsupported unless in codegen")
-	}
-	if len(n.Alternate) == 1 {
-		if _, ok := n.Alternate[0].(*ConditionalNode); ok {
-			return fmt.Errorf("unsupported else-if chain in codegen")
-		}
 	}
 
 	cond, err := g.genCondition(n.Condition)

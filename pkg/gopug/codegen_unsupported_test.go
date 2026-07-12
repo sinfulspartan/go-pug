@@ -5,8 +5,12 @@ import "testing"
 // TestCodegenUnsupported asserts that constructs outside this increment's
 // grammar subset return a clear "unsupported" error from GenerateGo rather
 // than silently emitting output that doesn't match the interpreter — mixins,
-// includes, unless, else-if chains, dynamic attributes, and unescaped
-// interpolation are all later increments per the codegen design doc.
+// includes, unless, dynamic attributes, and unescaped interpolation are all
+// later increments per the codegen design doc; a plain else-if chain is now
+// supported (see codegen_comment_elseif_test.go), so the case below instead
+// covers an else-if chain whose OWN condition is still outside genCondition's
+// grammar, proving that error still propagates (fail-closed) through the
+// else-if recursion.
 func TestCodegenUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -25,8 +29,8 @@ func TestCodegenUnsupported(t *testing.T) {
 			src:  "unless Flag\n  p Off\n",
 		},
 		{
-			name: "else-if chain",
-			src:  "if A\n  p one\nelse if B\n  p two\n",
+			name: "else-if chain whose own condition is unsupported",
+			src:  "if A\n  p one\nelse if B + 1\n  p two\n",
 		},
 		{
 			name: "each with index variable",
