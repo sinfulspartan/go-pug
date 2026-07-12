@@ -5,6 +5,7 @@ import (
 	"html"
 	"io"
 	"strconv"
+	"unicode/utf8"
 )
 
 func RenderSkel(w io.Writer, d SkelData) error {
@@ -50,6 +51,31 @@ func RenderSkel(w io.Writer, d SkelData) error {
 		io.WriteString(w, "<p class=\"has-count\">Has items</p>")
 	} else {
 		io.WriteString(w, "<p class=\"no-count\">No items</p>")
+	}
+	if len(d.Items) > 0 {
+		io.WriteString(w, "<p class=\"has-items\">Has items (length)</p>")
+	} else {
+		io.WriteString(w, "<p class=\"no-items\">No items (length)</p>")
+	}
+	if d.Count > 0 {
+		io.WriteString(w, "<p class=\"positive\">Positive</p>")
+	} else {
+		io.WriteString(w, "<p class=\"not-positive\">Not positive</p>")
+	}
+	if d.Count == 3 {
+		io.WriteString(w, "<p class=\"three\">Three</p>")
+	} else {
+		io.WriteString(w, "<p class=\"not-three\">Not three</p>")
+	}
+	if d.Name == "world" {
+		io.WriteString(w, "<p class=\"name-world\">Name is world</p>")
+	} else {
+		io.WriteString(w, "<p class=\"name-other\">Name is other</p>")
+	}
+	if utf8.RuneCountInString(d.Name) > 2 {
+		io.WriteString(w, "<p class=\"long-name\">Long name</p>")
+	} else {
+		io.WriteString(w, "<p class=\"short-name\">Short name</p>")
 	}
 	io.WriteString(w, "</div></body></html>")
 	return nil

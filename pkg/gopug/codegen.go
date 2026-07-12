@@ -3,6 +3,7 @@ package gopug
 import (
 	"fmt"
 	"go/format"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -52,17 +53,22 @@ type Config struct {
 // interpolation (string, bool, every sized int/uint kind, and float64 — see
 // genInterpolation) and per-type truthiness for conditions (bool used bare,
 // numeric kinds compared against zero — see genConditional), matching the
-// interpreter's Runtime.lookupAndStringify/isTruthy exactly. It also emits a
-// runtime write for a dynamic scalar attribute value on a non-"class"
-// attribute (a bare field or dot-path resolving to a scalar type — see
-// genAttributes), escaped through the exported EscapeAttr for a string value
-// and via bare strconv for every other scalar kind, and a conditional bare
-// write for a bool-typed field on an HTML boolean-attribute name (present
-// iff true, matching pug's omit-on-false). Any other field type (struct,
-// slice, map, pointer, interface, float32, …) is out of scope and returns an
-// error rather than guessing. When DataReflectType is nil, every field is
-// assumed to be a string (the original untyped skeleton behavior), and only
-// static/bare attributes are supported, unchanged.
+// interpreter's Runtime.lookupAndStringify/isTruthy exactly. A condition may
+// also use a numeric comparison, a string-equality comparison, or a
+// `.length` operand (see genCondition) — but only for the bounded-agreement
+// subset provably byte-identical to the interpreter's compareValues; the
+// combinators `&&`/`||`/`!`, arithmetic, ternary, and every other operand
+// combination return an error instead. It also emits a runtime write for a
+// dynamic scalar attribute value on a non-"class" attribute (a bare field or
+// dot-path resolving to a scalar type — see genAttributes), escaped through
+// the exported EscapeAttr for a string value and via bare strconv for every
+// other scalar kind, and a conditional bare write for a bool-typed field on
+// an HTML boolean-attribute name (present iff true, matching pug's
+// omit-on-false). Any other field type (struct, slice, map, pointer,
+// interface, float32, …) is out of scope and returns an error rather than
+// guessing. When DataReflectType is nil, every field is assumed to be a
+// string (the original untyped skeleton behavior), and only static/bare
+// attributes and bare-field conditions are supported, unchanged.
 //
 // GenerateGo assumes complete, well-typed data and does no nil-guarding —
 // like Pug itself, and unlike the interpreter's lenient missing-value
@@ -103,6 +109,9 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if g.needsStrconv {
 		src.WriteString("\t\"strconv\"\n")
 	}
+	if g.needsUtf8 {
+		src.WriteString("\t\"unicode/utf8\"\n")
+	}
 	src.WriteString(")\n\n")
 	fmt.Fprintf(&src, "func %s(w io.Writer, d %s) error {\n", cfg.FuncName, cfg.DataType)
 	src.WriteString(g.body.String())
@@ -141,6 +150,7 @@ type generator struct {
 	needsHTML    bool
 	needsStrconv bool
 	needsGopug   bool
+	needsUtf8    bool
 }
 
 // scopeVar is one entry in the generator's each-loop variable scope stack: a
@@ -651,15 +661,11 @@ func (g *generator) genEach(n *EachNode) error {
 	return nil
 }
 
-// genConditional emits a Go if/else for `if <bool or numeric field>` with an
-// optional plain `else`. `unless` and else-if chains are later increments.
-// In type-aware mode, a numeric condition field (any int/uint kind or
-// float64) is compared against zero to match the interpreter's stringify-
-// then-isTruthy semantics (a numeric field stringifies to "0" only when it
-// is zero); a bool field is used bare, as before. Any other condition field
-// type — string, slice, map, pointer, struct, float32 — has quirky
-// stringify-based truthiness (see the codegen design notes) and is a later
-// increment, so it returns an error rather than guessing.
+// genConditional emits a Go if/else for `if <condition>` with an optional
+// plain `else`. `unless` and else-if chains are later increments. The
+// condition itself is translated by genCondition, which supports bare
+// bool/numeric-field truthiness (as before), `.length` truthiness, and a
+// bounded set of comparison operators; anything else returns an error.
 func (g *generator) genConditional(n *ConditionalNode) error {
 	if n.IsUnless {
 		return fmt.Errorf("unsupported unless in codegen")
@@ -670,24 +676,9 @@ func (g *generator) genConditional(n *ConditionalNode) error {
 		}
 	}
 
-	condExpr, condTyp, err := g.resolveFieldExpr(n.Condition)
+	cond, err := g.genCondition(n.Condition)
 	if err != nil {
 		return err
-	}
-
-	cond := condExpr
-	if condTyp != nil {
-		switch condTyp.Kind() {
-		case reflect.Bool:
-			// Used bare: already the exact form Runtime.isTruthy's
-			// FormatBool-derived "true"/"false" mirrors.
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-			reflect.Float64:
-			cond = condExpr + " != 0"
-		default:
-			return fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool and numeric fields are supported in this increment)", condTyp, n.Condition)
-		}
 	}
 
 	g.writeRaw(fmt.Sprintf("if %s {\n", cond))
@@ -710,4 +701,454 @@ func (g *generator) genConditional(n *ConditionalNode) error {
 
 	g.body.WriteString("}\n")
 	return nil
+}
+
+// conditionComparisonOps lists the comparison operators genCondition
+// recognizes, in the exact order Runtime.evaluateExpr scans for them
+// (runtime.go's own literal op list), so a top-level operator is identified
+// the same way in both places.
+var conditionComparisonOps = []string{"===", "!==", "==", "!=", "<=", ">=", "<", ">"}
+
+// stripBalancedOuterParens strips one or more layers of a fully-balanced
+// enclosing `(...)` pair from expr, mirroring the paren-unwrap loop at the
+// top of Runtime.evaluateExpr exactly (including its "isWrapped" check,
+// which refuses to strip `(a) + (b)` — the parens there don't enclose the
+// whole expression even though it starts with `(` and ends with `)`).
+func stripBalancedOuterParens(expr string) string {
+	for len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
+		depth := 0
+		isWrapped := true
+		for i, ch := range expr {
+			if ch == '(' {
+				depth++
+			} else if ch == ')' {
+				depth--
+				if depth == 0 && i < len(expr)-1 {
+					isWrapped = false
+					break
+				}
+			}
+		}
+		if !isWrapped {
+			break
+		}
+		expr = strings.TrimSpace(expr[1 : len(expr)-1])
+	}
+	return expr
+}
+
+// genCondition translates a Pug `if`/`else` condition expression into a Go
+// boolean expression, reproducing the interpreter's compareValues/isTruthy
+// semantics exactly for the bounded subset this increment supports, and
+// erroring on everything else instead of guessing.
+//
+// It mirrors Runtime.evaluateExpr's own operator-precedence scan, in the
+// same order: strip balanced outer parens, then check (in turn) for a
+// top-level ternary, `||`, `&&`, one of the eight comparison operators, and
+// a leading unary `!`. A ternary/`||`/`&&`/`!` — and, later, arithmetic —
+// changes evaluateExpr's returned VALUE, not just a boolean result, so
+// reproducing it exactly would require reproducing the interpreter's
+// string-valued operator semantics in full; that is a later increment, so
+// each of these returns an error here. A comparison operator is handed to
+// genComparison. With none of those present, the whole expression is a
+// single operand (a bare field, or a `.length` expression) used for
+// truthiness.
+func (g *generator) genCondition(expr string) (string, error) {
+	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
+
+	if idx := findTernary(expr); idx >= 0 {
+		return "", fmt.Errorf("unsupported ternary operator in codegen condition %q", expr)
+	}
+	if idx := findBinaryOp(expr, "||"); idx >= 0 {
+		return "", fmt.Errorf("unsupported || operator in codegen condition %q", expr)
+	}
+	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
+		return "", fmt.Errorf("unsupported && operator in codegen condition %q", expr)
+	}
+
+	for _, op := range conditionComparisonOps {
+		if idx := findBinaryOp(expr, op); idx >= 0 {
+			if g.rootType == nil {
+				return "", fmt.Errorf("unsupported operator %q in codegen condition %q (Config.DataReflectType is required to classify operands)", op, expr)
+			}
+			return g.genComparison(expr[:idx], op, expr[idx+len(op):])
+		}
+	}
+
+	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		return "", fmt.Errorf("unsupported ! operator in codegen condition %q", expr)
+	}
+
+	return g.genOperandTruthiness(expr)
+}
+
+// genOperandTruthiness emits the truthiness form of a single condition
+// operand with no top-level operator: a `.length` expression (needs
+// Config.DataReflectType, since classifying its base requires a type), or a
+// bare field/dot-path — unchanged from increment 2a's genConditional (and,
+// in type-blind mode, from increment 1's): a bool field is used bare, a
+// numeric field is compared against zero, and any other field type is an
+// error rather than guessing at its stringify-based truthiness.
+func (g *generator) genOperandTruthiness(expr string) (string, error) {
+	if dotIdx := findTopLevelDot(expr); dotIdx > 0 && expr[dotIdx+1:] == "length" {
+		if g.rootType == nil {
+			return "", fmt.Errorf("unsupported .length condition %q in codegen (Config.DataReflectType is required to classify operands)", expr)
+		}
+		lenExpr, _, err := g.genLengthOperand(expr[:dotIdx], expr)
+		if err != nil {
+			return "", err
+		}
+		return lenExpr + " != 0", nil
+	}
+
+	condExpr, condTyp, err := g.resolveFieldExpr(expr)
+	if err != nil {
+		return "", err
+	}
+	if condTyp == nil {
+		return condExpr, nil
+	}
+	switch condTyp.Kind() {
+	case reflect.Bool:
+		// Used bare: already the exact form Runtime.isTruthy's
+		// FormatBool-derived "true"/"false" mirrors.
+		return condExpr, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float64:
+		return condExpr + " != 0", nil
+	default:
+		return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool and numeric fields are supported in this increment)", condTyp, expr)
+	}
+}
+
+// operandShape classifies a condition operand genOperand resolved, for
+// genComparison's compatibility checks.
+type operandShape int
+
+const (
+	shapeOperandInvalid operandShape = iota
+	shapeOperandBool
+	shapeOperandNumericField
+	shapeOperandStringField
+	shapeOperandNumericLiteral
+	shapeOperandStringLiteral
+)
+
+// operandKind carries a genOperand result's classification, plus the extra
+// detail genComparison needs to decide whether two operands can be compared
+// the way the interpreter's compareValues would: the exact numeric
+// reflect.Type for a numeric field (direct Go comparison requires identical
+// numeric types, not just the same reflect.Kind), the parsed value AND the
+// original token text for a numeric literal (checkLiteralAgainstFieldKind
+// needs the exact text — a plain decimal integer token like
+// "9223372036854775807" carries more precision than float64 can hold, so a
+// range check based only on the parsed float64 can't reliably tell a
+// boundary-valid literal from an out-of-range one), and whether a string
+// literal's text itself looks numeric (parseNumber), since the
+// interpreter's compareValues numeric-compares a numeric-looking string
+// operand rather than string-comparing it.
+type operandKind struct {
+	shape          operandShape
+	numType        reflect.Type
+	numLiteralVal  float64
+	numLiteralText string
+	numericLiteral bool
+}
+
+func (k operandKind) isNumeric() bool {
+	return k.shape == shapeOperandNumericField || k.shape == shapeOperandNumericLiteral
+}
+
+func (k operandKind) isStringish() bool {
+	return k.shape == shapeOperandStringField || k.shape == shapeOperandStringLiteral
+}
+
+// genOperand resolves a single condition operand — one side of a
+// comparison, or the whole condition when it's bare — to a Go expression
+// plus its operandKind classification. The supported shapes, checked in
+// this order: a `.length` expression, a numeric literal (parseNumber
+// succeeds), a quoted string literal (unwrapQuotedLiteral succeeds), and a
+// bare field/dot-path resolving (via resolveFieldExpr) to a bool, string, or
+// numeric scalar. Anything else — including a non-scalar field, an operator
+// sub-expression, or a method call other than `.length` — returns an error.
+func (g *generator) genOperand(expr string) (string, operandKind, error) {
+	expr = strings.TrimSpace(expr)
+
+	if dotIdx := findTopLevelDot(expr); dotIdx > 0 && expr[dotIdx+1:] == "length" {
+		return g.genLengthOperand(expr[:dotIdx], expr)
+	}
+
+	if f, ok := parseNumber(expr); ok {
+		return expr, operandKind{shape: shapeOperandNumericLiteral, numLiteralVal: f, numLiteralText: expr}, nil
+	}
+
+	if lit, ok := unwrapQuotedLiteral(expr); ok {
+		_, numericLooking := parseNumber(lit)
+		return strconv.Quote(lit), operandKind{shape: shapeOperandStringLiteral, numericLiteral: numericLooking}, nil
+	}
+
+	goExpr, typ, err := g.resolveFieldExpr(expr)
+	if err != nil {
+		return "", operandKind{}, err
+	}
+	if typ == nil {
+		return "", operandKind{}, fmt.Errorf("unsupported operand %q in codegen condition (Config.DataReflectType is required to classify operands)", expr)
+	}
+
+	switch typ.Kind() {
+	case reflect.Bool:
+		return convertExpr(goExpr, typ, reflectTypeBool, "bool"), operandKind{shape: shapeOperandBool}, nil
+	case reflect.String:
+		return convertExpr(goExpr, typ, reflectTypeString, "string"), operandKind{shape: shapeOperandStringField}, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float64:
+		return goExpr, operandKind{shape: shapeOperandNumericField, numType: typ}, nil
+	default:
+		return "", operandKind{}, fmt.Errorf("unsupported operand %q in codegen condition (field type %s is not a supported scalar)", expr, typ)
+	}
+}
+
+// genLengthOperand resolves base (the part of a `.length` expression before
+// the final `.length`) and emits the Go equivalent of Runtime's `.length`
+// property: len(...) for a slice/array/map field, matching
+// reflect.Value.Len(); utf8.RuneCountInString(...) for a string field,
+// matching the interpreter's len([]rune(value)) — a rune count, not a byte
+// count, so it agrees on multibyte strings where plain len() would not. Any
+// other field type (including one requiring pointer dereference) doesn't
+// support `.length` in this increment and returns an error.
+func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind, error) {
+	goExpr, typ, err := g.resolveFieldExpr(base)
+	if err != nil {
+		return "", operandKind{}, fmt.Errorf("operand %q: %w", fullExpr, err)
+	}
+	if typ == nil {
+		return "", operandKind{}, fmt.Errorf("unsupported operand %q in codegen condition (Config.DataReflectType is required to classify operands)", fullExpr)
+	}
+
+	switch typ.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return "len(" + goExpr + ")", operandKind{shape: shapeOperandNumericField, numType: reflectTypeInt}, nil
+	case reflect.String:
+		g.needsUtf8 = true
+		return "utf8.RuneCountInString(" + convertExpr(goExpr, typ, reflectTypeString, "string") + ")", operandKind{shape: shapeOperandNumericField, numType: reflectTypeInt}, nil
+	default:
+		return "", operandKind{}, fmt.Errorf("unsupported operand %q in codegen condition (field type %s does not support .length)", fullExpr, typ)
+	}
+}
+
+// genComparison emits a Go boolean expression for leftRaw <op> rightRaw,
+// where op is one of the eight comparison operators Runtime.compareValues
+// handles. It resolves both operands with genOperand and only emits a
+// comparison for the bounded-agreement subset genComparison can prove
+// byte-identical to compareValues:
+//
+//   - both operands numeric (a numeric field, `.length`, or a numeric
+//     literal): a native Go comparison, `===`/`!==` folded to `==`/`!=`
+//     (compareValues treats them identically — no strict-type distinction).
+//     Two numeric fields must share the exact same Go type (a direct Go `==`
+//     between different numeric types doesn't compile, and would risk a
+//     silent-conversion divergence even if it did); a numeric literal
+//     compared to a numeric field must be representable in the field's kind
+//     — a fractional literal against an integer-kind field, or a negative
+//     literal against an unsigned field, doesn't compile as a direct Go
+//     comparison and is rejected instead of silently truncating/converting.
+//   - a string field compared, with `==`/`!=` (or the `===`/`!==` aliases)
+//     only, to a string literal that is NOT itself numeric-looking: a
+//     numeric-looking string literal would numeric-compare in compareValues
+//     (both operands would parse as numbers), not string-compare, so
+//     emitting a Go string `==` there would diverge.
+//
+// Every other combination — an ordering compare (`< > <= >=`) between
+// strings, two string literals, two string fields, a string operand against
+// a numeric operand, or any operand genOperand itself rejected — returns an
+// error instead of emitting a comparison that might not agree with the
+// interpreter.
+func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) {
+	leftRaw = strings.TrimSpace(leftRaw)
+	rightRaw = strings.TrimSpace(rightRaw)
+
+	leftExpr, leftKind, err := g.genOperand(leftRaw)
+	if err != nil {
+		return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition: %w", leftRaw, op, rightRaw, err)
+	}
+	rightExpr, rightKind, err := g.genOperand(rightRaw)
+	if err != nil {
+		return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition: %w", leftRaw, op, rightRaw, err)
+	}
+
+	goOp := op
+	switch op {
+	case "===":
+		goOp = "=="
+	case "!==":
+		goOp = "!="
+	}
+
+	switch {
+	case leftKind.isNumeric() && rightKind.isNumeric():
+		if err := checkNumericComparable(leftKind, rightKind); err != nil {
+			return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition: %w", leftRaw, op, rightRaw, err)
+		}
+		return leftExpr + " " + goOp + " " + rightExpr, nil
+
+	case leftKind.isStringish() && rightKind.isStringish():
+		if goOp != "==" && goOp != "!=" {
+			return "", fmt.Errorf("unsupported string ordering comparison %q in codegen condition (%q %s %q)", op, leftRaw, op, rightRaw)
+		}
+		var litKind operandKind
+		switch {
+		case leftKind.shape == shapeOperandStringField && rightKind.shape == shapeOperandStringLiteral:
+			litKind = rightKind
+		case rightKind.shape == shapeOperandStringField && leftKind.shape == shapeOperandStringLiteral:
+			litKind = leftKind
+		default:
+			return "", fmt.Errorf("unsupported string comparison %q %s %q in codegen condition (only a string field compared to a string literal is supported in this increment)", leftRaw, op, rightRaw)
+		}
+		if litKind.numericLiteral {
+			return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition (a numeric-looking string literal compares numerically in the interpreter, not as a string)", leftRaw, op, rightRaw)
+		}
+		return leftExpr + " " + goOp + " " + rightExpr, nil
+
+	default:
+		return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition (these operand types are not comparable in this increment)", leftRaw, op, rightRaw)
+	}
+}
+
+// checkNumericComparable reports an error unless left and right — both
+// already known numeric (a numeric field, `.length`, or a numeric literal)
+// — can be compared with a direct, compiling Go comparison that can't
+// silently diverge from compareValues: two numeric fields (or `.length`
+// results) must share the exact same Go type; a numeric literal compared
+// against a numeric field must be representable in the field's kind.
+func checkNumericComparable(left, right operandKind) error {
+	switch {
+	case left.shape == shapeOperandNumericField && right.shape == shapeOperandNumericField:
+		if left.numType != right.numType {
+			return fmt.Errorf("numeric fields of different Go types (%s vs %s) cannot be compared directly", left.numType, right.numType)
+		}
+		return nil
+	case left.shape == shapeOperandNumericField:
+		return checkLiteralAgainstFieldKind(right.numLiteralText, right.numLiteralVal, left.numType)
+	case right.shape == shapeOperandNumericField:
+		return checkLiteralAgainstFieldKind(left.numLiteralText, left.numLiteralVal, right.numType)
+	default:
+		// Two numeric literals: always a valid (if pointless) Go constant
+		// comparison.
+		return nil
+	}
+}
+
+// integerKindBits returns the bit width to validate an integer literal
+// against for the given numeric field kind: the kind's own width for a
+// sized kind, or 64 for the platform-sized Int/Uint kind — every platform
+// this package supports is 64-bit, so a literal that fits int64/uint64 is
+// exactly what compiles against a plain int/uint field.
+func integerKindBits(kind reflect.Kind) int {
+	switch kind {
+	case reflect.Int8, reflect.Uint8:
+		return 8
+	case reflect.Int16, reflect.Uint16:
+		return 16
+	case reflect.Int32, reflect.Uint32:
+		return 32
+	default:
+		return 64
+	}
+}
+
+// float64IntBoundary and float64UintBoundary are the exact float64 values
+// of 2^63 and 2^64 — the first magnitude that no longer fits in int64/
+// uint64, respectively. Both are exact powers of two, so — unlike
+// math.MaxInt64/math.MaxUint64 — they round-trip through float64 with no
+// precision loss, which matters here: math.MaxInt64 (2^63-1) itself is NOT
+// exactly representable in float64 and rounds UP to 2^63 when converted, so
+// comparing a parsed literal's float64 approximation against a
+// float64-rounded math.MaxInt64 cannot distinguish the valid literal
+// "9223372036854775807" from the invalid "9223372036854775808" — both parse
+// to the identical float64 value 2^63. These exact boundary constants are
+// only used as a fallback for a literal form checkLiteralAgainstFieldKind
+// can't range-check exactly (see its doc comment); the common plain-decimal
+// case never reaches them.
+const (
+	float64IntBoundary  = 9223372036854775808.0  // 2^63
+	float64UintBoundary = 18446744073709551616.0 // 2^64
+)
+
+// checkLiteralAgainstFieldKind reports an error unless the numeric literal
+// — litText its original token text, f its strconv.ParseFloat value — is
+// representable as fieldType without truncation or overflow: a fractional
+// value against an integer-kind field, a negative value against an
+// unsigned-kind field, or a magnitude beyond what the field's sized kind
+// (int8, uint8, int32, …) can hold would either fail to compile as a direct
+// Go comparison or silently change the field's meaning, so all three are
+// rejected rather than emitted.
+//
+// The range check is exact whenever litText is a plain base-10 integer
+// token (optionally signed): strconv.ParseInt/ParseUint, given the field
+// kind's own bit width, parses litText's arbitrary-precision decimal digits
+// directly and returns a range error if it doesn't fit — the identical test
+// the Go compiler itself applies to an integer constant, so it correctly
+// tells "9223372036854775807" (int64 field, fits exactly) apart from
+// "9223372036854775808" (one more, doesn't) even though both round to the
+// SAME float64 value (2^63) and are therefore indistinguishable by any
+// float64-only check.
+//
+// A literal that ISN'T a plain base-10 integer token (scientific notation
+// like "1e19", underscores, a whole-valued decimal like "3.0") falls back
+// to an approximate float64 bound check against the exact power-of-two
+// boundary constants above, then reflect.Value.OverflowInt/OverflowUint for
+// a sized kind narrower than the field's own comparison type. This fallback
+// carries the same float64-precision residual near the int64/uint64
+// boundary as the exact path avoids, but it's unreachable for the plain
+// decimal literals this increment's tests (and realistic Pug templates)
+// actually use.
+func checkLiteralAgainstFieldKind(litText string, f float64, fieldType reflect.Type) error {
+	switch fieldType.Kind() {
+	case reflect.Float64, reflect.Float32:
+		return nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if f != math.Trunc(f) {
+			return fmt.Errorf("a fractional numeric literal cannot be compared directly to integer field type %s", fieldType)
+		}
+		if _, err := strconv.ParseInt(litText, 10, integerKindBits(fieldType.Kind())); err != nil {
+			numErr, ok := err.(*strconv.NumError)
+			if !ok || numErr.Err != strconv.ErrRange {
+				// Not a plain base-10 integer token — fall back to the
+				// approximate float64 bound check.
+				if f < -float64IntBoundary || f >= float64IntBoundary {
+					return fmt.Errorf("numeric literal %v is out of range for integer field type %s", f, fieldType)
+				}
+				if reflect.New(fieldType).Elem().OverflowInt(int64(f)) {
+					return fmt.Errorf("numeric literal %v is out of range for integer field type %s", f, fieldType)
+				}
+				return nil
+			}
+			return fmt.Errorf("numeric literal %s is out of range for integer field type %s", litText, fieldType)
+		}
+		return nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if f != math.Trunc(f) || f < 0 {
+			return fmt.Errorf("numeric literal %v is not a valid value of unsigned field type %s", f, fieldType)
+		}
+		if _, err := strconv.ParseUint(litText, 10, integerKindBits(fieldType.Kind())); err != nil {
+			numErr, ok := err.(*strconv.NumError)
+			if !ok || numErr.Err != strconv.ErrRange {
+				// Not a plain base-10 integer token — fall back to the
+				// approximate float64 bound check.
+				if f >= float64UintBoundary {
+					return fmt.Errorf("numeric literal %v is out of range for unsigned field type %s", f, fieldType)
+				}
+				if reflect.New(fieldType).Elem().OverflowUint(uint64(f)) {
+					return fmt.Errorf("numeric literal %v is out of range for unsigned field type %s", f, fieldType)
+				}
+				return nil
+			}
+			return fmt.Errorf("numeric literal %s is out of range for unsigned field type %s", litText, fieldType)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported numeric field type %s", fieldType)
+	}
 }

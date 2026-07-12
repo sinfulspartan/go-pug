@@ -14,11 +14,17 @@ import (
 // doctype, nested tags, a void element, static attributes plus .class#id
 // shorthand, plain text, #{bareField} and #{obj.field} interpolation of
 // string/int/float64/bool fields, a single-variable each over a slice
-// field, if/else on both a bool field and a numeric field, a dynamic
-// string attribute (bare field and dot-path), a dynamic numeric attribute,
-// a boolean attribute driven by a bool field, a bool field rendered on a
-// non-boolean attribute name, a dynamic class merging a shorthand token
-// with a bare string field, and a dynamic class with no shorthand at all.
+// field, if/else on a bool field and a numeric field (bare truthiness), a
+// dynamic string attribute (bare field and dot-path), a dynamic numeric
+// attribute, a boolean attribute driven by a bool field, a bool field
+// rendered on a non-boolean attribute name, a dynamic class merging a
+// shorthand token with a bare string field, a dynamic class with no
+// shorthand at all, and — the comparison/`.length` condition slice — a
+// `.length` numeric comparison against a slice field, a numeric field
+// compared against zero and against an int literal, a string field
+// compared for equality against a non-numeric-looking string literal, and a
+// `.length` numeric comparison against a string field (proving rune-count,
+// not byte-count, semantics on a multibyte value).
 const skelTemplate = `doctype html
 html
   head
@@ -50,6 +56,26 @@ html
         p.has-count Has items
       else
         p.no-count No items
+      if Items.length > 0
+        p.has-items Has items (length)
+      else
+        p.no-items No items (length)
+      if Count > 0
+        p.positive Positive
+      else
+        p.not-positive Not positive
+      if Count == 3
+        p.three Three
+      else
+        p.not-three Not three
+      if Name == "world"
+        p.name-world Name is world
+      else
+        p.name-other Name is other
+      if Name.length > 2
+        p.long-name Long name
+      else
+        p.short-name Short name
 `
 
 // SkelData, SkelAuthor, and SkelItem are the declared struct the codegen
@@ -135,12 +161,16 @@ func TestCodegenSkelGolden(t *testing.T) {
 
 // TestCodegenSkelByteIdentical is the increment's correctness bar: for
 // several data shapes (empty/populated slice, flag true/false, zero/non-zero
-// Count to exercise `if Count` both ways, a negative int, a fractional
-// float, strings containing HTML-significant characters, attribute values
-// proving EscapeAttr's entity-aware, apostrophe-preserving escaping diverges
-// from html.EscapeString, and dynamic class values — a normal value, an
-// empty value proving the empty-token drop rule leaves neither a trailing
-// space nor a leaked field value, an HTML-special-character value proving
+// Count to exercise `if Count`, `if Count > 0`, and `if Count == 3` each
+// both ways, a negative int, a fractional float, a string exactly equal to
+// the `if Name == "world"` literal and one that isn't, a multibyte Name
+// proving `if Name.length > 2` compares a RUNE count (matching the
+// interpreter's len([]rune(...))) rather than a byte count, strings
+// containing HTML-significant characters, attribute values proving
+// EscapeAttr's entity-aware, apostrophe-preserving escaping diverges from
+// html.EscapeString, and dynamic class values — a normal value, an empty
+// value proving the empty-token drop rule leaves neither a trailing space
+// nor a leaked field value, an HTML-special-character value proving
 // EscapeAttr runs after JoinClasses, and a value containing an internal
 // space proving it is kept as-is rather than re-split), the committed
 // generated RenderSkel must produce output byte-identical to the
@@ -188,6 +218,35 @@ func TestCodegenSkelByteIdentical(t *testing.T) {
 				Flag:   true,
 				Count:  -5,
 				Price:  2.5,
+				Link:   "/profile",
+			},
+		},
+		{
+			name: "Name equals the \"world\" string-equality literal exactly",
+			data: SkelData{
+				Name:   "world",
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:  []SkelItem{{Label: "one"}},
+				Flag:   true,
+				Count:  3,
+				Price:  9.99,
+				Link:   "/profile",
+			},
+		},
+		{
+			name: "multibyte Name proves .length compares a rune count, not a byte count",
+			data: SkelData{
+				// "日本" is two runes but six UTF-8 bytes, straddling the
+				// `> 2` boundary differently depending on which count is
+				// used: a byte count would take the true branch (6 > 2), a
+				// rune count — matching the interpreter — takes the false
+				// branch (2 > 2 is false).
+				Name:   "日本",
+				Author: SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:  nil,
+				Flag:   false,
+				Count:  0,
+				Price:  0,
 				Link:   "/profile",
 			},
 		},
