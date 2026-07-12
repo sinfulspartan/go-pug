@@ -351,16 +351,21 @@ func (g *generator) genTag(tag *TagNode) error {
 //     escaping); every other scalar kind stringifies with strconv, unescaped,
 //     since none of those stringifications can contain an HTML-special
 //     character;
+//   - a dynamic "class" value merging shorthand class tokens with one or
+//     more bare string-field tokens (see genDynamicClass) emits a runtime
+//     write joining the tokens with the exported JoinClasses (which drops an
+//     empty token, matching the interpreter's empty-token rule) and escapes
+//     the joined result with EscapeAttr;
 //
-// A dynamic "class" value, a style object, `&attributes`, an unescaped
-// attribute, or any value that isn't a static literal / bare identifier /
-// dot-path scalar (an operator, method call, index expression, or a
-// class/style object) is out of scope for this increment and returns an
-// error rather than guessing at output that might not match the
-// interpreter. With a nil Config.DataReflectType (type-blind mode), a
-// dynamic value can't be classified as scalar or bool at all, so only
-// static/bare attributes are supported there, matching increment 1
-// unchanged.
+// A style object, `&attributes`, an unescaped attribute, a class-object/
+// array/ternary value, or any value that isn't a static literal / bare
+// identifier / dot-path scalar (an operator, method call, index expression)
+// is out of scope for this increment and returns an error rather than
+// guessing at output that might not match the interpreter. With a nil
+// Config.DataReflectType (type-blind mode), a dynamic value can't be
+// classified as scalar or bool at all (nor a class token confirmed a string
+// field), so only static/bare attributes are supported there, matching
+// increment 1 unchanged.
 func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 	if _, ok := attrs["&attributes"]; ok {
 		return fmt.Errorf("unsupported dynamic &attributes in codegen")
@@ -385,7 +390,10 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 		}
 
 		if name == "class" {
-			return fmt.Errorf("unsupported dynamic class attribute in codegen (only static quoted values are supported in this increment)")
+			if err := g.genDynamicClass(trimmed); err != nil {
+				return fmt.Errorf("attribute %q: %w", name, err)
+			}
+			continue
 		}
 
 		if g.rootType == nil {
@@ -433,6 +441,66 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 		}
 		g.writeStatic(`"`)
 	}
+	return nil
+}
+
+// genDynamicClass emits a dynamic class="..." attribute for a value
+// genAttributes has already determined is not a pure static literal —
+// parseAttributes's merge contract (parser.go's class-merge branch) means
+// that value is either a bare dynamic token on its own (`div(class=cls)`)
+// or shorthand class tokens, individually quoted, followed by one bare
+// dynamic token (`"text-end" cls`, `"btn" "large" variant`). It tokenises
+// the value with strings.Fields and classifies each token as a static
+// quoted literal or a bare identifier/dot-path resolving to a string field,
+// then emits a single runtime write joining every token's Go expression
+// through the exported JoinClasses (dropping an empty token, matching
+// Runtime.renderTag's empty-token rule exactly) and escaping the joined
+// result through EscapeAttr. A ternary/operator class expression, a class
+// object/array value, or a token that isn't a static literal or a
+// string-field reference is out of scope for this increment and returns an
+// error instead of guessing at output the interpreter might not produce;
+// so does a nil Config.DataReflectType, since without type information a
+// bare class token can't be confirmed to resolve to a string field.
+func (g *generator) genDynamicClass(trimmed string) error {
+	if g.rootType == nil {
+		return fmt.Errorf("unsupported dynamic class attribute in codegen (only static quoted values are supported without type information)")
+	}
+	if isOperatorExpr(trimmed) {
+		return fmt.Errorf("unsupported dynamic class attribute in codegen (a ternary/operator class expression is not yet supported)")
+	}
+
+	words := strings.Fields(trimmed)
+	for _, w := range words {
+		if strings.HasPrefix(w, "{") || strings.HasPrefix(w, "[") {
+			return fmt.Errorf("unsupported dynamic class attribute in codegen (a class object/array value is not yet supported)")
+		}
+	}
+
+	args := make([]string, 0, len(words))
+	for _, w := range words {
+		if lit, ok := unwrapQuotedLiteral(w); ok {
+			args = append(args, strconv.Quote(lit))
+			continue
+		}
+
+		shape, _ := classifySimpleShape(w)
+		if shape != shapeIdentifier && shape != shapeDotPath {
+			return fmt.Errorf("unsupported dynamic class attribute in codegen (class token %q is not a static literal or a plain field reference)", w)
+		}
+		goExpr, typ, err := g.resolveFieldExpr(w)
+		if err != nil {
+			return err
+		}
+		if typ == nil || typ.Kind() != reflect.String {
+			return fmt.Errorf("unsupported dynamic class attribute in codegen (class token %q must resolve to a string field)", w)
+		}
+		args = append(args, convertExpr(goExpr, typ, reflectTypeString, "string"))
+	}
+
+	g.needsGopug = true
+	g.writeStatic(` class="`)
+	g.writeExprWrite("gopug.EscapeAttr(gopug.JoinClasses(" + strings.Join(args, ", ") + "))")
+	g.writeStatic(`"`)
 	return nil
 }
 

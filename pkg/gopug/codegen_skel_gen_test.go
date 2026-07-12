@@ -30,7 +30,11 @@ func RenderSkel(w io.Writer, d SkelData) error {
 	}
 	io.WriteString(w, "><div data-flag=\"")
 	io.WriteString(w, strconv.FormatBool(d.Flag))
-	io.WriteString(w, "\">Flag attr</div><br><ul>")
+	io.WriteString(w, "\">Flag attr</div><div class=\"")
+	io.WriteString(w, gopug.EscapeAttr(gopug.JoinClasses("card", d.Variant)))
+	io.WriteString(w, "\">Card</div><span class=\"")
+	io.WriteString(w, gopug.EscapeAttr(gopug.JoinClasses(d.Extra)))
+	io.WriteString(w, "\">Extra</span><br><ul>")
 	for _, item := range d.Items {
 		io.WriteString(w, "<li>")
 		io.WriteString(w, html.EscapeString(item.Label))

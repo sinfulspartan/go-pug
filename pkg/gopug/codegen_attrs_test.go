@@ -7,13 +7,16 @@ import (
 )
 
 // TestCodegenAttrUnsupported asserts that attribute shapes explicitly out of
-// scope for this increment — a dynamic class value, a style object, an
-// &attributes spread, an unescaped attribute, and an operator-valued
-// attribute — all return a descriptive "unsupported" error rather than
-// emitting output that might not match the interpreter's renderTag. Only
-// the tractable slice (a dynamic scalar value on a non-class attribute, and
-// a boolean attribute driven by a bool field) is supported; everything here
-// is a later increment.
+// scope for this increment — a style object, an &attributes spread, an
+// unescaped attribute, an operator-valued attribute, and the dynamic-class
+// shapes still deferred past the shorthand+bare-string-field merge (a
+// ternary/operator class expression, a class object, a class array, and a
+// non-string dynamic class token) — all return a descriptive "unsupported"
+// error rather than emitting output that might not match the interpreter's
+// renderTag. Only the tractable slice (a dynamic scalar value on a
+// non-class attribute, a boolean attribute driven by a bool field, and a
+// dynamic class merging shorthand tokens with bare string-field tokens) is
+// supported; everything here is a later increment.
 func TestCodegenAttrUnsupported(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -21,9 +24,24 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 		wantMessage string
 	}{
 		{
-			name:        "dynamic class attribute",
-			src:         "div(class=Name)",
-			wantMessage: "class",
+			name:        "ternary class expression",
+			src:         `div(class=Count > 0 ? "a" : "b")`,
+			wantMessage: "unsupported",
+		},
+		{
+			name:        "class object",
+			src:         "div(class={active: Flag})",
+			wantMessage: "unsupported",
+		},
+		{
+			name:        "class array",
+			src:         "div(class=[Name, Name])",
+			wantMessage: "unsupported",
+		},
+		{
+			name:        "non-string dynamic class token",
+			src:         "div(class=Count)",
+			wantMessage: "unsupported",
 		},
 		{
 			name:        "style object attribute",
@@ -84,22 +102,37 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 // that would be a supported scalar in type-aware mode — is still rejected,
 // exactly as in increment 1: without type information the generator cannot
 // tell a scalar field from anything else, so only static/bare attributes
-// remain supported there.
+// remain supported there. This includes a dynamic class value: without type
+// information the generator can't confirm a bare class token resolves to a
+// string field, so it stays unsupported in nil mode too.
 func TestCodegenAttrNilReflectTypeDynamicUnsupported(t *testing.T) {
-	ast, err := Parse("a(href=Link)", nil)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "dynamic scalar attribute", src: "a(href=Link)"},
+		{name: "dynamic class attribute, no shorthand", src: "div(class=Extra)"},
+		{name: "dynamic class attribute, with shorthand", src: "div.card(class=Extra)"},
 	}
 
-	_, err = GenerateGo(ast, Config{
-		PackageName: "gopug",
-		FuncName:    "RenderAttrUnsupported",
-		DataType:    "SkelData",
-	})
-	if err == nil {
-		t.Fatalf("GenerateGo: expected an unsupported-construct error for a dynamic attribute with a nil DataReflectType, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("GenerateGo: error %q does not describe an unsupported construct", err.Error())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, err := Parse(tc.src, nil)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+
+			_, err = GenerateGo(ast, Config{
+				PackageName: "gopug",
+				FuncName:    "RenderAttrUnsupported",
+				DataType:    "SkelData",
+			})
+			if err == nil {
+				t.Fatalf("GenerateGo(%q): expected an unsupported-construct error for a dynamic attribute with a nil DataReflectType, got nil", tc.src)
+			}
+			if !strings.Contains(err.Error(), "unsupported") {
+				t.Errorf("GenerateGo(%q): error %q does not describe an unsupported construct", tc.src, err.Error())
+			}
+		})
 	}
 }

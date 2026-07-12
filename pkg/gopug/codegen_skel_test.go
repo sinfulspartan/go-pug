@@ -16,8 +16,9 @@ import (
 // string/int/float64/bool fields, a single-variable each over a slice
 // field, if/else on both a bool field and a numeric field, a dynamic
 // string attribute (bare field and dot-path), a dynamic numeric attribute,
-// a boolean attribute driven by a bool field, and a bool field rendered on
-// a non-boolean attribute name.
+// a boolean attribute driven by a bool field, a bool field rendered on a
+// non-boolean attribute name, a dynamic class merging a shorthand token
+// with a bare string field, and a dynamic class with no shorthand at all.
 const skelTemplate = `doctype html
 html
   head
@@ -35,6 +36,8 @@ html
       div(data-count=Count) Count attr
       input(checked=Flag)
       div(data-flag=Flag) Flag attr
+      div.card(class=Variant) Card
+      span(class=Extra) Extra
       br
       ul
         each item in Items
@@ -54,13 +57,15 @@ html
 // codegen_skel_gen_test.go) is GenerateGo's checked-in output for this
 // template and this struct.
 type SkelData struct {
-	Name   string
-	Author SkelAuthor
-	Items  []SkelItem
-	Flag   bool
-	Count  int
-	Price  float64
-	Link   string
+	Name    string
+	Author  SkelAuthor
+	Items   []SkelItem
+	Flag    bool
+	Count   int
+	Price   float64
+	Link    string
+	Variant string
+	Extra   string
 }
 
 type SkelAuthor struct {
@@ -87,13 +92,15 @@ func skelDataToMap(d SkelData) map[string]any {
 		items[i] = map[string]any{"Label": it.Label}
 	}
 	return map[string]any{
-		"Name":   d.Name,
-		"Author": map[string]any{"Bio": d.Author.Bio, "Avatar": d.Author.Avatar},
-		"Items":  items,
-		"Flag":   d.Flag,
-		"Count":  d.Count,
-		"Price":  d.Price,
-		"Link":   d.Link,
+		"Name":    d.Name,
+		"Author":  map[string]any{"Bio": d.Author.Bio, "Avatar": d.Author.Avatar},
+		"Items":   items,
+		"Flag":    d.Flag,
+		"Count":   d.Count,
+		"Price":   d.Price,
+		"Link":    d.Link,
+		"Variant": d.Variant,
+		"Extra":   d.Extra,
 	}
 }
 
@@ -129,11 +136,15 @@ func TestCodegenSkelGolden(t *testing.T) {
 // TestCodegenSkelByteIdentical is the increment's correctness bar: for
 // several data shapes (empty/populated slice, flag true/false, zero/non-zero
 // Count to exercise `if Count` both ways, a negative int, a fractional
-// float, strings containing HTML-significant characters, and attribute
-// values proving EscapeAttr's entity-aware, apostrophe-preserving escaping
-// diverges from html.EscapeString), the committed generated RenderSkel must
-// produce output byte-identical to the interpreter rendering the
-// equivalent, identically typed map.
+// float, strings containing HTML-significant characters, attribute values
+// proving EscapeAttr's entity-aware, apostrophe-preserving escaping diverges
+// from html.EscapeString, and dynamic class values — a normal value, an
+// empty value proving the empty-token drop rule leaves neither a trailing
+// space nor a leaked field value, an HTML-special-character value proving
+// EscapeAttr runs after JoinClasses, and a value containing an internal
+// space proving it is kept as-is rather than re-split), the committed
+// generated RenderSkel must produce output byte-identical to the
+// interpreter rendering the equivalent, identically typed map.
 func TestCodegenSkelByteIdentical(t *testing.T) {
 	tpl, err := gopug.Compile(skelTemplate, nil)
 	if err != nil {
@@ -214,6 +225,62 @@ func TestCodegenSkelByteIdentical(t *testing.T) {
 				Count:  0,
 				Price:  0,
 				Link:   `x&amp;y`,
+			},
+		},
+		{
+			name: "dynamic class: normal value, with and without a shorthand token",
+			data: SkelData{
+				Name:    "World",
+				Author:  SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:   nil,
+				Flag:    true,
+				Count:   1,
+				Price:   1.5,
+				Link:    "/profile",
+				Variant: "large",
+				Extra:   "note",
+			},
+		},
+		{
+			name: "dynamic class: empty value drops the token with no trailing space or leaked field value",
+			data: SkelData{
+				Name:    "World",
+				Author:  SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:   nil,
+				Flag:    true,
+				Count:   1,
+				Price:   1.5,
+				Link:    "/profile",
+				Variant: "",
+				Extra:   "",
+			},
+		},
+		{
+			name: "dynamic class: HTML-special character value proves EscapeAttr runs after JoinClasses",
+			data: SkelData{
+				Name:    "World",
+				Author:  SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:   nil,
+				Flag:    true,
+				Count:   1,
+				Price:   1.5,
+				Link:    "/profile",
+				Variant: `a<b`,
+				Extra:   `c&d`,
+			},
+		},
+		{
+			name: "dynamic class: value with an internal space is kept as-is, not re-split",
+			data: SkelData{
+				Name:    "World",
+				Author:  SkelAuthor{Bio: "A short bio", Avatar: "/avatar.png"},
+				Items:   nil,
+				Flag:    true,
+				Count:   1,
+				Price:   1.5,
+				Link:    "/profile",
+				Variant: "x y",
+				Extra:   "p q",
 			},
 		},
 	}

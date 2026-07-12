@@ -894,6 +894,22 @@ func EscapeAttr(s string) string {
 	return htmlEscapeAttr(s)
 }
 
+// JoinClasses returns classes joined by a single space, dropping any empty
+// element. It is exported so codegen-generated code can reproduce
+// Runtime.renderTag's dynamic class-merge rule exactly: a shorthand class
+// token (`.foo`) is always kept, but a bare class field/dot-path token that
+// evaluates to the empty string is dropped rather than leaving a trailing
+// space or leaking the field's value as a literal empty string.
+func JoinClasses(classes ...string) string {
+	kept := make([]string, 0, len(classes))
+	for _, c := range classes {
+		if c != "" {
+			kept = append(kept, c)
+		}
+	}
+	return strings.Join(kept, " ")
+}
+
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
 // renders them: id first, then class, then every other attribute name
 // alphabetically. Runtime.renderTag and the codegen backend's genAttributes
