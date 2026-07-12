@@ -64,8 +64,8 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 			wantMessage: "unescaped",
 		},
 		{
-			name:        "deferred-method-call-valued attribute",
-			src:         "div(title=Name.toFixed(2))",
+			name:        "deferred-method-call-valued attribute (unsupported struct receiver)",
+			src:         "div(title=Author.toFixed(2))",
 			wantMessage: "unsupported",
 		},
 		{

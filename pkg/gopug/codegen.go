@@ -874,14 +874,15 @@ func (g *generator) genCode(n *CodeNode) error {
 // Runtime.evaluateExpr's own template-literal walk discards a part's error
 // rather than propagating it, so genTemplateLiteral matches that by
 // discarding it too, via genFallibleTemplatePart, rather than erroring).
-// Every other construct evaluateExpr supports beyond these — most string
-// method calls, index expressions (`arr[i]`, see genIndexValueExpr), and
-// value-context `.length` (see genLengthValueExpr) ARE now supported (see
-// genMethodCall); a non-string-keyed map index, an index-then-dot receiver,
-// `.join`/`.toFixed`/`.toPrecision`, and an array/object literal remain a
-// later increment — returns a descriptive "unsupported" error here instead
-// of emitting something that might not match — the correctness bar is
-// byte-identical to the interpreter, not a best guess.
+// Every other construct evaluateExpr supports beyond these — string method
+// calls including the type-directed `.join`/`.toFixed`/`.toPrecision` (see
+// genMethodCall, genJoinValueExpr, genToFixedOrPrecisionValueExpr), index
+// expressions (`arr[i]`, see genIndexValueExpr), and value-context `.length`
+// (see genLengthValueExpr) — ARE now supported; a non-string-keyed map
+// index, an index-then-dot receiver (`arr[i].field`), and an array/object
+// literal remain a later increment — returns a descriptive "unsupported"
+// error here instead of emitting something that might not match — the
+// correctness bar is byte-identical to the interpreter, not a best guess.
 func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
@@ -1165,24 +1166,28 @@ func (g *generator) genLengthValueExpr(objExpr, fullExpr string) (string, bool, 
 // findTopLevelDot located and is already known to contain "(" (a property
 // access with no "(" is resolveFieldExpr's leaf case, not this one). It
 // splits methodName/argsStr exactly the way Runtime.evaluateExpr's own
-// method-dispatch switch does (strings.Cut on "(" then ")"), resolves the
-// receiver via a genValueExpr recursion on objExpr — the STRINGIFIED
-// receiver, matching evaluateExpr's own objVal := evaluateExpr(objExpr) —
-// and dispatches on methodName. A trivial method (a single stdlib call with
-// no argument-dependent logic) is emitted directly on the receiver
-// expression; a non-trivial method (argument quote-stripping and/or
-// multi-step logic) is emitted as a call to the matching single-sourced
-// gopug.Method* helper (see runtime.go), with each argument itself resolved
-// by a genValueExpr recursion, split on the same top-level comma
-// findBinaryOp locates for a two-argument method. Both the receiver and
-// every argument must be TOTAL in this increment — a fallible receiver or
-// argument (e.g. `(a/b).toUpperCase()`) returns an error rather than
-// growing the IIFE machinery for methods yet. `length` is intercepted by
-// genValueExpr's own dot-handling before this function is ever reached (see
-// genLengthValueExpr), so it never appears in the switch below; `join`,
-// `toFixed`, and `toPrecision` are recognized but explicitly deferred (they
-// need type-aware/fallible handling this increment doesn't build); any other
-// unrecognized name errors the same way Runtime.evaluateExpr's own
+// method-dispatch switch does (strings.Cut on "(" then ")"). `join`,
+// `toFixed`, and `toPrecision` are handled FIRST, before the receiver is
+// ever stringified: unlike every other method here, they need the RAW typed
+// receiver (resolveFieldExpr, not a genValueExpr recursion) — join iterates
+// slice elements, toFixed/toPrecision need the numeric value — so they are
+// dispatched to genJoinValueExpr/genToFixedOrPrecisionValueExpr up front
+// (see those functions for the type-directed rules). Every other method
+// resolves the receiver via a genValueExpr recursion on objExpr — the
+// STRINGIFIED receiver, matching evaluateExpr's own objVal :=
+// evaluateExpr(objExpr) — and dispatches on methodName. A trivial method (a
+// single stdlib call with no argument-dependent logic) is emitted directly
+// on the receiver expression; a non-trivial method (argument
+// quote-stripping and/or multi-step logic) is emitted as a call to the
+// matching single-sourced gopug.Method* helper (see runtime.go), with each
+// argument itself resolved by a genValueExpr recursion, split on the same
+// top-level comma findBinaryOp locates for a two-argument method. Both the
+// receiver and every argument must be TOTAL in this increment — a fallible
+// receiver or argument (e.g. `(a/b).toUpperCase()`) returns an error rather
+// than growing the IIFE machinery for methods yet. `length` is intercepted
+// by genValueExpr's own dot-handling before this function is ever reached
+// (see genLengthValueExpr), so it never appears in the switch below; any
+// other unrecognized name errors the same way Runtime.evaluateExpr's own
 // "unsupported string method" fallback does.
 func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
 	methodName := rest
@@ -1194,6 +1199,13 @@ func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
 	}
 	methodName = strings.TrimSpace(methodName)
 	fullExpr := objExpr + "." + rest
+
+	switch methodName {
+	case "join":
+		return g.genJoinValueExpr(objExpr, argsStr, fullExpr)
+	case "toFixed", "toPrecision":
+		return g.genToFixedOrPrecisionValueExpr(objExpr, methodName, argsStr, fullExpr)
+	}
 
 	recvExpr, recvFallible, err := g.genValueExpr(objExpr)
 	if err != nil {
@@ -1369,11 +1381,153 @@ func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
 		}
 		return helper + "(" + recvExpr + ", " + lenArg + `, "")`, false, nil
 
-	case "join", "toFixed", "toPrecision":
-		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (deferred to a later increment)", methodName, fullExpr)
-
 	default:
 		return "", false, fmt.Errorf("unsupported string method %q in codegen value expression %q", methodName, fullExpr)
+	}
+}
+
+// genTotalArg resolves argExpr (a method-call argument) via genValueExpr,
+// requiring the result be TOTAL — a fallible argument (e.g. `(a/b)`) returns
+// an error tied to fullExpr, matching genMethodCall's own genArg closure,
+// since no method call in this increment (including join/toFixed/toPrecision)
+// grows the IIFE machinery needed to accept a fallible argument.
+func (g *generator) genTotalArg(argExpr, fullExpr string) (string, error) {
+	v, fallible, err := g.genValueExpr(argExpr)
+	if err != nil {
+		return "", err
+	}
+	if fallible {
+		return "", fmt.Errorf("unsupported method call with a fallible argument in codegen value expression %q (fallible method arguments are not yet supported)", fullExpr)
+	}
+	return v, nil
+}
+
+// genJoinValueExpr emits genMethodCall's handling of `<objExpr>.join(sep)`,
+// resolving the receiver via resolveFieldExpr — the RAW typed receiver,
+// unlike every other string method in genMethodCall — since
+// Runtime.evaluateExpr's own "join" case iterates r.evaluateExprRaw(objExpr)
+// as a reflect.Value, not the stringified receiver. Only a Slice/Array
+// receiver is supported: it emits a TOTAL immediately-invoked function
+// literal that builds a []string of each element's fmt.Sprintf("%v", …) form
+// (matching the interpreter's own per-element stringify exactly, including
+// on a non-scalar element type such as a struct slice) and joins them with
+// gopug.UnquoteArg(sep) — the same quote-strip UnquoteArg's doc comment
+// describes, applied to sep the same way Runtime.evaluateExpr's own "join"
+// case applies it. A 0-arg join passes the literal `""` for sep, matching
+// the interpreter's own empty-argument default. Any other receiver kind
+// (bool/struct/string/map/…) is a defer (error): the interpreter's own
+// fallback for a non-slice "join" receiver is to silently return the
+// stringified receiver unchanged, a weird edge codegen intentionally does
+// NOT reproduce — erroring at generate time here is fail-closed, not a
+// bounded-agreement breach, since it never emits output that might disagree
+// with the interpreter. A nil Config.DataReflectType (the receiver's type is
+// unknown) is likewise a defer (error), the same as every other
+// type-directed construct in this file.
+func (g *generator) genJoinValueExpr(objExpr, argsStr, fullExpr string) (string, bool, error) {
+	objGoExpr, typ, err := g.resolveFieldExpr(objExpr)
+	if err != nil {
+		return "", false, fmt.Errorf("method %q receiver %q: %w", "join", objExpr, err)
+	}
+	if typ == nil {
+		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (Config.DataReflectType is required to classify the receiver)", "join", fullExpr)
+	}
+	if typ.Kind() != reflect.Slice && typ.Kind() != reflect.Array {
+		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (receiver type %s is not a slice or array)", "join", fullExpr, typ)
+	}
+
+	sep := `""`
+	if argsStr != "" {
+		sep, err = g.genTotalArg(argsStr, fullExpr)
+		if err != nil {
+			return "", false, err
+		}
+	}
+
+	g.needsGopug = true
+	g.needsStrings = true
+	g.needsFmt = true
+	n := g.nextTmp()
+	pv := fmt.Sprintf("__p%d", n)
+	iv := fmt.Sprintf("__i%d", n)
+	ev := fmt.Sprintf("__e%d", n)
+	var b strings.Builder
+	b.WriteString("func() string {\n")
+	fmt.Fprintf(&b, "%s := make([]string, len(%s))\n", pv, objGoExpr)
+	fmt.Fprintf(&b, "for %s, %s := range %s {\n", iv, ev, objGoExpr)
+	fmt.Fprintf(&b, "%s[%s] = fmt.Sprintf(\"%%v\", %s)\n", pv, iv, ev)
+	b.WriteString("}\n")
+	fmt.Fprintf(&b, "return strings.Join(%s, gopug.UnquoteArg(%s))\n", pv, sep)
+	b.WriteString("}()")
+	return b.String(), false, nil
+}
+
+// genToFixedOrPrecisionValueExpr emits genMethodCall's handling of
+// `<objExpr>.toFixed(n)`/`<objExpr>.toPrecision(n)` (methodName selects
+// which), resolving the receiver via resolveFieldExpr — the RAW typed
+// receiver, matching Runtime.evaluateExpr's own r.evaluateExprRaw(objExpr)
+// type-switch — rather than a genValueExpr recursion. precArg is resolved as
+// a TOTAL genValueExpr result (a 0-arg call passes the literal `""`, letting
+// gopug.ToFixed/gopug.ToPrecision apply their own interpreter-matching
+// default), and the receiver's Kind decides the shape:
+//
+//   - a numeric field (any int/uint/float kind) is TOTAL: the field's own
+//     value, converted to float64 via convertExpr (a no-op for an untyped
+//     float64 field, an explicit float64(...) wrap for every other numeric
+//     kind — mirroring genScalarStringify's Float64 case), is passed
+//     directly to gopug.ToFixed/gopug.ToPrecision, which can never fail.
+//   - a string field is FALLIBLE: gopug.ToFixedStr/gopug.ToPrecisionStr
+//     parses it with strconv.ParseFloat at RENDER time, exactly like
+//     Runtime.evaluateExpr's own default-branch ParseFloat(objVal) fallback,
+//     and can return the interpreter's own "toFixed/toPrecision: value %q is
+//     not a number" error — this is the one case in this function where the
+//     returned goExpr is (string, error)-typed, and the fallible flag is
+//     true, letting the caller (genInterpolation/genCode/genAttributes, via
+//     genFallibleExtraction) propagate that error exactly like the
+//     interpreter's own Render would.
+//   - any other kind (bool, struct, slice, map, ptr, …) is a defer (error):
+//     the interpreter would always ParseFloat-fail the stringified value at
+//     render time for these kinds, so refusing to generate code for them is
+//     fail-closed, not a bounded-agreement breach.
+//
+// A nil Config.DataReflectType is likewise a defer (error), the same as
+// every other type-directed construct in this file.
+func (g *generator) genToFixedOrPrecisionValueExpr(objExpr, methodName, argsStr, fullExpr string) (string, bool, error) {
+	objGoExpr, typ, err := g.resolveFieldExpr(objExpr)
+	if err != nil {
+		return "", false, fmt.Errorf("method %q receiver %q: %w", methodName, objExpr, err)
+	}
+	if typ == nil {
+		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (Config.DataReflectType is required to classify the receiver)", methodName, fullExpr)
+	}
+
+	precArg := `""`
+	if argsStr != "" {
+		precArg, err = g.genTotalArg(argsStr, fullExpr)
+		if err != nil {
+			return "", false, err
+		}
+	}
+
+	totalHelper := "gopug.ToFixed"
+	fallibleHelper := "gopug.ToFixedStr"
+	if methodName == "toPrecision" {
+		totalHelper = "gopug.ToPrecision"
+		fallibleHelper = "gopug.ToPrecisionStr"
+	}
+
+	switch typ.Kind() {
+	case reflect.Float32, reflect.Float64,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		g.needsGopug = true
+		fConv := convertExpr(objGoExpr, typ, reflectTypeFloat64, "float64")
+		return totalHelper + "(" + fConv + ", " + precArg + ")", false, nil
+	case reflect.String:
+		g.needsGopug = true
+		sConv := convertExpr(objGoExpr, typ, reflectTypeString, "string")
+		return fallibleHelper + "(" + sConv + ", " + precArg + ")", true, nil
+	default:
+		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (receiver type %s is not numeric or string)", methodName, fullExpr, typ)
 	}
 }
 

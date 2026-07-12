@@ -1043,15 +1043,17 @@ func Not(val string) string {
 	return "true"
 }
 
-// unquoteArg strips a single layer of matching double or single quotes from
+// UnquoteArg strips a single layer of matching double or single quotes from
 // s, exactly the way Runtime.evaluateExpr's string-method dispatch strips a
 // method argument after evaluating it: only when s is at least two bytes
 // long and its first and last byte are the same quote character. It is the
 // single source of that quote-strip quirk, called both by the method-
 // dispatch switch below (on the value evaluateExpr(argExpr) already
-// produced) and by codegen-generated code's own Method* calls (on the value
-// genValueExpr(argExpr) already produced), so the two paths cannot drift.
-func unquoteArg(s string) string {
+// produced) and by codegen-generated code (on the value genValueExpr(argExpr)
+// already produced, including its own Method* calls and the "join" value
+// expression's separator), so the two paths cannot drift. It is exported so
+// codegen-generated code can call it directly.
+func UnquoteArg(s string) string {
 	if len(s) >= 2 &&
 		((s[0] == '"' && s[len(s)-1] == '"') ||
 			(s[0] == '\'' && s[len(s)-1] == '\'')) {
@@ -1074,20 +1076,20 @@ func MethodRepeat(recv, n string) string {
 }
 
 // MethodSplit reproduces Runtime.evaluateExpr's "split" string-method case on
-// already-evaluated operands: recv split on sep (after unquoteArg), then
+// already-evaluated operands: recv split on sep (after UnquoteArg), then
 // re-joined with a single space — matching evaluateExpr's own
 // strings.Join(strings.Split(...), " ") exactly. It is exported so
 // codegen-generated code can call it directly, keeping the "split" method's
 // semantics single-sourced in this one implementation.
 func MethodSplit(recv, sep string) string {
-	sep = unquoteArg(sep)
+	sep = UnquoteArg(sep)
 	return strings.Join(strings.Split(recv, sep), " ")
 }
 
 // MethodReplace reproduces Runtime.evaluateExpr's "replace" string-method case
 // on already-evaluated operands: the first occurrence of oldArg replaced
 // with newArg in recv. The quote-strip here is intentionally NOT the plain
-// per-argument unquoteArg: it reproduces the original case's own loop over
+// per-argument UnquoteArg: it reproduces the original case's own loop over
 // the two-element snapshot []string{oldArg, newArg}, which compares each
 // snapshot element s against the (possibly already-reassigned) oldArg
 // variable to decide which of oldArg/newArg to overwrite. When oldArg and
@@ -1168,22 +1170,22 @@ func MethodSlice2(recv, startStr, endStr string) string {
 
 // MethodIndexOf reproduces Runtime.evaluateExpr's "indexOf" string-method case
 // on already-evaluated operands: the byte index of needle (after
-// unquoteArg) in recv, formatted as a decimal string ("-1" when not found —
+// UnquoteArg) in recv, formatted as a decimal string ("-1" when not found —
 // strings.Index's own not-found sentinel). It is exported so codegen-
 // generated code can call it directly, keeping the "indexOf" method's
 // semantics single-sourced in this one implementation.
 func MethodIndexOf(recv, needle string) string {
-	return strconv.Itoa(strings.Index(recv, unquoteArg(needle)))
+	return strconv.Itoa(strings.Index(recv, UnquoteArg(needle)))
 }
 
 // MethodIncludes reproduces Runtime.evaluateExpr's "includes"/"contains"
 // string-method case on already-evaluated operands: "true" when recv
-// contains needle (after unquoteArg), "false" otherwise. It is exported so
+// contains needle (after UnquoteArg), "false" otherwise. It is exported so
 // codegen-generated code can call it directly, keeping the
 // "includes"/"contains" method's semantics single-sourced in this one
 // implementation.
 func MethodIncludes(recv, needle string) string {
-	if strings.Contains(recv, unquoteArg(needle)) {
+	if strings.Contains(recv, UnquoteArg(needle)) {
 		return "true"
 	}
 	return "false"
@@ -1191,11 +1193,11 @@ func MethodIncludes(recv, needle string) string {
 
 // MethodStartsWith reproduces Runtime.evaluateExpr's "startsWith"
 // string-method case on already-evaluated operands: "true" when recv starts
-// with prefix (after unquoteArg), "false" otherwise. It is exported so
+// with prefix (after UnquoteArg), "false" otherwise. It is exported so
 // codegen-generated code can call it directly, keeping the "startsWith"
 // method's semantics single-sourced in this one implementation.
 func MethodStartsWith(recv, prefix string) string {
-	if strings.HasPrefix(recv, unquoteArg(prefix)) {
+	if strings.HasPrefix(recv, UnquoteArg(prefix)) {
 		return "true"
 	}
 	return "false"
@@ -1203,11 +1205,11 @@ func MethodStartsWith(recv, prefix string) string {
 
 // MethodEndsWith reproduces Runtime.evaluateExpr's "endsWith" string-method
 // case on already-evaluated operands: "true" when recv ends with suffix
-// (after unquoteArg), "false" otherwise. It is exported so codegen-generated
+// (after UnquoteArg), "false" otherwise. It is exported so codegen-generated
 // code can call it directly, keeping the "endsWith" method's semantics
 // single-sourced in this one implementation.
 func MethodEndsWith(recv, suffix string) string {
-	if strings.HasSuffix(recv, unquoteArg(suffix)) {
+	if strings.HasSuffix(recv, UnquoteArg(suffix)) {
 		return "true"
 	}
 	return "false"
@@ -1221,14 +1223,14 @@ func MethodEndsWith(recv, suffix string) string {
 // either caller, so the interpreter and codegen-generated code, which pass
 // targetLenStr as a raw already-evaluated value with no trim of their own,
 // agree even when that value carries surrounding whitespace) parses to a
-// length greater than recv's rune count, padChar (after unquoteArg,
+// length greater than recv's rune count, padChar (after UnquoteArg,
 // defaulting to a single space when empty either because it wasn't given or
 // because it evaluated to the empty string) is repeated, rune by rune, to
 // fill the gap; recv unchanged otherwise. atStart selects which side the
 // padding is written to.
 func methodPad(recv, targetLenStr, padCharArg string, atStart bool) string {
 	targetLen, _ := strconv.Atoi(strings.TrimSpace(targetLenStr))
-	padChar := unquoteArg(padCharArg)
+	padChar := UnquoteArg(padCharArg)
 	if padChar == "" {
 		padChar = " "
 	}
@@ -1267,6 +1269,67 @@ func MethodPadStart(recv, targetLenStr, padCharArg string) string {
 // single-sourced in this one implementation.
 func MethodPadEnd(recv, targetLenStr, padCharArg string) string {
 	return methodPad(recv, targetLenStr, padCharArg, false)
+}
+
+// ToFixed reproduces Runtime.evaluateExpr's "toFixed" numeric formatting on
+// an already-typed float64 value: precArg (TrimSpace'd) parses as the
+// decimal-place count, defaulting to 0 on a parse failure or a negative
+// result (matching the original case's own `prec, _ := strconv.Atoi(...)`
+// followed by its `if prec < 0 { prec = 0 }` clamp exactly), then f is
+// formatted with fmt.Sprintf("%.<prec>f", f). It is exported so codegen-
+// generated code can call it directly on a numeric field's own raw float64
+// value — no ParseFloat round-trip — keeping the "toFixed" method's numeric
+// formatting single-sourced in this one implementation for both engines.
+func ToFixed(f float64, precArg string) string {
+	prec, err := strconv.Atoi(strings.TrimSpace(precArg))
+	if err != nil || prec < 0 {
+		prec = 0
+	}
+	return fmt.Sprintf("%."+strconv.Itoa(prec)+"f", f)
+}
+
+// ToFixedStr reproduces Runtime.evaluateExpr's fallback "toFixed" case for a
+// receiver whose raw value isn't itself numeric: recv is parsed with
+// strconv.ParseFloat, and on success formatted via ToFixed; on failure it
+// returns the interpreter's own "toFixed: value %q is not a number" error.
+// It is exported so codegen-generated code can call it directly for a
+// string-typed field, keeping this fallible path single-sourced.
+func ToFixedStr(recv, precArg string) (string, error) {
+	f, err := strconv.ParseFloat(recv, 64)
+	if err != nil {
+		return "", fmt.Errorf("toFixed: value %q is not a number", recv)
+	}
+	return ToFixed(f, precArg), nil
+}
+
+// ToPrecision reproduces Runtime.evaluateExpr's "toPrecision" numeric
+// formatting on an already-typed float64 value: prec defaults to 6, and is
+// only overridden when precArg (TrimSpace'd) parses to a strictly positive
+// integer — matching the original case's own `p > 0` guard exactly — then f
+// is formatted with fmt.Sprintf("%.<prec>g", f). It is exported so codegen-
+// generated code can call it directly on a numeric field's own raw float64
+// value, keeping the "toPrecision" method's numeric formatting
+// single-sourced in this one implementation for both engines.
+func ToPrecision(f float64, precArg string) string {
+	prec := 6
+	if p, err := strconv.Atoi(strings.TrimSpace(precArg)); err == nil && p > 0 {
+		prec = p
+	}
+	return fmt.Sprintf("%."+strconv.Itoa(prec)+"g", f)
+}
+
+// ToPrecisionStr is ToFixedStr's "toPrecision" analogue, reproducing
+// Runtime.evaluateExpr's fallback case for a non-numeric receiver:
+// strconv.ParseFloat on recv, then ToPrecision on success, or the
+// interpreter's own "toPrecision: value %q is not a number" error on
+// failure. It is exported so codegen-generated code can call it directly for
+// a string-typed field.
+func ToPrecisionStr(recv, precArg string) (string, error) {
+	f, err := strconv.ParseFloat(recv, 64)
+	if err != nil {
+		return "", fmt.Errorf("toPrecision: value %q is not a number", recv)
+	}
+	return ToPrecision(f, precArg), nil
 }
 
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
@@ -2699,12 +2762,8 @@ CHECK_INDEX_OP:
 			sep := ""
 			if argsStr != "" {
 				sep, _ = r.evaluateExpr(argsStr)
-				if len(sep) >= 2 &&
-					((sep[0] == '"' && sep[len(sep)-1] == '"') ||
-						(sep[0] == '\'' && sep[len(sep)-1] == '\'')) {
-					sep = sep[1 : len(sep)-1]
-				}
 			}
+			sep = UnquoteArg(sep)
 			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
 				rv := reflect.ValueOf(rawObj)
 				if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
@@ -2773,13 +2832,9 @@ CHECK_INDEX_OP:
 			return objVal, nil
 
 		case "toFixed":
-			prec := 0
+			prec := ""
 			if argsStr != "" {
-				n, _ := r.evaluateExpr(argsStr)
-				prec, _ = strconv.Atoi(strings.TrimSpace(n))
-			}
-			if prec < 0 {
-				prec = 0
+				prec, _ = r.evaluateExpr(argsStr)
 			}
 			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
 				rv := reflect.ValueOf(rawObj)
@@ -2792,26 +2847,16 @@ CHECK_INDEX_OP:
 				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 					f = float64(rv.Uint())
 				default:
-					if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
-						f = parsed
-					} else {
-						return "", fmt.Errorf("toFixed: value %q is not a number", objVal)
-					}
+					return ToFixedStr(objVal, prec)
 				}
-				return fmt.Sprintf("%."+strconv.Itoa(prec)+"f", f), nil
+				return ToFixed(f, prec), nil
 			}
-			if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
-				return fmt.Sprintf("%."+strconv.Itoa(prec)+"f", parsed), nil
-			}
-			return "", fmt.Errorf("toFixed: value %q is not a number", objVal)
+			return ToFixedStr(objVal, prec)
 
 		case "toPrecision":
-			prec := 6
+			prec := ""
 			if argsStr != "" {
-				n, _ := r.evaluateExpr(argsStr)
-				if p, err2 := strconv.Atoi(strings.TrimSpace(n)); err2 == nil && p > 0 {
-					prec = p
-				}
+				prec, _ = r.evaluateExpr(argsStr)
 			}
 			if rawObj := r.evaluateExprRaw(objExpr); rawObj != nil {
 				rv := reflect.ValueOf(rawObj)
@@ -2824,18 +2869,11 @@ CHECK_INDEX_OP:
 				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 					f = float64(rv.Uint())
 				default:
-					if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
-						f = parsed
-					} else {
-						return "", fmt.Errorf("toPrecision: value %q is not a number", objVal)
-					}
+					return ToPrecisionStr(objVal, prec)
 				}
-				return fmt.Sprintf("%."+strconv.Itoa(prec)+"g", f), nil
+				return ToPrecision(f, prec), nil
 			}
-			if parsed, err2 := strconv.ParseFloat(objVal, 64); err2 == nil {
-				return fmt.Sprintf("%."+strconv.Itoa(prec)+"g", parsed), nil
-			}
-			return "", fmt.Errorf("toPrecision: value %q is not a number", objVal)
+			return ToPrecisionStr(objVal, prec)
 
 		case "padStart":
 			if argsStr != "" {

@@ -218,8 +218,11 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 // the differential default-value-idiom, short-circuit, and
 // FormatBool(genCondition) proofs. A string-method call (`.toUpperCase()`,
 // `.trim()`, `.split(',')`, …) is also no longer in this list — see
-// codegen_methods_test.go — but `.join`/`.toFixed`/`.toPrecision` and an
-// unrecognized method name stay deferred/unsupported, exercised here. An
+// codegen_methods_test.go — nor are `.join`/`.toFixed`/`.toPrecision` on a
+// receiver kind their type-directed dispatch supports — see
+// codegen_join_numfmt_test.go — but an unrecognized method name, and a
+// `.toFixed`/`.join` call on a receiver kind that dispatch doesn't support,
+// stay unsupported, exercised here. An
 // index expression (`arr[i]`) and value-context `.length` are also no longer
 // in this list — see codegen_index_length_test.go — though a
 // non-string-keyed map index and an index-then-dot receiver stay deferred
@@ -230,9 +233,9 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 		src  string
 	}{
 		{name: "ternary with an unsupported (arithmetic) condition", src: "p= (Count + 1) ? \"yes\" : \"no\"\n"},
-		{name: "deferred method call", src: "p= Name.toFixed(2)\n"},
+		{name: "toFixed on an unsupported (bool) receiver", src: "p= Flag.toFixed(2)\n"},
 		{name: "unknown method call", src: "p= Name.frobnicate()\n"},
-		{name: "template literal with a deferred ${} method call", src: "p= `hello ${Name.toFixed(2)}`\n"},
+		{name: "template literal with a deferred ${} method call", src: "p= `hello ${Flag.toFixed(2)}`\n"},
 		{name: "array literal", src: "p= [1, 2, 3]\n"},
 		{name: "object literal", src: "p= {a: 1}\n"},
 		{name: "unbuffered code statement", src: "- var x = 1\n"},

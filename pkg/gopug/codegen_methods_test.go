@@ -409,23 +409,26 @@ func TestCodegenMethodMultibyte(t *testing.T) {
 	}
 }
 
-// TestCodegenMethodDeferredAndUnknown proves the still-deferred methods
-// (join, toFixed, toPrecision) and an unrecognized method name each return a
-// clear error from GenerateGo, instead of silently emitting something that
-// might not match the interpreter. `.length` (bare property and method-call
-// spelling) and index expressions (`arr[0]`) are no longer deferred — see
-// codegen_index_length_test.go for their differential coverage — but a
-// non-scalar `.length` receiver (a struct-typed field) still errors, since
-// genLengthOperand only supports slice/array/map/string.
+// TestCodegenMethodDeferredAndUnknown proves the constructs still out of
+// scope for this increment — an unrecognized method name, and `join`/
+// `toFixed`/`toPrecision` on a receiver kind their type-directed dispatch
+// doesn't support (see codegen_join_numfmt_test.go for the now-supported
+// numeric/string/slice receiver cases and their differential proofs) — each
+// return a clear error from GenerateGo, instead of silently emitting
+// something that might not match the interpreter. `.length` (bare property
+// and method-call spelling) and index expressions (`arr[0]`) are no longer
+// deferred — see codegen_index_length_test.go for their differential
+// coverage — but a non-scalar `.length` receiver (a struct-typed field)
+// still errors, since genLengthOperand only supports slice/array/map/string.
 func TestCodegenMethodDeferredAndUnknown(t *testing.T) {
 	cases := []struct {
 		name          string
 		src           string
 		wantSubstring string
 	}{
-		{name: "toFixed", src: "p= Name.toFixed(2)\n", wantSubstring: "unsupported"},
-		{name: "toPrecision", src: "p= Name.toPrecision(3)\n", wantSubstring: "unsupported"},
-		{name: "join", src: "p= Items.join(',')\n", wantSubstring: "unsupported"},
+		{name: "toFixed on a bool receiver", src: "p= Flag.toFixed(2)\n", wantSubstring: "unsupported"},
+		{name: "toPrecision on a bool receiver", src: "p= Flag.toPrecision(3)\n", wantSubstring: "unsupported"},
+		{name: "join on a non-slice (string) receiver", src: "p= Name.join(',')\n", wantSubstring: "unsupported"},
 		{name: "length on an unsupported (struct) receiver", src: "p= User.length\n", wantSubstring: "unsupported"},
 		{name: "unknown method", src: "p= Name.frobnicate()\n", wantSubstring: "unsupported string method"},
 		{name: "fallible receiver", src: "p= (Count / Zero).toUpperCase()\n", wantSubstring: "fallible"},
