@@ -126,6 +126,9 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if g.needsStrconv {
 		src.WriteString("\t\"strconv\"\n")
 	}
+	if g.needsStrings {
+		src.WriteString("\t\"strings\"\n")
+	}
 	if g.needsUtf8 {
 		src.WriteString("\t\"unicode/utf8\"\n")
 	}
@@ -168,6 +171,11 @@ type generator struct {
 	needsStrconv bool
 	needsGopug   bool
 	needsUtf8    bool
+	// needsStrings tracks whether the generated body calls a strings.*
+	// function directly (the trivial string methods — toUpperCase et al. —
+	// emit the stdlib call inline rather than through a gopug helper), so
+	// GenerateGo only imports "strings" when it is actually used.
+	needsStrings bool
 	// tmpCounter is the next unused index nextTmp will hand out, so every
 	// fallible value-expression extracted at a write site (genInterpolation,
 	// genCode, genAttributes) gets its own uniquely named __vN/__errN locals
@@ -1017,12 +1025,234 @@ func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err
 		return "", false, fmt.Errorf("unsupported index expression in codegen value expression %q", expr)
 	}
 
+	if dotIdx := findTopLevelDot(expr); dotIdx > 0 {
+		rest := expr[dotIdx+1:]
+		if strings.Contains(rest, "(") {
+			return g.genMethodCall(expr[:dotIdx], rest)
+		}
+	}
+
 	resolvedExpr, typ, err := g.resolveFieldExpr(expr)
 	if err != nil {
 		return "", false, err
 	}
 	goExpr, err = g.genScalarStringify(resolvedExpr, typ)
 	return goExpr, false, err
+}
+
+// genMethodCall emits genValueExpr's handling of a string method call
+// `<objExpr>.<rest>`, where rest is everything after the top-level dot
+// findTopLevelDot located and is already known to contain "(" (a property
+// access with no "(" is resolveFieldExpr's leaf case, not this one). It
+// splits methodName/argsStr exactly the way Runtime.evaluateExpr's own
+// method-dispatch switch does (strings.Cut on "(" then ")"), resolves the
+// receiver via a genValueExpr recursion on objExpr — the STRINGIFIED
+// receiver, matching evaluateExpr's own objVal := evaluateExpr(objExpr) —
+// and dispatches on methodName. A trivial method (a single stdlib call with
+// no argument-dependent logic) is emitted directly on the receiver
+// expression; a non-trivial method (argument quote-stripping and/or
+// multi-step logic) is emitted as a call to the matching single-sourced
+// gopug.Method* helper (see runtime.go), with each argument itself resolved
+// by a genValueExpr recursion, split on the same top-level comma
+// findBinaryOp locates for a two-argument method. Both the receiver and
+// every argument must be TOTAL in this increment — a fallible receiver or
+// argument (e.g. `(a/b).toUpperCase()`) returns an error rather than
+// growing the IIFE machinery for methods yet. `length`, `join`, `toFixed`,
+// and `toPrecision` are recognized but explicitly deferred (they need
+// type-aware/fallible handling this increment doesn't build); any other
+// unrecognized name errors the same way Runtime.evaluateExpr's own
+// "unsupported string method" fallback does.
+func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
+	methodName := rest
+	argsStr := ""
+	if before, inner, found := strings.Cut(rest, "("); found {
+		methodName = before
+		argsStr, _, _ = strings.Cut(strings.TrimSpace(inner), ")")
+		argsStr = strings.TrimSpace(argsStr)
+	}
+	methodName = strings.TrimSpace(methodName)
+	fullExpr := objExpr + "." + rest
+
+	recvExpr, recvFallible, err := g.genValueExpr(objExpr)
+	if err != nil {
+		return "", false, err
+	}
+	if recvFallible {
+		return "", false, fmt.Errorf("unsupported method call on a fallible receiver in codegen value expression %q (method calls on a fallible receiver are not yet supported)", fullExpr)
+	}
+
+	switch methodName {
+	case "toUpperCase", "toUppercase":
+		g.needsStrings = true
+		return "strings.ToUpper(" + recvExpr + ")", false, nil
+	case "toLowerCase", "toLowercase":
+		g.needsStrings = true
+		return "strings.ToLower(" + recvExpr + ")", false, nil
+	case "trim":
+		g.needsStrings = true
+		return "strings.TrimSpace(" + recvExpr + ")", false, nil
+	case "trimLeft", "trimStart":
+		g.needsStrings = true
+		return "strings.TrimLeft(" + recvExpr + ", \" \\t\\n\\r\")", false, nil
+	case "trimRight", "trimEnd":
+		g.needsStrings = true
+		return "strings.TrimRight(" + recvExpr + ", \" \\t\\n\\r\")", false, nil
+	case "toString", "String":
+		return recvExpr, false, nil
+	}
+
+	genArg := func(argExpr string) (string, error) {
+		v, fallible, err := g.genValueExpr(argExpr)
+		if err != nil {
+			return "", err
+		}
+		if fallible {
+			return "", fmt.Errorf("unsupported method call with a fallible argument in codegen value expression %q (fallible method arguments are not yet supported)", fullExpr)
+		}
+		return v, nil
+	}
+
+	switch methodName {
+	case "repeat":
+		if argsStr == "" {
+			return recvExpr, false, nil
+		}
+		n, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		return "gopug.MethodRepeat(" + recvExpr + ", " + n + ")", false, nil
+
+	case "split":
+		sep := `""`
+		if argsStr != "" {
+			var err error
+			sep, err = genArg(argsStr)
+			if err != nil {
+				return "", false, err
+			}
+		}
+		g.needsGopug = true
+		return "gopug.MethodSplit(" + recvExpr + ", " + sep + ")", false, nil
+
+	case "replace":
+		if argsStr == "" {
+			return recvExpr, false, nil
+		}
+		commaIdx := findBinaryOp(argsStr, ",")
+		if commaIdx <= 0 {
+			return recvExpr, false, nil
+		}
+		oldArg, err := genArg(strings.TrimSpace(argsStr[:commaIdx]))
+		if err != nil {
+			return "", false, err
+		}
+		newArg, err := genArg(strings.TrimSpace(argsStr[commaIdx+1:]))
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		return "gopug.MethodReplace(" + recvExpr + ", " + oldArg + ", " + newArg + ")", false, nil
+
+	case "slice":
+		if argsStr == "" {
+			return recvExpr, false, nil
+		}
+		g.needsGopug = true
+		if commaIdx := findBinaryOp(argsStr, ","); commaIdx > 0 {
+			startArg, err := genArg(strings.TrimSpace(argsStr[:commaIdx]))
+			if err != nil {
+				return "", false, err
+			}
+			endArg, err := genArg(strings.TrimSpace(argsStr[commaIdx+1:]))
+			if err != nil {
+				return "", false, err
+			}
+			return "gopug.MethodSlice2(" + recvExpr + ", " + startArg + ", " + endArg + ")", false, nil
+		}
+		startArg, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		return "gopug.MethodSlice1(" + recvExpr + ", " + startArg + ")", false, nil
+
+	case "indexOf":
+		if argsStr == "" {
+			return `"-1"`, false, nil
+		}
+		needle, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		return "gopug.MethodIndexOf(" + recvExpr + ", " + needle + ")", false, nil
+
+	case "includes", "contains":
+		if argsStr == "" {
+			return `"false"`, false, nil
+		}
+		needle, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		return "gopug.MethodIncludes(" + recvExpr + ", " + needle + ")", false, nil
+
+	case "startsWith":
+		if argsStr == "" {
+			return `"false"`, false, nil
+		}
+		prefix, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		return "gopug.MethodStartsWith(" + recvExpr + ", " + prefix + ")", false, nil
+
+	case "endsWith":
+		if argsStr == "" {
+			return `"false"`, false, nil
+		}
+		suffix, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		g.needsGopug = true
+		return "gopug.MethodEndsWith(" + recvExpr + ", " + suffix + ")", false, nil
+
+	case "padStart", "padEnd":
+		if argsStr == "" {
+			return recvExpr, false, nil
+		}
+		helper := "gopug.MethodPadStart"
+		if methodName == "padEnd" {
+			helper = "gopug.MethodPadEnd"
+		}
+		g.needsGopug = true
+		if commaIdx := findBinaryOp(argsStr, ","); commaIdx > 0 {
+			lenArg, err := genArg(strings.TrimSpace(argsStr[:commaIdx]))
+			if err != nil {
+				return "", false, err
+			}
+			chArg, err := genArg(strings.TrimSpace(argsStr[commaIdx+1:]))
+			if err != nil {
+				return "", false, err
+			}
+			return helper + "(" + recvExpr + ", " + lenArg + ", " + chArg + ")", false, nil
+		}
+		lenArg, err := genArg(argsStr)
+		if err != nil {
+			return "", false, err
+		}
+		return helper + "(" + recvExpr + ", " + lenArg + `, "")`, false, nil
+
+	case "length", "join", "toFixed", "toPrecision":
+		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (deferred to a later increment)", methodName, fullExpr)
+
+	default:
+		return "", false, fmt.Errorf("unsupported string method %q in codegen value expression %q", methodName, fullExpr)
+	}
 }
 
 // genTernaryValueExpr emits a value-context ternary `cond ? a : b` (expr,

@@ -1043,6 +1043,232 @@ func Not(val string) string {
 	return "true"
 }
 
+// unquoteArg strips a single layer of matching double or single quotes from
+// s, exactly the way Runtime.evaluateExpr's string-method dispatch strips a
+// method argument after evaluating it: only when s is at least two bytes
+// long and its first and last byte are the same quote character. It is the
+// single source of that quote-strip quirk, called both by the method-
+// dispatch switch below (on the value evaluateExpr(argExpr) already
+// produced) and by codegen-generated code's own Method* calls (on the value
+// genValueExpr(argExpr) already produced), so the two paths cannot drift.
+func unquoteArg(s string) string {
+	if len(s) >= 2 &&
+		((s[0] == '"' && s[len(s)-1] == '"') ||
+			(s[0] == '\'' && s[len(s)-1] == '\'')) {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// MethodRepeat reproduces Runtime.evaluateExpr's "repeat" string-method case
+// on already-evaluated operands: n parses as a non-negative integer, recv
+// repeated that many times; otherwise recv unchanged. It is exported so
+// codegen-generated code can call it directly, keeping the "repeat" method's
+// semantics single-sourced in this one implementation rather than
+// reproducing (and risking diverging from) evaluateExpr's own logic.
+func MethodRepeat(recv, n string) string {
+	if count, err := strconv.Atoi(n); err == nil && count >= 0 {
+		return strings.Repeat(recv, count)
+	}
+	return recv
+}
+
+// MethodSplit reproduces Runtime.evaluateExpr's "split" string-method case on
+// already-evaluated operands: recv split on sep (after unquoteArg), then
+// re-joined with a single space — matching evaluateExpr's own
+// strings.Join(strings.Split(...), " ") exactly. It is exported so
+// codegen-generated code can call it directly, keeping the "split" method's
+// semantics single-sourced in this one implementation.
+func MethodSplit(recv, sep string) string {
+	sep = unquoteArg(sep)
+	return strings.Join(strings.Split(recv, sep), " ")
+}
+
+// MethodReplace reproduces Runtime.evaluateExpr's "replace" string-method case
+// on already-evaluated operands: the first occurrence of oldArg replaced
+// with newArg in recv. The quote-strip here is intentionally NOT the plain
+// per-argument unquoteArg: it reproduces the original case's own loop over
+// the two-element snapshot []string{oldArg, newArg}, which compares each
+// snapshot element s against the (possibly already-reassigned) oldArg
+// variable to decide which of oldArg/newArg to overwrite. When oldArg and
+// newArg hold the same string, the first iteration's reassignment of oldArg
+// makes the second iteration's `s == oldArg` comparison miss its own
+// original snapshot value, so newArg is left un-stripped even though it
+// looks quoted — a real, byte-for-byte quirk of the original interpreter
+// this helper must reproduce exactly, not "fix": changing it would be a
+// separate, deliberate, pugjs-validated interpreter-semantics decision, not
+// a side effect of single-sourcing a codegen helper. It is exported so
+// codegen-generated code can call it directly, keeping the "replace"
+// method's semantics single-sourced in this one implementation.
+func MethodReplace(recv, oldArg, newArg string) string {
+	for _, s := range []string{oldArg, newArg} {
+		if len(s) >= 2 &&
+			((s[0] == '"' && s[len(s)-1] == '"') ||
+				(s[0] == '\'' && s[len(s)-1] == '\'')) {
+			if s == oldArg {
+				oldArg = s[1 : len(s)-1]
+			} else {
+				newArg = s[1 : len(s)-1]
+			}
+		}
+	}
+	return strings.Replace(recv, oldArg, newArg, 1)
+}
+
+// MethodSlice1 reproduces Runtime.evaluateExpr's one-argument "slice"
+// string-method case on an already-evaluated operand: a RUNE-based (not
+// byte-based) slice of recv from startStr (parsed as an integer, a negative
+// value counting back from the end and clamped to 0) to the end. It is
+// exported so codegen-generated code can call it directly, keeping the
+// one-argument "slice" semantics single-sourced in this one implementation.
+func MethodSlice1(recv, startStr string) string {
+	runes := []rune(recv)
+	start, _ := strconv.Atoi(startStr)
+	if start < 0 {
+		start = len(runes) + start
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start <= len(runes) {
+		return string(runes[start:])
+	}
+	return ""
+}
+
+// MethodSlice2 reproduces Runtime.evaluateExpr's two-argument "slice"
+// string-method case on already-evaluated operands: a RUNE-based (not
+// byte-based) slice of recv from startStr to endStr (each parsed as an
+// integer, a negative value counting back from the end, start clamped to 0
+// and end clamped to len(runes)); when the clamped start is after the
+// clamped end, the empty string. It is exported so codegen-generated code
+// can call it directly, keeping the two-argument "slice" semantics
+// single-sourced in this one implementation.
+func MethodSlice2(recv, startStr, endStr string) string {
+	runes := []rune(recv)
+	start, _ := strconv.Atoi(startStr)
+	end, _ := strconv.Atoi(endStr)
+	if start < 0 {
+		start = len(runes) + start
+	}
+	if end < 0 {
+		end = len(runes) + end
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > len(runes) {
+		end = len(runes)
+	}
+	if start <= end {
+		return string(runes[start:end])
+	}
+	return ""
+}
+
+// MethodIndexOf reproduces Runtime.evaluateExpr's "indexOf" string-method case
+// on already-evaluated operands: the byte index of needle (after
+// unquoteArg) in recv, formatted as a decimal string ("-1" when not found —
+// strings.Index's own not-found sentinel). It is exported so codegen-
+// generated code can call it directly, keeping the "indexOf" method's
+// semantics single-sourced in this one implementation.
+func MethodIndexOf(recv, needle string) string {
+	return strconv.Itoa(strings.Index(recv, unquoteArg(needle)))
+}
+
+// MethodIncludes reproduces Runtime.evaluateExpr's "includes"/"contains"
+// string-method case on already-evaluated operands: "true" when recv
+// contains needle (after unquoteArg), "false" otherwise. It is exported so
+// codegen-generated code can call it directly, keeping the
+// "includes"/"contains" method's semantics single-sourced in this one
+// implementation.
+func MethodIncludes(recv, needle string) string {
+	if strings.Contains(recv, unquoteArg(needle)) {
+		return "true"
+	}
+	return "false"
+}
+
+// MethodStartsWith reproduces Runtime.evaluateExpr's "startsWith"
+// string-method case on already-evaluated operands: "true" when recv starts
+// with prefix (after unquoteArg), "false" otherwise. It is exported so
+// codegen-generated code can call it directly, keeping the "startsWith"
+// method's semantics single-sourced in this one implementation.
+func MethodStartsWith(recv, prefix string) string {
+	if strings.HasPrefix(recv, unquoteArg(prefix)) {
+		return "true"
+	}
+	return "false"
+}
+
+// MethodEndsWith reproduces Runtime.evaluateExpr's "endsWith" string-method
+// case on already-evaluated operands: "true" when recv ends with suffix
+// (after unquoteArg), "false" otherwise. It is exported so codegen-generated
+// code can call it directly, keeping the "endsWith" method's semantics
+// single-sourced in this one implementation.
+func MethodEndsWith(recv, suffix string) string {
+	if strings.HasSuffix(recv, unquoteArg(suffix)) {
+		return "true"
+	}
+	return "false"
+}
+
+// methodPad is the shared RUNE-based padding logic behind MethodPadStart and
+// MethodPadEnd, reproducing Runtime.evaluateExpr's "padStart"/"padEnd"
+// string-method cases on already-evaluated operands: when targetLenStr
+// (after TrimSpace, matching the original case's own
+// strconv.Atoi(strings.TrimSpace(lenStr)) call — the trim lives HERE, not at
+// either caller, so the interpreter and codegen-generated code, which pass
+// targetLenStr as a raw already-evaluated value with no trim of their own,
+// agree even when that value carries surrounding whitespace) parses to a
+// length greater than recv's rune count, padChar (after unquoteArg,
+// defaulting to a single space when empty either because it wasn't given or
+// because it evaluated to the empty string) is repeated, rune by rune, to
+// fill the gap; recv unchanged otherwise. atStart selects which side the
+// padding is written to.
+func methodPad(recv, targetLenStr, padCharArg string, atStart bool) string {
+	targetLen, _ := strconv.Atoi(strings.TrimSpace(targetLenStr))
+	padChar := unquoteArg(padCharArg)
+	if padChar == "" {
+		padChar = " "
+	}
+	runes := []rune(recv)
+	if targetLen <= len(runes) {
+		return recv
+	}
+	padRunes := []rune(padChar)
+	needed := targetLen - len(runes)
+	var b strings.Builder
+	if atStart {
+		for i := 0; i < needed; i++ {
+			b.WriteRune(padRunes[i%len(padRunes)])
+		}
+		b.WriteString(recv)
+	} else {
+		b.WriteString(recv)
+		for i := 0; i < needed; i++ {
+			b.WriteRune(padRunes[i%len(padRunes)])
+		}
+	}
+	return b.String()
+}
+
+// MethodPadStart reproduces Runtime.evaluateExpr's "padStart" string-method
+// case on already-evaluated operands. It is exported so codegen-generated
+// code can call it directly, keeping the "padStart" method's semantics
+// single-sourced in this one implementation.
+func MethodPadStart(recv, targetLenStr, padCharArg string) string {
+	return methodPad(recv, targetLenStr, padCharArg, true)
+}
+
+// MethodPadEnd reproduces Runtime.evaluateExpr's "padEnd" string-method case
+// on already-evaluated operands. It is exported so codegen-generated code
+// can call it directly, keeping the "padEnd" method's semantics
+// single-sourced in this one implementation.
+func MethodPadEnd(recv, targetLenStr, padCharArg string) string {
+	return methodPad(recv, targetLenStr, padCharArg, false)
+}
+
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
 // renders them: id first, then class, then every other attribute name
 // alphabetically. Runtime.renderTag and the codegen backend's genAttributes
@@ -2457,9 +2683,7 @@ CHECK_INDEX_OP:
 			if argsStr != "" {
 				n, err2 := r.evaluateExpr(argsStr)
 				if err2 == nil {
-					if count, err3 := strconv.Atoi(n); err3 == nil && count >= 0 {
-						return strings.Repeat(objVal, count), nil
-					}
+					return MethodRepeat(objVal, n), nil
 				}
 			}
 			return objVal, nil
@@ -2468,14 +2692,8 @@ CHECK_INDEX_OP:
 			sep := ""
 			if argsStr != "" {
 				sep, _ = r.evaluateExpr(argsStr)
-				if len(sep) >= 2 &&
-					((sep[0] == '"' && sep[len(sep)-1] == '"') ||
-						(sep[0] == '\'' && sep[len(sep)-1] == '\'')) {
-					sep = sep[1 : len(sep)-1]
-				}
 			}
-			parts := strings.Split(objVal, sep)
-			return strings.Join(parts, " "), nil
+			return MethodSplit(objVal, sep), nil
 
 		case "join":
 			sep := ""
@@ -2505,117 +2723,49 @@ CHECK_INDEX_OP:
 				if commaIdx > 0 {
 					oldArg, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
 					newArg, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
-					for _, s := range []string{oldArg, newArg} {
-						if len(s) >= 2 &&
-							((s[0] == '"' && s[len(s)-1] == '"') ||
-								(s[0] == '\'' && s[len(s)-1] == '\'')) {
-							if s == oldArg {
-								oldArg = s[1 : len(s)-1]
-							} else {
-								newArg = s[1 : len(s)-1]
-							}
-						}
-					}
-					return strings.Replace(objVal, oldArg, newArg, 1), nil
+					return MethodReplace(objVal, oldArg, newArg), nil
 				}
 			}
 			return objVal, nil
 
 		case "slice":
-			runes := []rune(objVal)
 			if argsStr != "" {
 				commaIdx := findBinaryOp(argsStr, ",")
 				if commaIdx > 0 {
 					startStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
 					endStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
-					start, _ := strconv.Atoi(startStr)
-					end, _ := strconv.Atoi(endStr)
-					if start < 0 {
-						start = len(runes) + start
-					}
-					if end < 0 {
-						end = len(runes) + end
-					}
-					if start < 0 {
-						start = 0
-					}
-					if end > len(runes) {
-						end = len(runes)
-					}
-					if start <= end {
-						return string(runes[start:end]), nil
-					}
-					return "", nil
+					return MethodSlice2(objVal, startStr, endStr), nil
 				}
 				startStr, _ := r.evaluateExpr(argsStr)
-				start, _ := strconv.Atoi(startStr)
-				if start < 0 {
-					start = len(runes) + start
-				}
-				if start < 0 {
-					start = 0
-				}
-				if start <= len(runes) {
-					return string(runes[start:]), nil
-				}
-				return "", nil
+				return MethodSlice1(objVal, startStr), nil
 			}
 			return objVal, nil
 
 		case "indexOf":
 			if argsStr != "" {
 				needle, _ := r.evaluateExpr(argsStr)
-				if len(needle) >= 2 &&
-					((needle[0] == '"' && needle[len(needle)-1] == '"') ||
-						(needle[0] == '\'' && needle[len(needle)-1] == '\'')) {
-					needle = needle[1 : len(needle)-1]
-				}
-				return strconv.Itoa(strings.Index(objVal, needle)), nil
+				return MethodIndexOf(objVal, needle), nil
 			}
 			return "-1", nil
 
 		case "includes", "contains":
 			if argsStr != "" {
 				needle, _ := r.evaluateExpr(argsStr)
-				if len(needle) >= 2 &&
-					((needle[0] == '"' && needle[len(needle)-1] == '"') ||
-						(needle[0] == '\'' && needle[len(needle)-1] == '\'')) {
-					needle = needle[1 : len(needle)-1]
-				}
-				if strings.Contains(objVal, needle) {
-					return "true", nil
-				}
-				return "false", nil
+				return MethodIncludes(objVal, needle), nil
 			}
 			return "false", nil
 
 		case "startsWith":
 			if argsStr != "" {
 				prefix, _ := r.evaluateExpr(argsStr)
-				if len(prefix) >= 2 &&
-					((prefix[0] == '"' && prefix[len(prefix)-1] == '"') ||
-						(prefix[0] == '\'' && prefix[len(prefix)-1] == '\'')) {
-					prefix = prefix[1 : len(prefix)-1]
-				}
-				if strings.HasPrefix(objVal, prefix) {
-					return "true", nil
-				}
-				return "false", nil
+				return MethodStartsWith(objVal, prefix), nil
 			}
 			return "false", nil
 
 		case "endsWith":
 			if argsStr != "" {
 				suffix, _ := r.evaluateExpr(argsStr)
-				if len(suffix) >= 2 &&
-					((suffix[0] == '"' && suffix[len(suffix)-1] == '"') ||
-						(suffix[0] == '\'' && suffix[len(suffix)-1] == '\'')) {
-					suffix = suffix[1 : len(suffix)-1]
-				}
-				if strings.HasSuffix(objVal, suffix) {
-					return "true", nil
-				}
-				return "false", nil
+				return MethodEndsWith(objVal, suffix), nil
 			}
 			return "false", nil
 
@@ -2690,70 +2840,26 @@ CHECK_INDEX_OP:
 		case "padStart":
 			if argsStr != "" {
 				commaIdx := findBinaryOp(argsStr, ",")
-				padChar := " "
-				var targetLen int
 				if commaIdx > 0 {
 					lenStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
-					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
 					ch, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
-					if len(ch) >= 2 &&
-						((ch[0] == '"' && ch[len(ch)-1] == '"') ||
-							(ch[0] == '\'' && ch[len(ch)-1] == '\'')) {
-						ch = ch[1 : len(ch)-1]
-					}
-					if ch != "" {
-						padChar = ch
-					}
-				} else {
-					lenStr, _ := r.evaluateExpr(argsStr)
-					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
+					return MethodPadStart(objVal, lenStr, ch), nil
 				}
-				runes := []rune(objVal)
-				if targetLen > len(runes) {
-					padRunes := []rune(padChar)
-					needed := targetLen - len(runes)
-					var b strings.Builder
-					for i := 0; i < needed; i++ {
-						b.WriteRune(padRunes[i%len(padRunes)])
-					}
-					b.WriteString(objVal)
-					return b.String(), nil
-				}
+				lenStr, _ := r.evaluateExpr(argsStr)
+				return MethodPadStart(objVal, lenStr, ""), nil
 			}
 			return objVal, nil
 
 		case "padEnd":
 			if argsStr != "" {
 				commaIdx := findBinaryOp(argsStr, ",")
-				padChar := " "
-				var targetLen int
 				if commaIdx > 0 {
 					lenStr, _ := r.evaluateExpr(strings.TrimSpace(argsStr[:commaIdx]))
-					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
 					ch, _ := r.evaluateExpr(strings.TrimSpace(argsStr[commaIdx+1:]))
-					if len(ch) >= 2 &&
-						((ch[0] == '"' && ch[len(ch)-1] == '"') ||
-							(ch[0] == '\'' && ch[len(ch)-1] == '\'')) {
-						ch = ch[1 : len(ch)-1]
-					}
-					if ch != "" {
-						padChar = ch
-					}
-				} else {
-					lenStr, _ := r.evaluateExpr(argsStr)
-					targetLen, _ = strconv.Atoi(strings.TrimSpace(lenStr))
+					return MethodPadEnd(objVal, lenStr, ch), nil
 				}
-				runes := []rune(objVal)
-				if targetLen > len(runes) {
-					padRunes := []rune(padChar)
-					needed := targetLen - len(runes)
-					var b strings.Builder
-					b.WriteString(objVal)
-					for i := 0; i < needed; i++ {
-						b.WriteRune(padRunes[i%len(padRunes)])
-					}
-					return b.String(), nil
-				}
+				lenStr, _ := r.evaluateExpr(argsStr)
+				return MethodPadEnd(objVal, lenStr, ""), nil
 			}
 			return objVal, nil
 		}

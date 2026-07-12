@@ -34,7 +34,10 @@ import (
 // `&&`/`||`/`!` condition-combinator differential tests to exercise
 // multi-operand truth tables and `||`-before-`&&` precedence. Zero is an int
 // field always holding 0, used by the fallible-value-expression differential
-// tests to exercise `/`/`%`'s one error case (a numeric zero divisor).
+// tests to exercise `/`/`%`'s one error case (a numeric zero divisor). User
+// is a nested struct with its own string field, used by the string-method
+// differential tests to prove a dot-path receiver (`User.Name.toUpperCase()`)
+// resolves correctly.
 type opsData struct {
 	Name    string
 	Count   int
@@ -52,6 +55,7 @@ type opsData struct {
 	Slug    string
 	Firms   []opsFirm
 	Zero    int
+	User    opsUser
 }
 
 // opsFirm is opsData.Firms's element type.
@@ -59,14 +63,23 @@ type opsFirm struct {
 	ID int
 }
 
+// opsUser is opsData.User's type.
+type opsUser struct {
+	Name string
+}
+
 var opsDataReflectType = reflect.TypeOf(opsData{})
 
-// opsDataStructSrc is opsData's (and opsFirm's) field declarations, reused
-// verbatim by buildGeneratedGo to assemble a standalone, compilable Go
-// source file around a GenerateGo result — it must match the opsData struct
-// above field for field.
+// opsDataStructSrc is opsData's (and opsFirm's/opsUser's) field
+// declarations, reused verbatim by buildGeneratedGo to assemble a
+// standalone, compilable Go source file around a GenerateGo result — it must
+// match the opsData struct above field for field.
 const opsDataStructSrc = `type opsFirm struct {
 	ID int
+}
+
+type opsUser struct {
+	Name string
 }
 
 type opsData struct {
@@ -86,6 +99,7 @@ type opsData struct {
 	Slug    string
 	Firms   []opsFirm
 	Zero    int
+	User    opsUser
 }
 `
 

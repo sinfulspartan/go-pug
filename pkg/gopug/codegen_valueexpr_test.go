@@ -196,27 +196,31 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 // TestCodegenValueExprUnsupported asserts that every construct outside this
 // increment's value-context grammar — every operator besides `-`, `+`, `*`,
 // `/`, `%`, a top-level ternary, and `||`/`&&`/`!`/comparison, an index
-// expression, an array/object literal, a method call, an unbuffered code
-// statement, and unescaped buffered output — is rejected with a clear
-// "unsupported" error rather than silently emitting something that might not
-// match the interpreter. A template literal itself is no longer in this list
-// (genTemplateLiteral now supports it, see
+// expression, an array/object literal, a still-deferred method call, an
+// unbuffered code statement, and unescaped buffered output — is rejected
+// with a clear "unsupported" error rather than silently emitting something
+// that might not match the interpreter. A template literal itself is no
+// longer in this list (genTemplateLiteral now supports it, see
 // codegen_valueexpr_template_test.go), but one whose `${...}` interpolation
-// contains a construct genValueExpr still can't build (a method call, here)
-// still propagates that "unsupported" error. Subtraction and multiplication
-// are also no longer in this list — see TestCodegenValueExprArithmetic.
-// Division and modulo are no longer in this list either — a standalone
-// `/`/`%` is now supported (fallible) and proven by differential build+run in
-// codegen_fallible_test.go, and so is composing a fallible `/`/`%` result
-// into an arithmetic combiner, a nested `/`/`%` operand, a ternary branch, or
-// a template-literal `${}` part — see codegen_fallible_compose_test.go. A
-// top-level ternary is no longer in this list either — see
-// codegen_ternary_test.go — but a ternary whose CONDITION is a shape
-// genCondition can't compile (here, arithmetic) still propagates an error,
-// since genValueExpr's ternary support reuses genCondition unchanged for the
-// condition. `||`, `&&`, `!`, and comparison are no longer in this list
-// either — see codegen_logical_value_test.go for the differential
-// default-value-idiom, short-circuit, and FormatBool(genCondition) proofs.
+// contains a construct genValueExpr still can't build (a deferred method
+// call, here) still propagates that "unsupported" error. Subtraction and
+// multiplication are also no longer in this list — see
+// TestCodegenValueExprArithmetic. Division and modulo are no longer in this
+// list either — a standalone `/`/`%` is now supported (fallible) and proven
+// by differential build+run in codegen_fallible_test.go, and so is composing
+// a fallible `/`/`%` result into an arithmetic combiner, a nested `/`/`%`
+// operand, a ternary branch, or a template-literal `${}` part — see
+// codegen_fallible_compose_test.go. A top-level ternary is no longer in this
+// list either — see codegen_ternary_test.go — but a ternary whose CONDITION
+// is a shape genCondition can't compile (here, arithmetic) still propagates
+// an error, since genValueExpr's ternary support reuses genCondition
+// unchanged for the condition. `||`, `&&`, `!`, and comparison are no longer
+// in this list either — see codegen_logical_value_test.go for the
+// differential default-value-idiom, short-circuit, and
+// FormatBool(genCondition) proofs. A string-method call (`.toUpperCase()`,
+// `.trim()`, `.split(',')`, …) is also no longer in this list — see
+// codegen_methods_test.go — but `.length`/`.join`/`.toFixed`/`.toPrecision`
+// and an unrecognized method name stay deferred/unsupported, exercised here.
 func TestCodegenValueExprUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -224,8 +228,9 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 	}{
 		{name: "ternary with an unsupported (arithmetic) condition", src: "p= (Count + 1) ? \"yes\" : \"no\"\n"},
 		{name: "index expression", src: "p= Items[0]\n"},
-		{name: "method call", src: "p= Name.toUpperCase()\n"},
-		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Name.toUpperCase()}`\n"},
+		{name: "deferred method call", src: "p= Name.toFixed(2)\n"},
+		{name: "unknown method call", src: "p= Name.frobnicate()\n"},
+		{name: "template literal with a deferred ${} method call", src: "p= `hello ${Name.toFixed(2)}`\n"},
 		{name: "array literal", src: "p= [1, 2, 3]\n"},
 		{name: "object literal", src: "p= {a: 1}\n"},
 		{name: "unbuffered code statement", src: "- var x = 1\n"},

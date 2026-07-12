@@ -8,9 +8,10 @@ import (
 
 // TestCodegenAttrUnsupported asserts that attribute shapes explicitly out of
 // scope for this increment — a style object, an &attributes spread, an
-// unescaped attribute, a method-call-valued attribute and a ternary-valued
-// attribute whose condition is a shape genCondition can't yet compile (still
-// outside genValueExpr's ternary-condition grammar), and the dynamic-class
+// unescaped attribute, a deferred-method-call-valued attribute and a
+// ternary-valued attribute whose condition is a shape genCondition can't yet
+// compile (still outside genValueExpr's ternary-condition grammar), and the
+// dynamic-class
 // shapes still deferred past the shorthand+bare-string-field merge (a
 // ternary/operator class expression, a class object, a class array, and a
 // non-string dynamic class token) — all return a descriptive "unsupported"
@@ -63,8 +64,8 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 			wantMessage: "unescaped",
 		},
 		{
-			name:        "method-call-valued attribute",
-			src:         "div(title=Name.toUpperCase())",
+			name:        "deferred-method-call-valued attribute",
+			src:         "div(title=Name.toFixed(2))",
 			wantMessage: "unsupported",
 		},
 		{

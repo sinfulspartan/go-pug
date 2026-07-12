@@ -45,8 +45,8 @@ func TestCodegenUnsupported(t *testing.T) {
 			src:  "include other.pug\n",
 		},
 		{
-			name: "method call in interpolation",
-			src:  "p #{Name.toUpperCase()}",
+			name: "index expression in interpolation",
+			src:  "p #{Items[0]}",
 		},
 	}
 
