@@ -2158,8 +2158,8 @@ CHECK_INDEX_OP:
 		return "", nil
 	}
 
-	if _, err := strconv.ParseFloat(expr, 64); err == nil {
-		return expr, nil
+	if n, ok := parseJSNumber(expr); ok {
+		return strconv.FormatFloat(n, 'f', -1, 64), nil
 	}
 
 	switch expr {
@@ -3193,6 +3193,150 @@ func (r *Runtime) compareValues(left, right, op string) bool {
 func parseNumber(s string) (float64, bool) {
 	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	return f, err == nil
+}
+
+// parseJSNumber parses token as a numeric literal using the same grammar
+// pug's sloppy-mode JS compiles expressions against: "0x"/"0X", "0o"/"0O",
+// and "0b"/"0B" radix prefixes; legacy octal for a leading zero followed by
+// one or more further digits that are all "0"-"7" (e.g. "0100" is 64, not
+// 100); "NonOctalDecimal" for the same shape when any of those further
+// digits is "8" or "9" (e.g. "08" is 8, "0118" is 118); and ordinary
+// decimal/float/exponent forms otherwise (delegated to strconv.ParseFloat).
+// A leading "+" or "-" sign is accepted and applied to the parsed magnitude.
+//
+// It returns ok=false for anything the JS grammar does not accept as a
+// number literal: an underscore digit separator (Go's ParseFloat accepts
+// "1_000", pug does not, so every such token is rejected outright), a
+// malformed radix literal (no digits after the prefix, or a digit outside
+// the radix), and an octal-looking leading-zero integer prefix (every digit
+// "0"-"7") immediately followed by "." or "e"/"E" (e.g. "00.5", "017.5",
+// "01e2" — all SyntaxErrors in pug, since a legacy octal integer literal has
+// no fractional/exponent form). A leading-zero prefix that instead contains
+// an "8" or "9" is a NonOctalDecimalIntegerLiteral, so a following "." or
+// exponent is a valid, ordinary DecimalLiteral and is accepted (e.g.
+// "08.5" is 8.5, "08e2" is 800). A single leading "0" directly followed by
+// "." or "e"/"E" is likewise an ordinary decimal float ("0.5", "0e0") and is
+// accepted.
+//
+// This only recognizes literal tokens — the octal/NonOctalDecimal rules are
+// a property of JS source-code number syntax, not of runtime string-to-
+// number coercion (JS `Number("0100")` is decimal 100), so callers must not
+// route arbitrary data values through this function.
+//
+// Two narrow gaps versus real JS are accepted as out of scope: a radix
+// literal whose magnitude overflows uint64 (e.g. a "0x" token for 2^64 or
+// larger) is rejected here rather than parsed as the float JS would produce,
+// and the returned float64 is stringified elsewhere with
+// strconv.FormatFloat's 'f' verb, which never switches to exponential
+// notation the way JS does for very large magnitudes (e.g. "1e21" stringifies
+// as "1000000000000000000000", not JS's "1e+21") — that stringification
+// behavior predates this function and is unchanged here.
+func parseJSNumber(token string) (float64, bool) {
+	if token == "" || strings.ContainsRune(token, '_') {
+		return 0, false
+	}
+
+	s := token
+	neg := false
+	if s[0] == '+' || s[0] == '-' {
+		neg = s[0] == '-'
+		s = s[1:]
+	}
+	if s == "" {
+		return 0, false
+	}
+
+	mag, ok := parseJSNumberMagnitude(s)
+	if !ok {
+		return 0, false
+	}
+	if neg {
+		mag = -mag
+	}
+	return mag, true
+}
+
+// parseJSNumberMagnitude parses the unsigned digit portion of a JS numeric
+// literal (i.e. token with any leading "+"/"-" already stripped by the
+// caller). See parseJSNumber for the grammar.
+func parseJSNumberMagnitude(s string) (float64, bool) {
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		return parseRadixMagnitude(s[2:], 16)
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O') {
+		return parseRadixMagnitude(s[2:], 8)
+	}
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
+		return parseRadixMagnitude(s[2:], 2)
+	}
+
+	if s[0] == '0' && len(s) >= 2 && isDigit(s[1]) {
+		i := 1
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+		digits := s[:i]
+		rest := s[i:]
+
+		allOctal := true
+		for j := 0; j < len(digits); j++ {
+			if digits[j] > '7' {
+				allOctal = false
+				break
+			}
+		}
+
+		if rest != "" {
+			if allOctal {
+				// An octal-looking leading-zero integer prefix (every digit
+				// is 0-7) directly followed by "." or an exponent marker is
+				// not valid JS number syntax (e.g. "00.5", "017.5", "01e2")
+				// -- legacy octal integer literals have no fractional or
+				// exponent form.
+				return 0, false
+			}
+			// A leading-zero integer prefix containing an 8 or 9 is not
+			// octal -- JS reads it as an ordinary (if oddly-spelled)
+			// DecimalIntegerLiteral, so a following "." or exponent makes
+			// the whole token a normal DecimalLiteral, e.g. "08.5" -> 8.5,
+			// "08e2" -> 800.
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				return 0, false
+			}
+			return f, true
+		}
+
+		base := 10
+		if allOctal {
+			base = 8
+		}
+		n, err := strconv.ParseUint(digits, base, 64)
+		if err != nil {
+			return 0, false
+		}
+		return float64(n), true
+	}
+
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// parseRadixMagnitude parses digits (with no radix prefix) as an unsigned
+// integer in the given base, rejecting an empty digit run or any digit
+// outside the base's range.
+func parseRadixMagnitude(digits string, base int) (float64, bool) {
+	if digits == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(digits, base, 64)
+	if err != nil {
+		return 0, false
+	}
+	return float64(n), true
 }
 
 // lookup retrieves a value by name from the scope stack (innermost first),
