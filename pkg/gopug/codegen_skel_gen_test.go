@@ -24,13 +24,13 @@ func RenderSkel(w io.Writer, d SkelData) error {
 	io.WriteString(w, "\">Profile</a><img src=\"")
 	io.WriteString(w, gopug.EscapeAttr(d.Author.Avatar))
 	io.WriteString(w, "\"><div data-count=\"")
-	io.WriteString(w, strconv.Itoa(d.Count))
+	io.WriteString(w, gopug.EscapeAttr(strconv.Itoa(d.Count)))
 	io.WriteString(w, "\">Count attr</div><input")
 	if d.Flag {
 		io.WriteString(w, " checked=\"true\"")
 	}
 	io.WriteString(w, "><div data-flag=\"")
-	io.WriteString(w, strconv.FormatBool(d.Flag))
+	io.WriteString(w, gopug.EscapeAttr(strconv.FormatBool(d.Flag)))
 	io.WriteString(w, "\">Flag attr</div><div class=\"")
 	io.WriteString(w, gopug.EscapeAttr(gopug.JoinClasses("card", d.Variant)))
 	io.WriteString(w, "\">Card</div><span class=\"")

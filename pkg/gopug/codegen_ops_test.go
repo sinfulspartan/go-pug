@@ -23,7 +23,13 @@ import (
 // plain string field (Name already being the first), used by the
 // value-expr `+` differential tests to prove the runtime-value-dependent
 // disambiguation gopug.Add performs — the same two fields hold numeric-
-// looking strings in one subtest and non-numeric strings in another.
+// looking strings in one subtest and non-numeric strings in another. Slug is
+// a fourth plain string field, used by the attribute-value concat
+// differential tests so the field under test isn't also one of Str1/Str2's
+// `+`-disambiguation cases. Firms is a slice of a nested struct with its own
+// int field, used by the attribute template-literal differential test to
+// prove a dot-path rooted at an each-loop variable (`firm.ID`) resolves
+// correctly inside a `${...}` interpolation.
 type opsData struct {
 	Name    string
 	Count   int
@@ -36,15 +42,26 @@ type opsData struct {
 	BigUint uint64
 	Str1    string
 	Str2    string
+	Slug    string
+	Firms   []opsFirm
+}
+
+// opsFirm is opsData.Firms's element type.
+type opsFirm struct {
+	ID int
 }
 
 var opsDataReflectType = reflect.TypeOf(opsData{})
 
-// opsDataStructSrc is opsData's field declarations, reused verbatim by
-// buildGeneratedGo to assemble a standalone, compilable Go source file
-// around a GenerateGo result — it must match the opsData struct above field
-// for field.
-const opsDataStructSrc = `type opsData struct {
+// opsDataStructSrc is opsData's (and opsFirm's) field declarations, reused
+// verbatim by buildGeneratedGo to assemble a standalone, compilable Go
+// source file around a GenerateGo result — it must match the opsData struct
+// above field for field.
+const opsDataStructSrc = `type opsFirm struct {
+	ID int
+}
+
+type opsData struct {
 	Name    string
 	Count   int
 	Price   float64
@@ -56,6 +73,8 @@ const opsDataStructSrc = `type opsData struct {
 	BigUint uint64
 	Str1    string
 	Str2    string
+	Slug    string
+	Firms   []opsFirm
 }
 `
 

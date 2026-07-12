@@ -8,15 +8,16 @@ import (
 
 // TestCodegenAttrUnsupported asserts that attribute shapes explicitly out of
 // scope for this increment — a style object, an &attributes spread, an
-// unescaped attribute, an operator-valued attribute, and the dynamic-class
-// shapes still deferred past the shorthand+bare-string-field merge (a
-// ternary/operator class expression, a class object, a class array, and a
-// non-string dynamic class token) — all return a descriptive "unsupported"
-// error rather than emitting output that might not match the interpreter's
-// renderTag. Only the tractable slice (a dynamic scalar value on a
-// non-class attribute, a boolean attribute driven by a bool field, and a
-// dynamic class merging shorthand tokens with bare string-field tokens) is
-// supported; everything here is a later increment.
+// unescaped attribute, a method-call- or ternary-valued attribute (still
+// outside genValueExpr's grammar), and the dynamic-class shapes still
+// deferred past the shorthand+bare-string-field merge (a ternary/operator
+// class expression, a class object, a class array, and a non-string dynamic
+// class token) — all return a descriptive "unsupported" error rather than
+// emitting output that might not match the interpreter's renderTag. Only the
+// tractable slice (a dynamic value built by genValueExpr on a non-class
+// attribute, a boolean attribute driven by a bool field, and a dynamic class
+// merging shorthand tokens with bare string-field tokens) is supported;
+// everything here is a later increment.
 func TestCodegenAttrUnsupported(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -59,8 +60,13 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 			wantMessage: "unescaped",
 		},
 		{
-			name:        "operator-valued attribute",
-			src:         "div(title=Count + 1)",
+			name:        "method-call-valued attribute",
+			src:         "div(title=Name.toUpperCase())",
+			wantMessage: "unsupported",
+		},
+		{
+			name:        "ternary-valued attribute on a non-class name",
+			src:         `div(title=Count > 0 ? "a" : "b")`,
 			wantMessage: "unsupported",
 		},
 		{

@@ -196,10 +196,14 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 // TestCodegenValueExprUnsupported asserts that every construct outside this
 // increment's value-context grammar — every operator besides `+` (ternary,
 // `||`, `&&`, `!`, comparisons, subtraction, multiplication, division,
-// modulo), an index expression, a template/array/object literal, a method
-// call, an unbuffered code statement, and unescaped buffered output — is
-// rejected with a clear "unsupported" error rather than silently emitting
-// something that might not match the interpreter.
+// modulo), an index expression, an array/object literal, a method call, an
+// unbuffered code statement, and unescaped buffered output — is rejected
+// with a clear "unsupported" error rather than silently emitting something
+// that might not match the interpreter. A template literal itself is no
+// longer in this list (genTemplateLiteral now supports it, see
+// codegen_valueexpr_template_test.go), but one whose `${...}` interpolation
+// contains a construct genValueExpr still can't build (a ternary, here)
+// still propagates that "unsupported" error.
 func TestCodegenValueExprUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -216,7 +220,7 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 		{name: "modulo", src: "p= Count % 2\n"},
 		{name: "index expression", src: "p= Items[0]\n"},
 		{name: "method call", src: "p= Name.toUpperCase()\n"},
-		{name: "template literal", src: "p= `hello ${Name}`\n"},
+		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Count > 0 ? 1 : 0}`\n"},
 		{name: "array literal", src: "p= [1, 2, 3]\n"},
 		{name: "object literal", src: "p= {a: 1}\n"},
 		{name: "unbuffered code statement", src: "- var x = 1\n"},

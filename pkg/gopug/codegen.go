@@ -59,13 +59,15 @@ type Config struct {
 // subset provably byte-identical to the interpreter's compareValues; the
 // combinators `&&`/`||`/`!`, arithmetic, ternary, and every other operand
 // combination return an error instead. It also emits a runtime write for a
-// dynamic scalar attribute value on a non-"class" attribute (a bare field or
-// dot-path resolving to a scalar type — see genAttributes), escaped through
-// the exported EscapeAttr for a string value and via bare strconv for every
-// other scalar kind, and a conditional bare write for a bool-typed field on
-// an HTML boolean-attribute name (present iff true, matching pug's
-// omit-on-false). Any other field type (struct, slice, map, pointer,
-// interface, float32, …) is out of scope and returns an error rather than
+// dynamic attribute value on a non-"class" attribute — built the same way
+// interpolation is, by genValueExpr (a bare field/dot-path, a `+` concat, or
+// a backtick template literal), then always escaped through the exported
+// EscapeAttr (see genAttributes) — and a conditional bare write for a
+// bool-typed field on an HTML boolean-attribute name (present iff true,
+// matching pug's omit-on-false; that path stays bare-field-only, not routed
+// through genValueExpr). Any value genValueExpr can't build (a ternary, a
+// method call, …), or a non-scalar field type (struct, slice, map, pointer,
+// interface, float32, …), is out of scope and returns an error rather than
 // guessing. When DataReflectType is nil, every field is assumed to be a
 // string (the original untyped skeleton behavior), and only static/bare
 // attributes and bare-field conditions are supported, unchanged.
@@ -351,18 +353,19 @@ func (g *generator) genTag(tag *TagNode) error {
 //     (isBooleanAttribute) requires a bool-typed field: it emits a
 //     conditional bare write — ` name="true"` iff the field is true, nothing
 //     at all iff false — matching the interpreter's omit-on-false behaviour
-//     for these names. A non-bool-typed value on such a name is deferred
-//     (error) rather than risking a byte-identical breach: the interpreter
-//     also omits a boolean-attribute-named value that merely stringifies to
-//     "false" (e.g. a string field literally holding "false"), a general
-//     rule this increment doesn't reproduce;
-//   - a dynamic value on any other, non-"class" name that resolves (via
-//     resolveFieldExpr) to a scalar field type emits a runtime write: a
-//     string field is escaped through the exported EscapeAttr (never
-//     html.EscapeString — attribute escaping has different rules from text
-//     escaping); every other scalar kind stringifies with strconv, unescaped,
-//     since none of those stringifications can contain an HTML-special
-//     character;
+//     for these names. This path stays resolveFieldExpr-only (a bare field,
+//     never a general value expression): a non-bool-typed value on such a
+//     name is deferred (error) rather than risking a byte-identical breach —
+//     the interpreter also omits a boolean-attribute-named value that merely
+//     stringifies to "false" (e.g. a string field literally holding
+//     "false"), a general rule this increment doesn't reproduce;
+//   - a dynamic value on any other, non-"class" name is built by genValueExpr
+//     (a bare field/dot-path, a `+` concat, or a backtick template literal —
+//     genValueExpr's whole supported grammar) and always escaped through the
+//     exported EscapeAttr (never html.EscapeString — attribute escaping has
+//     different rules from text escaping), applied once to the built value
+//     as a whole rather than per-leaf, exactly as genInterpolation and genCode
+//     do for the same value-context grammar;
 //   - a dynamic "class" value merging shorthand class tokens with one or
 //     more bare string-field tokens (see genDynamicClass) emits a runtime
 //     write joining the tokens with the exported JoinClasses (which drops an
@@ -370,14 +373,13 @@ func (g *generator) genTag(tag *TagNode) error {
 //     the joined result with EscapeAttr;
 //
 // A style object, `&attributes`, an unescaped attribute, a class-object/
-// array/ternary value, or any value that isn't a static literal / bare
-// identifier / dot-path scalar (an operator, method call, index expression)
-// is out of scope for this increment and returns an error rather than
-// guessing at output that might not match the interpreter. With a nil
-// Config.DataReflectType (type-blind mode), a dynamic value can't be
-// classified as scalar or bool at all (nor a class token confirmed a string
-// field), so only static/bare attributes are supported there, matching
-// increment 1 unchanged.
+// array/ternary value, or any value genValueExpr can't build (a ternary, a
+// method call, an index expression, …) is out of scope for this increment
+// and returns an error rather than guessing at output that might not match
+// the interpreter. With a nil Config.DataReflectType (type-blind mode), a
+// dynamic value can't be classified as scalar or bool at all (nor a class
+// token confirmed a string field), so only static/bare attributes are
+// supported there, matching increment 1 unchanged.
 func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 	if _, ok := attrs["&attributes"]; ok {
 		return fmt.Errorf("unsupported dynamic &attributes in codegen")
@@ -412,12 +414,11 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 			return fmt.Errorf("unsupported dynamic attribute %q in codegen (only static quoted values are supported in this increment)", name)
 		}
 
-		goExpr, typ, err := g.resolveFieldExpr(trimmed)
-		if err != nil {
-			return fmt.Errorf("attribute %q: %w", name, err)
-		}
-
 		if isBooleanAttribute(name) {
+			goExpr, typ, err := g.resolveFieldExpr(trimmed)
+			if err != nil {
+				return fmt.Errorf("attribute %q: %w", name, err)
+			}
 			if typ.Kind() != reflect.Bool {
 				return fmt.Errorf("unsupported dynamic attribute %q in codegen (only a bool-typed value is supported for an HTML boolean attribute name in this increment)", name)
 			}
@@ -428,29 +429,13 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 			continue
 		}
 
-		g.writeStatic(" " + name + `="`)
-		switch typ.Kind() {
-		case reflect.String:
-			g.needsGopug = true
-			g.writeExprWrite("gopug.EscapeAttr(" + convertExpr(goExpr, typ, reflectTypeString, "string") + ")")
-		case reflect.Bool:
-			g.needsStrconv = true
-			g.writeExprWrite("strconv.FormatBool(" + convertExpr(goExpr, typ, reflectTypeBool, "bool") + ")")
-		case reflect.Int:
-			g.needsStrconv = true
-			g.writeExprWrite("strconv.Itoa(" + convertExpr(goExpr, typ, reflectTypeInt, "int") + ")")
-		case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			g.needsStrconv = true
-			g.writeExprWrite("strconv.FormatInt(int64(" + goExpr + "), 10)")
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			g.needsStrconv = true
-			g.writeExprWrite("strconv.FormatUint(uint64(" + goExpr + "), 10)")
-		case reflect.Float64:
-			g.needsStrconv = true
-			g.writeExprWrite("strconv.FormatFloat(" + convertExpr(goExpr, typ, reflectTypeFloat64, "float64") + ", 'f', -1, 64)")
-		default:
-			return fmt.Errorf("unsupported non-scalar field type %s in codegen attribute %q", typ, name)
+		valExpr, err := g.genValueExpr(trimmed)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
 		}
+		g.needsGopug = true
+		g.writeStatic(" " + name + `="`)
+		g.writeExprWrite("gopug.EscapeAttr(" + valExpr + ")")
 		g.writeStatic(`"`)
 	}
 	return nil
@@ -608,7 +593,7 @@ func (g *generator) genValueExpr(expr string) (string, error) {
 		return strconv.Quote(lit), nil
 	}
 	if strings.HasPrefix(expr, "`") {
-		return "", fmt.Errorf("unsupported template literal in codegen value expression %q", expr)
+		return g.genTemplateLiteral(expr)
 	}
 	if strings.HasPrefix(expr, "[") {
 		return "", fmt.Errorf("unsupported array literal in codegen value expression %q", expr)
@@ -665,6 +650,89 @@ func (g *generator) genValueExpr(expr string) (string, error) {
 		return "", err
 	}
 	return g.genScalarStringify(goExpr, typ)
+}
+
+// genTemplateLiteral emits a Go string expression for a backtick template
+// literal — expr is the whole literal genValueExpr received, including its
+// opening backtick (literal text, any number of ${expr} interpolations, up
+// to the next unescaped backtick). It walks expr's content exactly the way
+// Runtime.evaluateExpr's own template-literal branch does — a backslash
+// immediately before a backtick passes that backtick through literally
+// (rather than closing the literal), a `${...}` (matched with nested-brace
+// depth, mirroring an unclosed `${` by emitting the literal `$` byte and
+// continuing the scan rather than erroring) is recursively compiled through
+// genValueExpr, and a run of literal bytes becomes a Go string literal — so
+// it splits the content into the exact same sequence of literal-versus-
+// interpolated segments the interpreter's own walk produces. The segments
+// are joined with native Go `+` (never gopug.Add: template-literal
+// concatenation is unconditional, unlike the runtime-value-dependent `+`
+// operator). An empty literal (no segments at all) emits `""`. A `${}` whose
+// inner expression is outside genValueExpr's supported grammar propagates
+// that "unsupported" error rather than guessing. Escaping (html.EscapeString
+// or EscapeAttr) is the caller's job, applied once to the whole result,
+// exactly as for every other genValueExpr leaf.
+func (g *generator) genTemplateLiteral(expr string) (string, error) {
+	inner := expr[1:]
+	var parts []string
+	var literal strings.Builder
+
+	flushLiteral := func() {
+		if literal.Len() == 0 {
+			return
+		}
+		parts = append(parts, strconv.Quote(literal.String()))
+		literal.Reset()
+	}
+
+	i := 0
+	for i < len(inner) {
+		if inner[i] == '`' {
+			break // closing backtick
+		}
+		if inner[i] == '\\' && i+1 < len(inner) {
+			// escape sequence — pass the next char through literally
+			literal.WriteByte(inner[i+1])
+			i += 2
+			continue
+		}
+		if inner[i] == '$' && i+1 < len(inner) && inner[i+1] == '{' {
+			// find the matching closing brace, respecting nesting
+			depth := 1
+			j := i + 2
+			for j < len(inner) && depth > 0 {
+				if inner[j] == '{' {
+					depth++
+				} else if inner[j] == '}' {
+					depth--
+				}
+				j++
+			}
+			if depth > 0 {
+				// Unclosed ${: no matching brace found — emit the literal
+				// character and let the rest of the string render as-is.
+				literal.WriteByte(inner[i])
+				i++
+				continue
+			}
+			interp := strings.TrimSpace(inner[i+2 : j-1])
+			valExpr, err := g.genValueExpr(interp)
+			if err != nil {
+				return "", fmt.Errorf("template literal %q: %w", expr, err)
+			}
+			flushLiteral()
+			parts = append(parts, valExpr)
+			i = j
+			continue
+		}
+		literal.WriteByte(inner[i])
+		i++
+	}
+	flushLiteral()
+
+	if len(parts) == 0 {
+		return `""`, nil
+	}
+	return strings.Join(parts, " + "), nil
 }
 
 // genScalarStringify returns a Go expression of type string that stringifies
