@@ -160,6 +160,43 @@ type generator struct {
 	needsStrconv bool
 	needsGopug   bool
 	needsUtf8    bool
+	// tmpCounter is the next unused index nextTmp will hand out, so every
+	// fallible value-expression extracted at a write site (genInterpolation,
+	// genCode, genAttributes) gets its own uniquely named __vN/__errN locals
+	// within the generated function body, even when several such extractions
+	// appear in the same function.
+	tmpCounter int
+}
+
+// nextTmp returns a fresh, monotonically increasing index for naming a
+// fallible value-expression's extracted result locals (see
+// genFallibleExtraction), unique within the current generated function body.
+func (g *generator) nextTmp() int {
+	n := g.tmpCounter
+	g.tmpCounter++
+	return n
+}
+
+// genFallibleExtraction flushes any pending static text and emits the
+// statement pair that extracts a fallible value expression's (string, error)
+// result — goExpr, a Go expression genValueExpr has already built (e.g.
+// "gopug.Div(a, b)") — into two freshly named locals, returning early from
+// the generated function with the interpreter's own error the moment it is
+// non-nil (matching Runtime.evaluateExpr's own error propagation exactly:
+// the interpreter's Render aborts and returns that error the instant a
+// fallible sub-expression produces one). It returns the value local's name,
+// for the caller to substitute wherever it would otherwise have used goExpr
+// directly. This is the one place a fallible genValueExpr result is consumed
+// by a write (genInterpolation, genCode, genAttributes), so all three sites
+// emit the identical `__vN, __errN := <goExpr>; if __errN != nil { return
+// __errN }` shape through this single helper rather than each reproducing it.
+func (g *generator) genFallibleExtraction(goExpr string) string {
+	n := g.nextTmp()
+	valVar := fmt.Sprintf("__v%d", n)
+	errVar := fmt.Sprintf("__err%d", n)
+	g.writeRaw(fmt.Sprintf("%s, %s := %s\n", valVar, errVar, goExpr))
+	g.body.WriteString(fmt.Sprintf("if %s != nil {\n\treturn %s\n}\n", errVar, errVar))
+	return valVar
 }
 
 // scopeVar is one entry in the generator's each-loop variable scope stack: a
@@ -367,12 +404,15 @@ func (g *generator) genTag(tag *TagNode) error {
 //     stringifies to "false" (e.g. a string field literally holding
 //     "false"), a general rule this increment doesn't reproduce;
 //   - a dynamic value on any other, non-"class" name is built by genValueExpr
-//     (a bare field/dot-path, a `+` concat, or a backtick template literal —
-//     genValueExpr's whole supported grammar) and always escaped through the
+//     (genValueExpr's whole supported grammar) and always escaped through the
 //     exported EscapeAttr (never html.EscapeString — attribute escaping has
 //     different rules from text escaping), applied once to the built value
 //     as a whole rather than per-leaf, exactly as genInterpolation and genCode
-//     do for the same value-context grammar;
+//     do for the same value-context grammar. When genValueExpr reports the
+//     value fallible (a top-level `/` or `%`), its genFallibleExtraction
+//     prelude is emitted BEFORE the attribute's own static ` name="` text —
+//     the extraction is a statement, so it must land as its own line ahead
+//     of the write sequence it feeds, never interleaved inside it;
 //   - a dynamic "class" value merging shorthand class tokens with one or
 //     more bare string-field tokens (see genDynamicClass) emits a runtime
 //     write joining the tokens with the exported JoinClasses (which drops an
@@ -436,9 +476,12 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 			continue
 		}
 
-		valExpr, err := g.genValueExpr(trimmed)
+		valExpr, fallible, err := g.genValueExpr(trimmed)
 		if err != nil {
 			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		if fallible {
+			valExpr = g.genFallibleExtraction(valExpr)
 		}
 		g.needsGopug = true
 		g.writeStatic(" " + name + `="`)
@@ -522,9 +565,12 @@ func (g *generator) genInterpolation(n *InterpolationNode) error {
 	if n.Unescaped {
 		return fmt.Errorf("unsupported unescaped interpolation !{%s} in codegen", n.Expression)
 	}
-	valExpr, err := g.genValueExpr(n.Expression)
+	valExpr, fallible, err := g.genValueExpr(n.Expression)
 	if err != nil {
 		return err
+	}
+	if fallible {
+		valExpr = g.genFallibleExtraction(valExpr)
 	}
 	g.needsHTML = true
 	g.writeExprWrite("html.EscapeString(" + valExpr + ")")
@@ -545,9 +591,12 @@ func (g *generator) genInterpolation(n *InterpolationNode) error {
 func (g *generator) genCode(n *CodeNode) error {
 	switch n.Type {
 	case CodeBuffered:
-		valExpr, err := g.genValueExpr(n.Expression)
+		valExpr, fallible, err := g.genValueExpr(n.Expression)
 		if err != nil {
 			return err
+		}
+		if fallible {
+			valExpr = g.genFallibleExtraction(valExpr)
 		}
 		g.needsHTML = true
 		g.writeExprWrite("html.EscapeString(" + valExpr + ")")
@@ -559,130 +608,178 @@ func (g *generator) genCode(n *CodeNode) error {
 	}
 }
 
-// genValueExpr emits a Go expression of type string equal to what
-// Runtime.evaluateExpr(expr) would return, for the grammar subset this
-// increment supports: leaves (a bare field/dot-path, a quoted string
-// literal, a numeric literal, true/false/null/undefined/nil), a top-level
-// ternary, and the total arithmetic operators `-`, `+`, and `*`. It walks the
-// same operator-precedence order evaluateExpr does — strip balanced outer
-// parens, then check in turn for a top-level ternary, `||`, `&&`, each
-// comparison operator, a leading unary `!`, a quoted string literal, a
-// template literal, an array/object literal, a numeric literal, the
-// true/false/null keywords, subtraction, addition, and finally
-// multiplication — so that when two operators are both present, genValueExpr
-// splits on the same top-level one evaluateExpr would. A top-level ternary is
+// genValueExpr emits a Go expression equal to what Runtime.evaluateExpr(expr)
+// would return, for the grammar subset this increment supports: leaves (a
+// bare field/dot-path, a quoted string literal, a numeric literal,
+// true/false/null/undefined/nil), a top-level ternary, and the arithmetic
+// operators `-`, `+`, `*`, `/`, and `%`. It walks the same operator-
+// precedence order evaluateExpr does — strip balanced outer parens, then
+// check in turn for a top-level ternary, `||`, `&&`, each comparison
+// operator, a leading unary `!`, a quoted string literal, a template
+// literal, an array/object literal, a numeric literal, the true/false/null
+// keywords, subtraction, addition, multiplication, division, and finally
+// modulo — so that when two operators are both present, genValueExpr splits
+// on the same top-level one evaluateExpr would. A top-level ternary is
 // checked first (matching evaluateExpr's own order) and delegates to
 // genTernaryValueExpr, which reuses genCondition for the condition and
-// recurses into genValueExpr for each branch. Division and modulo are
-// fallible at runtime (a zero divisor aborts Render with an error) and still
-// return a descriptive "not yet supported" error here, since a value
-// expression as currently modeled has no way to emit the statement prelude a
-// fallible op would need. Every other construct evaluateExpr supports beyond
-// these (`||`/`&&`/`!`, comparisons, method calls, index expressions, array/
-// object literals) is a later increment and returns a descriptive
-// "unsupported" error here instead of emitting something that might not
-// match — the correctness bar is byte-identical to the interpreter, not a
-// best guess.
-func (g *generator) genValueExpr(expr string) (string, error) {
+// recurses into genValueExpr for each branch.
+//
+// The returned fallible flag distinguishes the two shapes goExpr can take.
+// When fallible is false (every leaf, and every `-`/`+`/`*` combination of
+// total operands), goExpr is a plain Go expression of type string, exactly
+// as before this increment — pure, inline, zero overhead. When fallible is
+// true, goExpr is a Go expression of type (string, error): a direct
+// gopug.Div(...) or gopug.Mod(...) call, mirroring the one case
+// Runtime.evaluateExpr's own `/` and `%` branches can abort Render with an
+// error (a numeric zero divisor). A caller consuming genValueExpr's
+// top-level result directly (genInterpolation, genCode, genAttributes)
+// extracts a fallible result via genFallibleExtraction before using it; a
+// caller composing it into something else — an arithmetic combiner, a
+// template-literal `${}` part, a ternary branch, or the other operand of a
+// nested `/`/`%` — cannot yet do so (that composition is a later increment)
+// and returns a descriptive "not yet supported" deferral error instead of
+// emitting a value expression that might not match the interpreter. Every
+// other construct evaluateExpr supports beyond these (`||`/`&&`/`!`,
+// comparisons, method calls, index expressions, array/object literals) is a
+// later increment and returns a descriptive "unsupported" error here instead
+// of emitting something that might not match — the correctness bar is
+// byte-identical to the interpreter, not a best guess.
+func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
 	if idx := findTernary(expr); idx >= 0 {
-		return g.genTernaryValueExpr(expr, idx)
+		goExpr, err := g.genTernaryValueExpr(expr, idx)
+		return goExpr, false, err
 	}
 	if idx := findBinaryOp(expr, "||"); idx >= 0 {
-		return "", fmt.Errorf("unsupported || operator in codegen value expression %q", expr)
+		return "", false, fmt.Errorf("unsupported || operator in codegen value expression %q", expr)
 	}
 	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
-		return "", fmt.Errorf("unsupported && operator in codegen value expression %q", expr)
+		return "", false, fmt.Errorf("unsupported && operator in codegen value expression %q", expr)
 	}
 	for _, op := range conditionComparisonOps {
 		if idx := findBinaryOp(expr, op); idx >= 0 {
-			return "", fmt.Errorf("unsupported comparison operator %q in codegen value expression %q", op, expr)
+			return "", false, fmt.Errorf("unsupported comparison operator %q in codegen value expression %q", op, expr)
 		}
 	}
 	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
-		return "", fmt.Errorf("unsupported ! operator in codegen value expression %q", expr)
+		return "", false, fmt.Errorf("unsupported ! operator in codegen value expression %q", expr)
 	}
 
 	if lit, ok := unwrapQuotedLiteral(expr); ok {
-		return strconv.Quote(lit), nil
+		return strconv.Quote(lit), false, nil
 	}
 	if strings.HasPrefix(expr, "`") {
-		return g.genTemplateLiteral(expr)
+		goExpr, err := g.genTemplateLiteral(expr)
+		return goExpr, false, err
 	}
 	if strings.HasPrefix(expr, "[") {
-		return "", fmt.Errorf("unsupported array literal in codegen value expression %q", expr)
+		return "", false, fmt.Errorf("unsupported array literal in codegen value expression %q", expr)
 	}
 	if strings.HasPrefix(expr, "{") {
-		return "", fmt.Errorf("unsupported object literal in codegen value expression %q", expr)
+		return "", false, fmt.Errorf("unsupported object literal in codegen value expression %q", expr)
 	}
 
 	if f, ok := parseJSNumber(expr); ok {
-		return strconv.Quote(formatCanonicalLiteral(f)), nil
+		return strconv.Quote(formatCanonicalLiteral(f)), false, nil
 	}
 
 	switch expr {
 	case "true":
-		return `"true"`, nil
+		return `"true"`, false, nil
 	case "false":
-		return `"false"`, nil
+		return `"false"`, false, nil
 	case "null", "undefined", "nil":
-		return `""`, nil
+		return `""`, false, nil
 	}
 
 	if idx := findSubtraction(expr); idx >= 0 {
-		leftExpr, err := g.genValueExpr(expr[:idx])
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		rightExpr, err := g.genValueExpr(expr[idx+1:])
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+1:])
 		if err != nil {
-			return "", err
+			return "", false, err
+		}
+		if leftFallible || rightFallible {
+			return "", false, fmt.Errorf("fallible operand (division/modulo) inside arithmetic not yet supported in codegen (slice 6b) %q", expr)
 		}
 		g.needsGopug = true
-		return "gopug.Sub(" + leftExpr + ", " + rightExpr + ")", nil
+		return "gopug.Sub(" + leftExpr + ", " + rightExpr + ")", false, nil
 	}
 
 	if idx := findBinaryOp(expr, "+"); idx >= 0 {
-		leftExpr, err := g.genValueExpr(expr[:idx])
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		rightExpr, err := g.genValueExpr(expr[idx+1:])
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+1:])
 		if err != nil {
-			return "", err
+			return "", false, err
+		}
+		if leftFallible || rightFallible {
+			return "", false, fmt.Errorf("fallible operand (division/modulo) inside arithmetic not yet supported in codegen (slice 6b) %q", expr)
 		}
 		g.needsGopug = true
-		return "gopug.Add(" + leftExpr + ", " + rightExpr + ")", nil
+		return "gopug.Add(" + leftExpr + ", " + rightExpr + ")", false, nil
 	}
 
 	if idx := findRightmostOp(expr, '*'); idx >= 0 {
-		leftExpr, err := g.genValueExpr(expr[:idx])
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		rightExpr, err := g.genValueExpr(expr[idx+1:])
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+1:])
 		if err != nil {
-			return "", err
+			return "", false, err
+		}
+		if leftFallible || rightFallible {
+			return "", false, fmt.Errorf("fallible operand (division/modulo) inside arithmetic not yet supported in codegen (slice 6b) %q", expr)
 		}
 		g.needsGopug = true
-		return "gopug.Mul(" + leftExpr + ", " + rightExpr + ")", nil
+		return "gopug.Mul(" + leftExpr + ", " + rightExpr + ")", false, nil
 	}
 	if idx := findRightmostOp(expr, '/'); idx >= 0 {
-		return "", fmt.Errorf("division in codegen not yet supported (fallible value-expression) %q", expr)
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", false, err
+		}
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+1:])
+		if err != nil {
+			return "", false, err
+		}
+		if leftFallible || rightFallible {
+			return "", false, fmt.Errorf("nested fallible operand not yet supported in codegen (slice 6b) %q", expr)
+		}
+		g.needsGopug = true
+		return "gopug.Div(" + leftExpr + ", " + rightExpr + ")", true, nil
 	}
 	if idx := findRightmostOp(expr, '%'); idx >= 0 {
-		return "", fmt.Errorf("modulo in codegen not yet supported (fallible value-expression) %q", expr)
+		leftExpr, leftFallible, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", false, err
+		}
+		rightExpr, rightFallible, err := g.genValueExpr(expr[idx+1:])
+		if err != nil {
+			return "", false, err
+		}
+		if leftFallible || rightFallible {
+			return "", false, fmt.Errorf("nested fallible operand not yet supported in codegen (slice 6b) %q", expr)
+		}
+		g.needsGopug = true
+		return "gopug.Mod(" + leftExpr + ", " + rightExpr + ")", true, nil
 	}
 	if idx := findIndexOp(expr); idx >= 0 {
-		return "", fmt.Errorf("unsupported index expression in codegen value expression %q", expr)
+		return "", false, fmt.Errorf("unsupported index expression in codegen value expression %q", expr)
 	}
 
-	goExpr, typ, err := g.resolveFieldExpr(expr)
+	resolvedExpr, typ, err := g.resolveFieldExpr(expr)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return g.genScalarStringify(goExpr, typ)
+	goExpr, err = g.genScalarStringify(resolvedExpr, typ)
+	return goExpr, false, err
 }
 
 // genTernaryValueExpr emits a value-context ternary `cond ? a : b` (expr,
@@ -713,10 +810,16 @@ func (g *generator) genValueExpr(expr string) (string, error) {
 // missing top-level ':' after the '?' is a malformed ternary and returns an
 // error, mirroring the interpreter's own "malformed ternary expression"
 // message. An error from the condition or either branch (a shape genCondition
-// or genValueExpr can't yet compile — arithmetic in the condition, `/` in a
-// branch, and so on) propagates unchanged: that is a deferred gap, not a
-// divergence, so generation fails instead of emitting output that might not
-// match the interpreter.
+// or genValueExpr can't yet compile — arithmetic in the condition, an
+// unsupported operator in a branch, and so on) propagates unchanged: that is
+// a deferred gap, not a divergence, so generation fails instead of emitting
+// output that might not match the interpreter. A branch genValueExpr COULD
+// compile but marked fallible (a top-level `/` or `%`) is a distinct,
+// separately reported deferral: the func() string {}() literal this method
+// builds returns a plain string, with no way yet to plumb a branch's
+// (string, error) result out through it, so a fallible branch returns its
+// own "not yet supported" error instead of silently dropping the possible
+// division/modulo error.
 func (g *generator) genTernaryValueExpr(expr string, idx int) (string, error) {
 	rest := expr[idx+1:]
 	colonIdx := findBinaryOp(rest, ":")
@@ -728,13 +831,16 @@ func (g *generator) genTernaryValueExpr(expr string, idx int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	trueExpr, err := g.genValueExpr(rest[:colonIdx])
+	trueExpr, trueFallible, err := g.genValueExpr(rest[:colonIdx])
 	if err != nil {
 		return "", err
 	}
-	falseExpr, err := g.genValueExpr(rest[colonIdx+1:])
+	falseExpr, falseFallible, err := g.genValueExpr(rest[colonIdx+1:])
 	if err != nil {
 		return "", err
+	}
+	if trueFallible || falseFallible {
+		return "", fmt.Errorf("fallible ternary branch not yet supported (slice 6b): %s", expr)
 	}
 
 	return fmt.Sprintf("func() string {\n\tif %s {\n\t\treturn %s\n\t}\n\treturn %s\n}()", condExpr, trueExpr, falseExpr), nil
@@ -756,9 +862,13 @@ func (g *generator) genTernaryValueExpr(expr string, idx int) (string, error) {
 // concatenation is unconditional, unlike the runtime-value-dependent `+`
 // operator). An empty literal (no segments at all) emits `""`. A `${}` whose
 // inner expression is outside genValueExpr's supported grammar propagates
-// that "unsupported" error rather than guessing. Escaping (html.EscapeString
-// or EscapeAttr) is the caller's job, applied once to the whole result,
-// exactly as for every other genValueExpr leaf.
+// that "unsupported" error rather than guessing, and one genValueExpr marks
+// fallible (a top-level `/` or `%`) returns its own deferral error instead:
+// every part is joined into a single string expression with native Go `+`,
+// which has no way yet to plumb a part's possible division/modulo error out
+// through the concatenation. Escaping (html.EscapeString or EscapeAttr) is
+// the caller's job, applied once to the whole result, exactly as for every
+// other genValueExpr leaf.
 func (g *generator) genTemplateLiteral(expr string) (string, error) {
 	inner := expr[1:]
 	var parts []string
@@ -803,9 +913,12 @@ func (g *generator) genTemplateLiteral(expr string) (string, error) {
 				continue
 			}
 			interp := strings.TrimSpace(inner[i+2 : j-1])
-			valExpr, err := g.genValueExpr(interp)
+			valExpr, partFallible, err := g.genValueExpr(interp)
 			if err != nil {
 				return "", fmt.Errorf("template literal %q: %w", expr, err)
+			}
+			if partFallible {
+				return "", fmt.Errorf("template literal %q: fallible ${} part not yet supported (slice 6b)", expr)
 			}
 			flushLiteral()
 			parts = append(parts, valExpr)

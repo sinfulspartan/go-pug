@@ -32,7 +32,9 @@ import (
 // correctly inside a `${...}` interpolation. FlagB/FlagC are a second and
 // third independent bool field (Flag already being the first), used by the
 // `&&`/`||`/`!` condition-combinator differential tests to exercise
-// multi-operand truth tables and `||`-before-`&&` precedence.
+// multi-operand truth tables and `||`-before-`&&` precedence. Zero is an int
+// field always holding 0, used by the fallible-value-expression differential
+// tests to exercise `/`/`%`'s one error case (a numeric zero divisor).
 type opsData struct {
 	Name    string
 	Count   int
@@ -49,6 +51,7 @@ type opsData struct {
 	Str2    string
 	Slug    string
 	Firms   []opsFirm
+	Zero    int
 }
 
 // opsFirm is opsData.Firms's element type.
@@ -82,6 +85,7 @@ type opsData struct {
 	Str2    string
 	Slug    string
 	Firms   []opsFirm
+	Zero    int
 }
 `
 

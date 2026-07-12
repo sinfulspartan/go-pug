@@ -972,6 +972,62 @@ func Mul(left, right string) string {
 	return ""
 }
 
+// Div reproduces Runtime.evaluateExpr's `/` operator on two already-
+// stringified operands: if both left and right parse as numbers (toFloat),
+// it returns their numeric quotient formatted the same way every other
+// numeric result is (strconv.FormatFloat with the 'f' verb, shortest
+// round-tripping precision) and a nil error — unless the right operand is
+// exactly zero, in which case it returns an empty string and an error
+// (matching evaluateExpr's own division-by-zero abort, which propagates out
+// of Render); when either operand is not numeric it returns the empty string
+// with a nil error, exactly like Sub and Mul. This disambiguation happens on
+// the operands' RUNTIME VALUES, not on any static type, so the same two
+// operand strings always produce the same result regardless of caller. It is
+// exported so codegen-generated code can call it directly, keeping the `/`
+// operator's value semantics — including its one fallible case — single-
+// sourced in this one implementation rather than reproducing (and risking
+// diverging from) evaluateExpr's own logic.
+func Div(left, right string) (string, error) {
+	lf, lok := toFloat(left)
+	rf, rok := toFloat(right)
+	if lok && rok {
+		if rf == 0 {
+			return "", fmt.Errorf("division by zero")
+		}
+		return strconv.FormatFloat(lf/rf, 'f', -1, 64), nil
+	}
+	return "", nil
+}
+
+// Mod reproduces Runtime.evaluateExpr's `%` operator on two already-
+// stringified operands: if both left and right parse as numbers (toFloat),
+// it returns their integer remainder — each operand truncated to an int64
+// before the Go `%` operator is applied, exactly like evaluateExpr's own
+// modulo branch — formatted the same way every other numeric result is
+// (strconv.FormatFloat with the 'f' verb, shortest round-tripping precision)
+// and a nil error, unless the right operand is exactly zero, in which case it
+// returns an empty string and an error (matching evaluateExpr's own
+// modulo-by-zero abort, which propagates out of Render); when either operand
+// is not numeric it returns the empty string with a nil error, exactly like
+// Sub and Mul. This disambiguation happens on the operands' RUNTIME VALUES,
+// not on any static type, so the same two operand strings always produce the
+// same result regardless of caller. It is exported so codegen-generated code
+// can call it directly, keeping the `%` operator's value semantics —
+// including its one fallible case — single-sourced in this one
+// implementation rather than reproducing (and risking diverging from)
+// evaluateExpr's own logic.
+func Mod(left, right string) (string, error) {
+	lf, lok := toFloat(left)
+	rf, rok := toFloat(right)
+	if lok && rok {
+		if rf == 0 {
+			return "", fmt.Errorf("modulo by zero")
+		}
+		return strconv.FormatFloat(float64(int64(lf)%int64(rf)), 'f', -1, 64), nil
+	}
+	return "", nil
+}
+
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
 // renders them: id first, then class, then every other attribute name
 // alphabetically. Runtime.renderTag and the codegen backend's genAttributes
@@ -2278,15 +2334,7 @@ CHECK_INDEX_OP:
 		if err != nil {
 			return "", err
 		}
-		lf, lok := toFloat(left)
-		rf, rok := toFloat(right)
-		if lok && rok {
-			if rf == 0 {
-				return "", fmt.Errorf("division by zero")
-			}
-			return strconv.FormatFloat(lf/rf, 'f', -1, 64), nil
-		}
-		return "", nil
+		return Div(left, right)
 	}
 
 	if idx := findRightmostOp(expr, '%'); idx >= 0 {
@@ -2298,15 +2346,7 @@ CHECK_INDEX_OP:
 		if err != nil {
 			return "", err
 		}
-		lf, lok := toFloat(left)
-		rf, rok := toFloat(right)
-		if lok && rok {
-			if rf == 0 {
-				return "", fmt.Errorf("modulo by zero")
-			}
-			return strconv.FormatFloat(float64(int64(lf)%int64(rf)), 'f', -1, 64), nil
-		}
-		return "", nil
+		return Mod(left, right)
 	}
 
 	if idx := findIndexOp(expr); idx >= 0 {

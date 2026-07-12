@@ -195,7 +195,7 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 
 // TestCodegenValueExprUnsupported asserts that every construct outside this
 // increment's value-context grammar — every operator besides `-`, `+`, `*`,
-// and a top-level ternary (`||`, `&&`, `!`, comparisons), an index
+// `/`, `%`, and a top-level ternary (`||`, `&&`, `!`, comparisons), an index
 // expression, an array/object literal, a method call, an unbuffered code
 // statement, and unescaped buffered output — is rejected with a clear
 // "unsupported" error rather than silently emitting something that might not
@@ -205,14 +205,16 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 // contains a construct genValueExpr still can't build (a bare comparison,
 // here) still propagates that "unsupported" error. Subtraction and
 // multiplication are also no longer in this list — see
-// TestCodegenValueExprArithmetic — but division and modulo stay rejected:
-// they are fallible (a zero divisor aborts Render at runtime) rather than
-// unsupported, so they get their own deferral message asserted in
-// TestCodegenValueExprDivisionModuloDeferred. A top-level ternary is no
-// longer in this list either — see codegen_ternary_test.go — but a ternary
-// whose CONDITION is a shape genCondition can't compile (here, arithmetic)
-// still propagates an error, since genValueExpr's ternary support reuses
-// genCondition unchanged for the condition.
+// TestCodegenValueExprArithmetic. Division and modulo are no longer in this
+// list either — a standalone `/`/`%` is now supported (fallible) and proven
+// by differential build+run in codegen_fallible_test.go — but composing a
+// fallible `/`/`%` result into something else still isn't, and gets its own
+// deferral message, asserted in TestCodegenValueExprDivisionModuloDeferred. A
+// top-level ternary is no longer in this list either — see
+// codegen_ternary_test.go — but a ternary whose CONDITION is a shape
+// genCondition can't compile (here, arithmetic) still propagates an error,
+// since genValueExpr's ternary support reuses genCondition unchanged for the
+// condition.
 func TestCodegenValueExprUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -255,19 +257,25 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 	}
 }
 
-// TestCodegenValueExprDivisionModuloDeferred asserts that `/` and `%` are
-// rejected with a clear deferral message describing them as fallible and not
-// yet supported, distinct from the generic "unsupported construct" message
-// the rest of this increment's grammar gaps use — a caller hitting this
-// error should understand it's a runtime-error-on-zero-divisor gap, not a
-// "codegen doesn't know this syntax at all" gap.
+// TestCodegenValueExprDivisionModuloDeferred asserts that a standalone `/`
+// or `%` is now generated successfully (see codegen_fallible_test.go for the
+// differential build+run proof), but COMPOSING a fallible `/`/`%` result into
+// an arithmetic combiner, a nested `/`/`%` operand, or a template-literal
+// `${}` part still returns a clear deferral message describing it as
+// fallible and not yet supported, distinct from the generic "unsupported
+// construct" message the rest of this increment's grammar gaps use — a
+// caller hitting this error should understand it's a not-yet-implemented
+// composition gap, not a "codegen doesn't know this syntax at all" gap or a
+// field-resolution failure.
 func TestCodegenValueExprDivisionModuloDeferred(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
-		{name: "division", src: "p= Count / 2\n"},
-		{name: "modulo", src: "p= Count % 2\n"},
+		{name: "fallible operand inside addition", src: "p= Count / Price + 1\n"},
+		{name: "fallible operand inside multiplication", src: "p= Count / Price * Age\n"},
+		{name: "fallible ${} part in a template literal", src: "p= `total ${Count / Price}`\n"},
+		{name: "nested fallible operand", src: "p= Count / (Price / Age)\n"},
 	}
 
 	for _, tc := range cases {
