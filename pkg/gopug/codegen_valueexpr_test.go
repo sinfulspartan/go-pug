@@ -194,33 +194,38 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 }
 
 // TestCodegenValueExprUnsupported asserts that every construct outside this
-// increment's value-context grammar — every operator besides `-`, `+`, `*`
-// (ternary, `||`, `&&`, `!`, comparisons), an index expression, an
-// array/object literal, a method call, an unbuffered code statement, and
-// unescaped buffered output — is rejected with a clear "unsupported" error
-// rather than silently emitting something that might not match the
-// interpreter. A template literal itself is no longer in this list
+// increment's value-context grammar — every operator besides `-`, `+`, `*`,
+// and a top-level ternary (`||`, `&&`, `!`, comparisons), an index
+// expression, an array/object literal, a method call, an unbuffered code
+// statement, and unescaped buffered output — is rejected with a clear
+// "unsupported" error rather than silently emitting something that might not
+// match the interpreter. A template literal itself is no longer in this list
 // (genTemplateLiteral now supports it, see
 // codegen_valueexpr_template_test.go), but one whose `${...}` interpolation
-// contains a construct genValueExpr still can't build (a ternary, here)
-// still propagates that "unsupported" error. Subtraction and multiplication
-// are also no longer in this list — see TestCodegenValueExprArithmetic —
-// but division and modulo stay rejected: they are fallible (a zero divisor
-// aborts Render at runtime) rather than unsupported, so they get their own
-// deferral message asserted in TestCodegenValueExprDivisionModuloDeferred.
+// contains a construct genValueExpr still can't build (a bare comparison,
+// here) still propagates that "unsupported" error. Subtraction and
+// multiplication are also no longer in this list — see
+// TestCodegenValueExprArithmetic — but division and modulo stay rejected:
+// they are fallible (a zero divisor aborts Render at runtime) rather than
+// unsupported, so they get their own deferral message asserted in
+// TestCodegenValueExprDivisionModuloDeferred. A top-level ternary is no
+// longer in this list either — see codegen_ternary_test.go — but a ternary
+// whose CONDITION is a shape genCondition can't compile (here, arithmetic)
+// still propagates an error, since genValueExpr's ternary support reuses
+// genCondition unchanged for the condition.
 func TestCodegenValueExprUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
-		{name: "ternary", src: "p= Count > 0 ? \"yes\" : \"no\"\n"},
+		{name: "ternary with an unsupported (arithmetic) condition", src: "p= (Count + 1) ? \"yes\" : \"no\"\n"},
 		{name: "|| combinator", src: "p= Flag || Count\n"},
 		{name: "&& combinator", src: "p= Flag && Count\n"},
 		{name: "leading ! operator", src: "p= !Flag\n"},
 		{name: "comparison", src: "p= Count > 0\n"},
 		{name: "index expression", src: "p= Items[0]\n"},
 		{name: "method call", src: "p= Name.toUpperCase()\n"},
-		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Count > 0 ? 1 : 0}`\n"},
+		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Count > 0}`\n"},
 		{name: "array literal", src: "p= [1, 2, 3]\n"},
 		{name: "object literal", src: "p= {a: 1}\n"},
 		{name: "unbuffered code statement", src: "- var x = 1\n"},

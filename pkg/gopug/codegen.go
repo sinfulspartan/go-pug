@@ -69,12 +69,15 @@ type Config struct {
 // EscapeAttr (see genAttributes) — and a conditional bare write for a
 // bool-typed field on an HTML boolean-attribute name (present iff true,
 // matching pug's omit-on-false; that path stays bare-field-only, not routed
-// through genValueExpr). Any value genValueExpr can't build (a ternary, a
-// method call, …), or a non-scalar field type (struct, slice, map, pointer,
-// interface, float32, …), is out of scope and returns an error rather than
-// guessing. When DataReflectType is nil, every field is assumed to be a
-// string (the original untyped skeleton behavior), and only static/bare
-// attributes and bare-field conditions are supported, unchanged.
+// through genValueExpr). genValueExpr also supports a top-level ternary
+// (`cond ? a : b`, emitted as an immediately-invoked function literal — see
+// genTernaryValueExpr — reusing genCondition for the condition and
+// recursing for each branch). Any value genValueExpr can't build (`&&`/`||`/
+// `!`, comparisons, a method call, …), or a non-scalar field type (struct,
+// slice, map, pointer, interface, float32, …), is out of scope and returns
+// an error rather than guessing. When DataReflectType is nil, every field is
+// assumed to be a string (the original untyped skeleton behavior), and only
+// static/bare attributes and bare-field conditions are supported, unchanged.
 //
 // GenerateGo assumes complete, well-typed data and does no nil-guarding —
 // like Pug itself, and unlike the interpreter's lenient missing-value
@@ -559,28 +562,32 @@ func (g *generator) genCode(n *CodeNode) error {
 // genValueExpr emits a Go expression of type string equal to what
 // Runtime.evaluateExpr(expr) would return, for the grammar subset this
 // increment supports: leaves (a bare field/dot-path, a quoted string
-// literal, a numeric literal, true/false/null/undefined/nil) and the total
-// arithmetic operators `-`, `+`, and `*`. It walks the same
-// operator-precedence order evaluateExpr does — strip balanced outer
+// literal, a numeric literal, true/false/null/undefined/nil), a top-level
+// ternary, and the total arithmetic operators `-`, `+`, and `*`. It walks the
+// same operator-precedence order evaluateExpr does — strip balanced outer
 // parens, then check in turn for a top-level ternary, `||`, `&&`, each
 // comparison operator, a leading unary `!`, a quoted string literal, a
 // template literal, an array/object literal, a numeric literal, the
 // true/false/null keywords, subtraction, addition, and finally
 // multiplication — so that when two operators are both present, genValueExpr
-// splits on the same top-level one evaluateExpr would. Division and modulo
-// are fallible at runtime (a zero divisor aborts Render with an error) and
-// still return a descriptive "not yet supported" error here, since a value
+// splits on the same top-level one evaluateExpr would. A top-level ternary is
+// checked first (matching evaluateExpr's own order) and delegates to
+// genTernaryValueExpr, which reuses genCondition for the condition and
+// recurses into genValueExpr for each branch. Division and modulo are
+// fallible at runtime (a zero divisor aborts Render with an error) and still
+// return a descriptive "not yet supported" error here, since a value
 // expression as currently modeled has no way to emit the statement prelude a
 // fallible op would need. Every other construct evaluateExpr supports beyond
-// these (method calls, index expressions, template/array/object literals) is
-// a later increment and returns a descriptive "unsupported" error here
-// instead of emitting something that might not match — the correctness bar
-// is byte-identical to the interpreter, not a best guess.
+// these (`||`/`&&`/`!`, comparisons, method calls, index expressions, array/
+// object literals) is a later increment and returns a descriptive
+// "unsupported" error here instead of emitting something that might not
+// match — the correctness bar is byte-identical to the interpreter, not a
+// best guess.
 func (g *generator) genValueExpr(expr string) (string, error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
 	if idx := findTernary(expr); idx >= 0 {
-		return "", fmt.Errorf("unsupported ternary operator in codegen value expression %q", expr)
+		return g.genTernaryValueExpr(expr, idx)
 	}
 	if idx := findBinaryOp(expr, "||"); idx >= 0 {
 		return "", fmt.Errorf("unsupported || operator in codegen value expression %q", expr)
@@ -676,6 +683,61 @@ func (g *generator) genValueExpr(expr string) (string, error) {
 		return "", err
 	}
 	return g.genScalarStringify(goExpr, typ)
+}
+
+// genTernaryValueExpr emits a value-context ternary `cond ? a : b` (expr,
+// with idx the top-level '?' findTernary already located) as an
+// immediately-invoked function literal returning string:
+//
+//	func() string {
+//		if <genCondition(cond)> {
+//			return <genValueExpr(trueBranch)>
+//		}
+//		return <genValueExpr(falseBranch)>
+//	}()
+//
+// Go has neither a ternary operator nor statement-in-expression, so this
+// two-armed if/return wrapped in a func() string{}() literal is the only way
+// to compose a runtime choice between two value expressions into a single Go
+// expression — one that composes wherever genValueExpr's own output already
+// does (html.EscapeString around an interpolation, gopug.EscapeAttr around an
+// attribute value, a template-literal segment, a buffered `= expr` write).
+// This mirrors Runtime.evaluateExpr's own ternary branch (runtime.go:2072)
+// exactly: the condition is isTruthy(evaluateExpr(cond)), which is precisely
+// what genCondition already compiles for condition position, reused
+// unchanged here; each branch is evaluateExpr(branch), precisely what
+// genValueExpr already compiles, recursed on here so a nested ternary in
+// either branch works for free. Only the taken branch's genValueExpr output
+// actually executes at render time — the other sits in the untaken if arm —
+// matching the interpreter's short-circuit evaluation of only one branch. A
+// missing top-level ':' after the '?' is a malformed ternary and returns an
+// error, mirroring the interpreter's own "malformed ternary expression"
+// message. An error from the condition or either branch (a shape genCondition
+// or genValueExpr can't yet compile — arithmetic in the condition, `/` in a
+// branch, and so on) propagates unchanged: that is a deferred gap, not a
+// divergence, so generation fails instead of emitting output that might not
+// match the interpreter.
+func (g *generator) genTernaryValueExpr(expr string, idx int) (string, error) {
+	rest := expr[idx+1:]
+	colonIdx := findBinaryOp(rest, ":")
+	if colonIdx < 0 {
+		return "", fmt.Errorf("malformed ternary expression in codegen value expression: %s", expr)
+	}
+
+	condExpr, err := g.genCondition(expr[:idx])
+	if err != nil {
+		return "", err
+	}
+	trueExpr, err := g.genValueExpr(rest[:colonIdx])
+	if err != nil {
+		return "", err
+	}
+	falseExpr, err := g.genValueExpr(rest[colonIdx+1:])
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("func() string {\n\tif %s {\n\t\treturn %s\n\t}\n\treturn %s\n}()", condExpr, trueExpr, falseExpr), nil
 }
 
 // genTemplateLiteral emits a Go string expression for a backtick template
