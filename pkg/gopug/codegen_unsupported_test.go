@@ -45,8 +45,8 @@ func TestCodegenUnsupported(t *testing.T) {
 			src:  "include other.pug\n",
 		},
 		{
-			name: "operator expression in interpolation",
-			src:  "p #{A + B}",
+			name: "subtraction operator in interpolation",
+			src:  "p #{A - B}",
 		},
 		{
 			name: "method call in interpolation",

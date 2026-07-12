@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -17,7 +19,11 @@ import (
 // range is easy to overflow with an ordinary-looking Pug numeric literal,
 // and explicit BigInt int64/BigUint uint64 fields for exercising the exact
 // int64/uint64 boundary (2^63 / 2^64) a plain platform-sized int/uint field
-// shares but doesn't name as precisely.
+// shares but doesn't name as precisely. Str1/Str2 are a second and third
+// plain string field (Name already being the first), used by the
+// value-expr `+` differential tests to prove the runtime-value-dependent
+// disambiguation gopug.Add performs — the same two fields hold numeric-
+// looking strings in one subtest and non-numeric strings in another.
 type opsData struct {
 	Name    string
 	Count   int
@@ -28,6 +34,8 @@ type opsData struct {
 	B       uint8
 	BigInt  int64
 	BigUint uint64
+	Str1    string
+	Str2    string
 }
 
 var opsDataReflectType = reflect.TypeOf(opsData{})
@@ -46,8 +54,31 @@ const opsDataStructSrc = `type opsData struct {
 	B       uint8
 	BigInt  int64
 	BigUint uint64
+	Str1    string
+	Str2    string
 }
 `
+
+// repoModuleReplaceDirectives returns the extra go.mod lines a throwaway
+// module's go.mod needs to resolve github.com/sinfulspartan/go-pug/pkg/gopug
+// against this checkout, rather than trying (and failing) to fetch it from a
+// module proxy: a require for the module path, satisfied by a replace
+// pointing at the repository root this test file itself lives under
+// (computed from runtime.Caller so the throwaway module works regardless of
+// the current working directory the test binary happens to run from).
+// Generated code that calls an exported gopug helper — gopug.Add,
+// gopug.EscapeAttr, gopug.JoinClasses — needs this to actually build and run
+// in the throwaway module buildGeneratedGo/runGeneratedGo assemble.
+func repoModuleReplaceDirectives(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("runtime.Caller: could not determine this test file's own path")
+	}
+	// thisFile is <repoRoot>/pkg/gopug/codegen_ops_test.go.
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	return fmt.Sprintf("\nrequire github.com/sinfulspartan/go-pug v0.0.0\n\nreplace github.com/sinfulspartan/go-pug => %s\n", strconv.Quote(repoRoot))
+}
 
 // buildGeneratedGo writes generated (a GenerateGo result whose Config.PackageName
 // is "opsbuild") into a throwaway module alongside a copy of the opsData struct
@@ -60,7 +91,8 @@ func buildGeneratedGo(t *testing.T, generated []byte) {
 	t.Helper()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module opsbuild\n\ngo 1.26\n"), 0o644); err != nil {
+	goMod := "module opsbuild\n\ngo 1.26\n" + repoModuleReplaceDirectives(t)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatalf("writing go.mod: %v", err)
 	}
 
@@ -105,7 +137,8 @@ func runGeneratedGo(t *testing.T, generated []byte, dataLiteral string) string {
 	t.Helper()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module opsbuild\n\ngo 1.26\n"), 0o644); err != nil {
+	goMod := "module opsbuild\n\ngo 1.26\n" + repoModuleReplaceDirectives(t)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatalf("writing go.mod: %v", err)
 	}
 

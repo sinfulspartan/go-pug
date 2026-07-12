@@ -910,6 +910,27 @@ func JoinClasses(classes ...string) string {
 	return strings.Join(kept, " ")
 }
 
+// Add reproduces Runtime.evaluateExpr's `+` operator on two already-
+// stringified operands: if both left and right parse as numbers (toFloat),
+// it returns their numeric sum formatted the same way every other numeric
+// result is (strconv.FormatFloat with the 'f' verb, shortest round-tripping
+// precision); otherwise it returns the plain string concatenation of left
+// and right. This disambiguation happens on the operands' RUNTIME VALUES,
+// not on any static type, so the same two operand strings always produce
+// the same result regardless of caller — "5"+"3" is the number 8, but
+// "a"+"5" is the string "a5". It is exported so codegen-generated code can
+// call it directly, keeping the `+` operator's value semantics
+// single-sourced in this one implementation rather than reproducing (and
+// risking diverging from) evaluateExpr's own logic.
+func Add(left, right string) string {
+	lf, lok := toFloat(left)
+	rf, rok := toFloat(right)
+	if lok && rok {
+		return strconv.FormatFloat(lf+rf, 'f', -1, 64)
+	}
+	return left + right
+}
+
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
 // renders them: id first, then class, then every other attribute name
 // alphabetically. Runtime.renderTag and the codegen backend's genAttributes
@@ -2197,13 +2218,7 @@ CHECK_INDEX_OP:
 		if err != nil {
 			return "", err
 		}
-		lf, lok := toFloat(left)
-		rf, rok := toFloat(right)
-		if lok && rok {
-			result := lf + rf
-			return strconv.FormatFloat(result, 'f', -1, 64), nil
-		}
-		return left + right, nil
+		return Add(left, right), nil
 	}
 
 	if idx := findRightmostOp(expr, '*'); idx >= 0 {

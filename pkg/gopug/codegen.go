@@ -297,6 +297,8 @@ func (g *generator) genNode(n Node) error {
 		return nil
 	case *InterpolationNode:
 		return g.genInterpolation(node)
+	case *CodeNode:
+		return g.genCode(node)
 	case *EachNode:
 		return g.genEach(node)
 	case *ConditionalNode:
@@ -514,56 +516,193 @@ func (g *generator) genDynamicClass(trimmed string) error {
 	return nil
 }
 
-// genInterpolation emits a write of a #{expr} interpolation, where expr must
-// be a bare identifier or dot-path (resolveFieldExpr enforces that);
-// unescaped interpolation is not yet supported. In type-aware mode (a
-// non-nil Config.DataReflectType), the emitted stringify matches
-// Runtime.lookupAndStringify's per-type cases exactly: string is
-// html.EscapeString'd, every numeric/bool scalar is a bare strconv.* call
-// (none of their stringifications can contain HTML-special characters, so
-// escaping them would be wasted work); any non-scalar field type (struct,
-// slice, map, pointer, interface, float32, complex, …) is unsupported and
-// returns an error rather than guessing at a stringification the interpreter
-// wouldn't produce. In type-blind mode (nil DataReflectType), the field is
-// assumed to be a string, matching the untyped codegen skeleton.
+// genInterpolation emits a write of a #{expr} interpolation. The value is
+// built by genValueExpr — a bare field/dot-path (unchanged from before this
+// increment) or, as of the value-context expression compiler, an expression
+// built from string/numeric/bool literals and the `+` operator — then always
+// wrapped in html.EscapeString. Escaping a value genValueExpr already knows
+// can't contain an HTML-special character (a bare numeric/bool field's
+// stringify) is redundant work, but it is never wrong: it can't change the
+// bytes those stringifications produce, so wrapping unconditionally keeps
+// this function simple without breaking byte-identical output. Unescaped
+// interpolation (`!{expr}`) is not yet supported.
 func (g *generator) genInterpolation(n *InterpolationNode) error {
 	if n.Unescaped {
 		return fmt.Errorf("unsupported unescaped interpolation !{%s} in codegen", n.Expression)
 	}
-	goExpr, typ, err := g.resolveFieldExpr(n.Expression)
+	valExpr, err := g.genValueExpr(n.Expression)
 	if err != nil {
 		return err
 	}
+	g.needsHTML = true
+	g.writeExprWrite("html.EscapeString(" + valExpr + ")")
+	return nil
+}
 
-	if typ == nil {
+// genCode emits a buffered, escaped code node (`= expr`) as a write of
+// html.EscapeString(genValueExpr(expr)) — the same escaping genInterpolation
+// applies, since `= expr` and `#{expr}` are both HTML-escaped-by-default
+// value positions in the interpreter. An unbuffered statement (`- expr`,
+// executed for its side effect with no output) and an unescaped buffered
+// node (`!= expr`, written raw) are both out of scope for this increment —
+// the interpreter's unbuffered path can run arbitrary variable
+// assignment/loop statements genValueExpr has no model for, and unescaped
+// output would need a value-context compiler decision about whether the
+// emitted Go is trusted not to need escaping — so both return a clear
+// unsupported error instead of guessing.
+func (g *generator) genCode(n *CodeNode) error {
+	switch n.Type {
+	case CodeBuffered:
+		valExpr, err := g.genValueExpr(n.Expression)
+		if err != nil {
+			return err
+		}
 		g.needsHTML = true
-		g.writeExprWrite("html.EscapeString(" + goExpr + ")")
+		g.writeExprWrite("html.EscapeString(" + valExpr + ")")
 		return nil
+	case CodeUnescaped:
+		return fmt.Errorf("unsupported unescaped code != %s in codegen", n.Expression)
+	default:
+		return fmt.Errorf("unsupported unbuffered code - %s in codegen", n.Expression)
+	}
+}
+
+// genValueExpr emits a Go expression of type string equal to what
+// Runtime.evaluateExpr(expr) would return, for the grammar subset this
+// increment supports: leaves (a bare field/dot-path, a quoted string
+// literal, a numeric literal, true/false/null/undefined/nil) and the `+`
+// operator. It walks the same operator-precedence order evaluateExpr does —
+// strip balanced outer parens, then check in turn for a top-level ternary,
+// `||`, `&&`, each comparison operator, a leading unary `!`, a quoted string
+// literal, a template literal, an array/object literal, a numeric literal,
+// the true/false/null keywords, subtraction, and finally `+` — so that when
+// two operators are both present, genValueExpr splits on the same top-level
+// one evaluateExpr would. Every construct evaluateExpr supports beyond `+`
+// and its own leaves (every operator besides `+`, method calls, index
+// expressions, template/array/object literals) is a later increment and
+// returns a descriptive "unsupported" error here instead of emitting
+// something that might not match — the correctness bar is byte-identical to
+// the interpreter, not a best guess.
+func (g *generator) genValueExpr(expr string) (string, error) {
+	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
+
+	if idx := findTernary(expr); idx >= 0 {
+		return "", fmt.Errorf("unsupported ternary operator in codegen value expression %q", expr)
+	}
+	if idx := findBinaryOp(expr, "||"); idx >= 0 {
+		return "", fmt.Errorf("unsupported || operator in codegen value expression %q", expr)
+	}
+	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
+		return "", fmt.Errorf("unsupported && operator in codegen value expression %q", expr)
+	}
+	for _, op := range conditionComparisonOps {
+		if idx := findBinaryOp(expr, op); idx >= 0 {
+			return "", fmt.Errorf("unsupported comparison operator %q in codegen value expression %q", op, expr)
+		}
+	}
+	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		return "", fmt.Errorf("unsupported ! operator in codegen value expression %q", expr)
 	}
 
+	if lit, ok := unwrapQuotedLiteral(expr); ok {
+		return strconv.Quote(lit), nil
+	}
+	if strings.HasPrefix(expr, "`") {
+		return "", fmt.Errorf("unsupported template literal in codegen value expression %q", expr)
+	}
+	if strings.HasPrefix(expr, "[") {
+		return "", fmt.Errorf("unsupported array literal in codegen value expression %q", expr)
+	}
+	if strings.HasPrefix(expr, "{") {
+		return "", fmt.Errorf("unsupported object literal in codegen value expression %q", expr)
+	}
+
+	if f, ok := parseJSNumber(expr); ok {
+		return strconv.Quote(formatCanonicalLiteral(f)), nil
+	}
+
+	switch expr {
+	case "true":
+		return `"true"`, nil
+	case "false":
+		return `"false"`, nil
+	case "null", "undefined", "nil":
+		return `""`, nil
+	}
+
+	if idx := findSubtraction(expr); idx >= 0 {
+		return "", fmt.Errorf("unsupported - operator in codegen value expression %q", expr)
+	}
+
+	if idx := findBinaryOp(expr, "+"); idx >= 0 {
+		leftExpr, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rightExpr, err := g.genValueExpr(expr[idx+1:])
+		if err != nil {
+			return "", err
+		}
+		g.needsGopug = true
+		return "gopug.Add(" + leftExpr + ", " + rightExpr + ")", nil
+	}
+
+	if idx := findRightmostOp(expr, '*'); idx >= 0 {
+		return "", fmt.Errorf("unsupported * operator in codegen value expression %q", expr)
+	}
+	if idx := findRightmostOp(expr, '/'); idx >= 0 {
+		return "", fmt.Errorf("unsupported / operator in codegen value expression %q", expr)
+	}
+	if idx := findRightmostOp(expr, '%'); idx >= 0 {
+		return "", fmt.Errorf("unsupported %% operator in codegen value expression %q", expr)
+	}
+	if idx := findIndexOp(expr); idx >= 0 {
+		return "", fmt.Errorf("unsupported index expression in codegen value expression %q", expr)
+	}
+
+	goExpr, typ, err := g.resolveFieldExpr(expr)
+	if err != nil {
+		return "", err
+	}
+	return g.genScalarStringify(goExpr, typ)
+}
+
+// genScalarStringify returns a Go expression of type string that stringifies
+// goExpr the way Runtime.lookupAndStringify would for a field of type typ —
+// exactly genInterpolation's former per-type dispatch, extracted so
+// genValueExpr's field/dot-path leaf case can share it, except a string
+// value is returned bare rather than wrapped in html.EscapeString: escaping
+// is the caller's job (genInterpolation and genCode both apply it to the
+// whole value they build, not to each leaf), since an unescaped scalar
+// nested inside a `+` still needs the concatenation's escaping to happen
+// once, on the final result, not per-operand. typ nil (type-blind mode)
+// assumes a string field, matching the untyped codegen skeleton's original
+// behavior.
+func (g *generator) genScalarStringify(goExpr string, typ reflect.Type) (string, error) {
+	if typ == nil {
+		return goExpr, nil
+	}
 	switch typ.Kind() {
 	case reflect.String:
-		g.needsHTML = true
-		g.writeExprWrite("html.EscapeString(" + convertExpr(goExpr, typ, reflectTypeString, "string") + ")")
+		return convertExpr(goExpr, typ, reflectTypeString, "string"), nil
 	case reflect.Bool:
 		g.needsStrconv = true
-		g.writeExprWrite("strconv.FormatBool(" + convertExpr(goExpr, typ, reflectTypeBool, "bool") + ")")
+		return "strconv.FormatBool(" + convertExpr(goExpr, typ, reflectTypeBool, "bool") + ")", nil
 	case reflect.Int:
 		g.needsStrconv = true
-		g.writeExprWrite("strconv.Itoa(" + convertExpr(goExpr, typ, reflectTypeInt, "int") + ")")
+		return "strconv.Itoa(" + convertExpr(goExpr, typ, reflectTypeInt, "int") + ")", nil
 	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		g.needsStrconv = true
-		g.writeExprWrite("strconv.FormatInt(int64(" + goExpr + "), 10)")
+		return "strconv.FormatInt(int64(" + goExpr + "), 10)", nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		g.needsStrconv = true
-		g.writeExprWrite("strconv.FormatUint(uint64(" + goExpr + "), 10)")
+		return "strconv.FormatUint(uint64(" + goExpr + "), 10)", nil
 	case reflect.Float64:
 		g.needsStrconv = true
-		g.writeExprWrite("strconv.FormatFloat(" + convertExpr(goExpr, typ, reflectTypeFloat64, "float64") + ", 'f', -1, 64)")
+		return "strconv.FormatFloat(" + convertExpr(goExpr, typ, reflectTypeFloat64, "float64") + ", 'f', -1, 64)", nil
 	default:
-		return fmt.Errorf("unsupported non-scalar field type %s in codegen interpolation #{%s}", typ, n.Expression)
+		return "", fmt.Errorf("unsupported non-scalar field type %s in codegen", typ)
 	}
-	return nil
 }
 
 // resolveFieldExpr translates a Pug bare identifier or dot-path into the
