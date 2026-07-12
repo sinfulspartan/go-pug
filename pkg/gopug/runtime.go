@@ -931,6 +931,47 @@ func Add(left, right string) string {
 	return left + right
 }
 
+// Sub reproduces Runtime.evaluateExpr's `-` operator on two already-
+// stringified operands: if both left and right parse as numbers (toFloat),
+// it returns their numeric difference formatted the same way every other
+// numeric result is (strconv.FormatFloat with the 'f' verb, shortest
+// round-tripping precision); otherwise it returns the empty string — unlike
+// `+`, non-numeric operands never fall back to concatenation. This
+// disambiguation happens on the operands' RUNTIME VALUES, not on any static
+// type, so the same two operand strings always produce the same result
+// regardless of caller. It is exported so codegen-generated code can call it
+// directly, keeping the `-` operator's value semantics single-sourced in
+// this one implementation rather than reproducing (and risking diverging
+// from) evaluateExpr's own logic.
+func Sub(left, right string) string {
+	lf, lok := toFloat(left)
+	rf, rok := toFloat(right)
+	if lok && rok {
+		return strconv.FormatFloat(lf-rf, 'f', -1, 64)
+	}
+	return ""
+}
+
+// Mul reproduces Runtime.evaluateExpr's `*` operator on two already-
+// stringified operands: if both left and right parse as numbers (toFloat),
+// it returns their numeric product formatted the same way every other
+// numeric result is (strconv.FormatFloat with the 'f' verb, shortest
+// round-tripping precision); otherwise it returns the empty string. This
+// disambiguation happens on the operands' RUNTIME VALUES, not on any static
+// type, so the same two operand strings always produce the same result
+// regardless of caller. It is exported so codegen-generated code can call it
+// directly, keeping the `*` operator's value semantics single-sourced in
+// this one implementation rather than reproducing (and risking diverging
+// from) evaluateExpr's own logic.
+func Mul(left, right string) string {
+	lf, lok := toFloat(left)
+	rf, rok := toFloat(right)
+	if lok && rok {
+		return strconv.FormatFloat(lf*rf, 'f', -1, 64)
+	}
+	return ""
+}
+
 // sortAttrNames returns the keys of attrs ordered the way HTML tag output
 // renders them: id first, then class, then every other attribute name
 // alphabetically. Runtime.renderTag and the codegen backend's genAttributes
@@ -2201,12 +2242,7 @@ CHECK_INDEX_OP:
 		if err != nil {
 			return "", err
 		}
-		lf, lok := toFloat(left)
-		rf, rok := toFloat(right)
-		if lok && rok {
-			return strconv.FormatFloat(lf-rf, 'f', -1, 64), nil
-		}
-		return "", nil
+		return Sub(left, right), nil
 	}
 
 	if idx := findBinaryOp(expr, "+"); idx >= 0 {
@@ -2230,12 +2266,7 @@ CHECK_INDEX_OP:
 		if err != nil {
 			return "", err
 		}
-		lf, lok := toFloat(left)
-		rf, rok := toFloat(right)
-		if lok && rok {
-			return strconv.FormatFloat(lf*rf, 'f', -1, 64), nil
-		}
-		return "", nil
+		return Mul(left, right), nil
 	}
 
 	if idx := findRightmostOp(expr, '/'); idx >= 0 {

@@ -559,19 +559,23 @@ func (g *generator) genCode(n *CodeNode) error {
 // genValueExpr emits a Go expression of type string equal to what
 // Runtime.evaluateExpr(expr) would return, for the grammar subset this
 // increment supports: leaves (a bare field/dot-path, a quoted string
-// literal, a numeric literal, true/false/null/undefined/nil) and the `+`
-// operator. It walks the same operator-precedence order evaluateExpr does —
-// strip balanced outer parens, then check in turn for a top-level ternary,
-// `||`, `&&`, each comparison operator, a leading unary `!`, a quoted string
-// literal, a template literal, an array/object literal, a numeric literal,
-// the true/false/null keywords, subtraction, and finally `+` — so that when
-// two operators are both present, genValueExpr splits on the same top-level
-// one evaluateExpr would. Every construct evaluateExpr supports beyond `+`
-// and its own leaves (every operator besides `+`, method calls, index
-// expressions, template/array/object literals) is a later increment and
-// returns a descriptive "unsupported" error here instead of emitting
-// something that might not match — the correctness bar is byte-identical to
-// the interpreter, not a best guess.
+// literal, a numeric literal, true/false/null/undefined/nil) and the total
+// arithmetic operators `-`, `+`, and `*`. It walks the same
+// operator-precedence order evaluateExpr does — strip balanced outer
+// parens, then check in turn for a top-level ternary, `||`, `&&`, each
+// comparison operator, a leading unary `!`, a quoted string literal, a
+// template literal, an array/object literal, a numeric literal, the
+// true/false/null keywords, subtraction, addition, and finally
+// multiplication — so that when two operators are both present, genValueExpr
+// splits on the same top-level one evaluateExpr would. Division and modulo
+// are fallible at runtime (a zero divisor aborts Render with an error) and
+// still return a descriptive "not yet supported" error here, since a value
+// expression as currently modeled has no way to emit the statement prelude a
+// fallible op would need. Every other construct evaluateExpr supports beyond
+// these (method calls, index expressions, template/array/object literals) is
+// a later increment and returns a descriptive "unsupported" error here
+// instead of emitting something that might not match — the correctness bar
+// is byte-identical to the interpreter, not a best guess.
 func (g *generator) genValueExpr(expr string) (string, error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
@@ -620,7 +624,16 @@ func (g *generator) genValueExpr(expr string) (string, error) {
 	}
 
 	if idx := findSubtraction(expr); idx >= 0 {
-		return "", fmt.Errorf("unsupported - operator in codegen value expression %q", expr)
+		leftExpr, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rightExpr, err := g.genValueExpr(expr[idx+1:])
+		if err != nil {
+			return "", err
+		}
+		g.needsGopug = true
+		return "gopug.Sub(" + leftExpr + ", " + rightExpr + ")", nil
 	}
 
 	if idx := findBinaryOp(expr, "+"); idx >= 0 {
@@ -637,13 +650,22 @@ func (g *generator) genValueExpr(expr string) (string, error) {
 	}
 
 	if idx := findRightmostOp(expr, '*'); idx >= 0 {
-		return "", fmt.Errorf("unsupported * operator in codegen value expression %q", expr)
+		leftExpr, err := g.genValueExpr(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rightExpr, err := g.genValueExpr(expr[idx+1:])
+		if err != nil {
+			return "", err
+		}
+		g.needsGopug = true
+		return "gopug.Mul(" + leftExpr + ", " + rightExpr + ")", nil
 	}
 	if idx := findRightmostOp(expr, '/'); idx >= 0 {
-		return "", fmt.Errorf("unsupported / operator in codegen value expression %q", expr)
+		return "", fmt.Errorf("division in codegen not yet supported (fallible value-expression) %q", expr)
 	}
 	if idx := findRightmostOp(expr, '%'); idx >= 0 {
-		return "", fmt.Errorf("unsupported %% operator in codegen value expression %q", expr)
+		return "", fmt.Errorf("modulo in codegen not yet supported (fallible value-expression) %q", expr)
 	}
 	if idx := findIndexOp(expr); idx >= 0 {
 		return "", fmt.Errorf("unsupported index expression in codegen value expression %q", expr)

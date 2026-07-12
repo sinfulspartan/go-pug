@@ -208,8 +208,9 @@ func runGeneratedGo(t *testing.T, generated []byte, dataLiteral string) string {
 // returns an error instead of emitting a comparison that might not agree
 // with the interpreter's compareValues. The `&&`/`||`/`!` combinators are
 // NOT in this list: they are supported (see
-// TestCodegenConditionLogicDifferentialMatchesInterpreter in
-// codegen_condition_logic_test.go).
+// TestCodegenConditionLogicTruthTable, TestCodegenConditionLogicMixedOperands,
+// TestCodegenConditionLogicNegation, TestCodegenConditionLogicStringTruthiness,
+// and TestCodegenConditionLogicPrecedence in codegen_condition_logic_test.go).
 func TestCodegenConditionOperatorUnsupported(t *testing.T) {
 	cases := []struct {
 		name string

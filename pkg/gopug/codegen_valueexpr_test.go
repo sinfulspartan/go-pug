@@ -194,16 +194,20 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 }
 
 // TestCodegenValueExprUnsupported asserts that every construct outside this
-// increment's value-context grammar — every operator besides `+` (ternary,
-// `||`, `&&`, `!`, comparisons, subtraction, multiplication, division,
-// modulo), an index expression, an array/object literal, a method call, an
-// unbuffered code statement, and unescaped buffered output — is rejected
-// with a clear "unsupported" error rather than silently emitting something
-// that might not match the interpreter. A template literal itself is no
-// longer in this list (genTemplateLiteral now supports it, see
+// increment's value-context grammar — every operator besides `-`, `+`, `*`
+// (ternary, `||`, `&&`, `!`, comparisons), an index expression, an
+// array/object literal, a method call, an unbuffered code statement, and
+// unescaped buffered output — is rejected with a clear "unsupported" error
+// rather than silently emitting something that might not match the
+// interpreter. A template literal itself is no longer in this list
+// (genTemplateLiteral now supports it, see
 // codegen_valueexpr_template_test.go), but one whose `${...}` interpolation
 // contains a construct genValueExpr still can't build (a ternary, here)
-// still propagates that "unsupported" error.
+// still propagates that "unsupported" error. Subtraction and multiplication
+// are also no longer in this list — see TestCodegenValueExprArithmetic —
+// but division and modulo stay rejected: they are fallible (a zero divisor
+// aborts Render at runtime) rather than unsupported, so they get their own
+// deferral message asserted in TestCodegenValueExprDivisionModuloDeferred.
 func TestCodegenValueExprUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -214,10 +218,6 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 		{name: "&& combinator", src: "p= Flag && Count\n"},
 		{name: "leading ! operator", src: "p= !Flag\n"},
 		{name: "comparison", src: "p= Count > 0\n"},
-		{name: "subtraction", src: "p= Count - 1\n"},
-		{name: "multiplication", src: "p= Count * 2\n"},
-		{name: "division", src: "p= Count / 2\n"},
-		{name: "modulo", src: "p= Count % 2\n"},
 		{name: "index expression", src: "p= Items[0]\n"},
 		{name: "method call", src: "p= Name.toUpperCase()\n"},
 		{name: "template literal with an unsupported ${} interpolation", src: "p= `hello ${Count > 0 ? 1 : 0}`\n"},
@@ -245,6 +245,47 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "unsupported") {
 				t.Errorf("GenerateGo(%q): error %q does not describe an unsupported construct", tc.src, err.Error())
+			}
+		})
+	}
+}
+
+// TestCodegenValueExprDivisionModuloDeferred asserts that `/` and `%` are
+// rejected with a clear deferral message describing them as fallible and not
+// yet supported, distinct from the generic "unsupported construct" message
+// the rest of this increment's grammar gaps use — a caller hitting this
+// error should understand it's a runtime-error-on-zero-divisor gap, not a
+// "codegen doesn't know this syntax at all" gap.
+func TestCodegenValueExprDivisionModuloDeferred(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "division", src: "p= Count / 2\n"},
+		{name: "modulo", src: "p= Count % 2\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, err := Parse(tc.src, nil)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+
+			_, err = GenerateGo(ast, Config{
+				PackageName:     "gopug",
+				FuncName:        "RenderOps",
+				DataType:        "opsData",
+				DataReflectType: opsDataReflectType,
+			})
+			if err == nil {
+				t.Fatalf("GenerateGo(%q): expected a deferral error, got nil", tc.src)
+			}
+			if !strings.Contains(err.Error(), "not yet supported") {
+				t.Errorf("GenerateGo(%q): error %q does not describe a fallible-op deferral", tc.src, err.Error())
+			}
+			if strings.Contains(err.Error(), "cannot resolve field") {
+				t.Errorf("GenerateGo(%q): error %q looks like a field-resolution error, not a deferral", tc.src, err.Error())
 			}
 		})
 	}
