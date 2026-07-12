@@ -287,6 +287,109 @@ func TestCodegenConditionOperatorLiteralOverflowAccepts(t *testing.T) {
 	}
 }
 
+// TestCodegenConditionLeadingZeroLiteralUnsupported asserts that a numeric
+// literal Go's compiler would read as a different value than the
+// interpreter does — a leading zero followed by more digits ("0100", "007",
+// "009", the negated "-0100"), the same forms with an underscore digit
+// separator ("0_100", "-0_100", "0_18" — Go's octal grammar and the
+// interpreter's parseNumber both accept "_" separators, so they're just as
+// much an octal/decimal disagreement as the unseparated forms), and a
+// "+"-prefixed leading-zero literal ("+0100" — a leading "+" is ordinary
+// comparison syntax both Go and parseNumber accept, so it reaches this path
+// too) — is rejected with a clean unsupported-literal error, instead of
+// either silently emitting a Go integer literal Go parses as octal (a
+// byte-identical breach: the interpreter reads "0100" as decimal 100, but
+// Go reads the emitted d.Count == 0100 as octal 64) or letting an
+// invalid-octal token like "009"/"0_18" reach go/format.Source and surface
+// as a misleading "generator bug" gofmt-failure error.
+func TestCodegenConditionLeadingZeroLiteralUnsupported(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "leading-zero decimal read as octal by Go", src: "if Count == 0100\n  p yes\n"},
+		{name: "leading-zero decimal, single extra digit", src: "if Count == 007\n  p yes\n"},
+		{name: "invalid-octal digit (9), previously a misleading gofmt error", src: "if Count == 009\n  p yes\n"},
+		{name: "negated leading-zero decimal", src: "if Count == -0100\n  p yes\n"},
+		{name: "leading-zero decimal with underscore separator", src: "if Count == 0_100\n  p yes\n"},
+		{name: "negated leading-zero decimal with underscore separator", src: "if Count == -0_100\n  p yes\n"},
+		{name: "invalid-octal digit with underscore separator", src: "if Count == 0_18\n  p yes\n"},
+		{name: "plus-prefixed leading-zero decimal", src: "if Count == +0100\n  p yes\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, err := Parse(tc.src, nil)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+
+			_, err = GenerateGo(ast, Config{
+				PackageName:     "gopug",
+				FuncName:        "RenderOps",
+				DataType:        "opsData",
+				DataReflectType: opsDataReflectType,
+			})
+			if err == nil {
+				t.Fatalf("GenerateGo(%q): expected an unsupported-literal error, got nil", tc.src)
+			}
+			if !strings.Contains(err.Error(), "unsupported numeric literal") {
+				t.Errorf("GenerateGo(%q): error %q does not describe an unsupported numeric literal", tc.src, err.Error())
+			}
+			if strings.Contains(err.Error(), "generator bug") {
+				t.Errorf("GenerateGo(%q): error %q still surfaces as a misleading gofmt/generator-bug failure", tc.src, err.Error())
+			}
+		})
+	}
+}
+
+// TestCodegenConditionLeadingZeroLiteralAccepts asserts the forms the
+// leading-zero guard must leave untouched still succeed: a bare "0", a
+// leading-zero float ("0.5", read identically by Go and the interpreter
+// since a "." always makes it a base-10 floating-point literal in Go), an
+// ordinary decimal integer, a negative decimal integer, and — proving the
+// sign-stripping fix for "+" doesn't over-reject a legitimately-signed
+// base-10 literal — a "+"-prefixed decimal integer and a "+"-prefixed
+// leading-zero float. A couple build the emitted comparison to prove the
+// guard didn't collaterally break the existing verbatim-emission path.
+func TestCodegenConditionLeadingZeroLiteralAccepts(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   string
+		build bool
+	}{
+		{name: "bare zero", src: "if Count == 0\n  p yes\n", build: true},
+		{name: "leading-zero float", src: "if Price == 0.5\n  p yes\n", build: true},
+		{name: "ordinary decimal integer", src: "if Count == 100\n  p yes\n"},
+		{name: "negative decimal integer", src: "if Count == -5\n  p yes\n"},
+		{name: "plus-prefixed decimal integer", src: "if Count == +100\n  p yes\n", build: true},
+		{name: "plus-prefixed leading-zero float", src: "if Price == +0.5\n  p yes\n", build: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, err := Parse(tc.src, nil)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+
+			got, err := GenerateGo(ast, Config{
+				PackageName:     "opsbuild",
+				FuncName:        "RenderOps",
+				DataType:        "opsData",
+				DataReflectType: opsDataReflectType,
+			})
+			if err != nil {
+				t.Fatalf("GenerateGo(%q): expected no error, got: %v", tc.src, err)
+			}
+
+			if tc.build {
+				buildGeneratedGo(t, got)
+			}
+		})
+	}
+}
+
 // TestCodegenConditionOperatorNilReflectType asserts that a comparison or
 // `.length` condition — both of which need field types to classify their
 // operands — is rejected under a nil Config.DataReflectType, since only the

@@ -864,6 +864,50 @@ func (k operandKind) isStringish() bool {
 	return k.shape == shapeOperandStringField || k.shape == shapeOperandStringLiteral
 }
 
+// checkLiteralGoSafe rejects a numeric literal token that Go's compiler
+// would read as a different value than the interpreter does. The
+// interpreter always parses a numeric token as base-10 (via parseNumber /
+// strconv.ParseFloat), but a numeric literal emitted verbatim into
+// generated Go source is parsed by Go's own literal rules: a token
+// beginning with "0x"/"0X" (hex), "0o"/"0O" (octal), or "0b"/"0B" (binary)
+// is read in that base, and a plain integer token with a leading "0"
+// followed by more digits (no "." or exponent) is read as legacy octal —
+// e.g. "0100" is decimal 100 to the interpreter but octal 64 (= decimal 64)
+// to Go. Emitting such a literal verbatim would compile cleanly yet
+// silently compare against the wrong value, breaking bounded agreement. A
+// leading sign ("-" or "+") is stripped before the check, since Go applies
+// the same base rules to the digits that follow either unary sign, and both
+// Go and the interpreter's parseNumber accept a "+"-prefixed literal.
+// Within the remaining digits, an underscore digit separator ("0_100") is
+// tolerated as part of the octal-integer run rather than treated as an
+// "unrecognized character, must be safe" signal — Go's octal grammar allows
+// "_" separators, and parseNumber's strconv.ParseFloat accepts them too, so
+// a token like "0_100" is just as much an octal/decimal disagreement as
+// "0100". Forms Go reads identically to the interpreter — "0" alone, and
+// any literal containing "." or "e"/"E" (always decimal floating-point in
+// Go, regardless of a leading zero) — are left untouched.
+func checkLiteralGoSafe(token string) error {
+	digits := strings.TrimLeft(token, "+-")
+
+	if len(digits) < 2 || digits[0] != '0' {
+		return nil
+	}
+
+	switch digits[1] {
+	case 'x', 'X', 'o', 'O', 'b', 'B':
+		return fmt.Errorf("unsupported numeric literal %q in codegen (leading-zero/base-prefixed literals are read differently by Go)", token)
+	}
+
+	if strings.ContainsAny(digits, ".eE") {
+		return nil
+	}
+
+	if strings.Trim(digits, "0123456789_") == "" {
+		return fmt.Errorf("unsupported numeric literal %q in codegen (leading-zero/base-prefixed literals are read differently by Go)", token)
+	}
+	return nil
+}
+
 // genOperand resolves a single condition operand — one side of a
 // comparison, or the whole condition when it's bare — to a Go expression
 // plus its operandKind classification. The supported shapes, checked in
@@ -880,6 +924,9 @@ func (g *generator) genOperand(expr string) (string, operandKind, error) {
 	}
 
 	if f, ok := parseNumber(expr); ok {
+		if err := checkLiteralGoSafe(expr); err != nil {
+			return "", operandKind{}, err
+		}
 		return expr, operandKind{shape: shapeOperandNumericLiteral, numLiteralVal: f, numLiteralText: expr}, nil
 	}
 
