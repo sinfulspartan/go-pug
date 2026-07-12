@@ -207,10 +207,11 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 // multiplication are also no longer in this list — see
 // TestCodegenValueExprArithmetic. Division and modulo are no longer in this
 // list either — a standalone `/`/`%` is now supported (fallible) and proven
-// by differential build+run in codegen_fallible_test.go — but composing a
-// fallible `/`/`%` result into something else still isn't, and gets its own
-// deferral message, asserted in TestCodegenValueExprDivisionModuloDeferred. A
-// top-level ternary is no longer in this list either — see
+// by differential build+run in codegen_fallible_test.go, and so is composing
+// a fallible `/`/`%` result into an arithmetic combiner, a nested `/`/`%`
+// operand, a ternary branch, or a template-literal `${}` part — see
+// codegen_fallible_compose_test.go. A top-level ternary is no longer in this
+// list either — see
 // codegen_ternary_test.go — but a ternary whose CONDITION is a shape
 // genCondition can't compile (here, arithmetic) still propagates an error,
 // since genValueExpr's ternary support reuses genCondition unchanged for the
@@ -257,49 +258,8 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 	}
 }
 
-// TestCodegenValueExprDivisionModuloDeferred asserts that a standalone `/`
-// or `%` is now generated successfully (see codegen_fallible_test.go for the
-// differential build+run proof), but COMPOSING a fallible `/`/`%` result into
-// an arithmetic combiner, a nested `/`/`%` operand, or a template-literal
-// `${}` part still returns a clear deferral message describing it as
-// fallible and not yet supported, distinct from the generic "unsupported
-// construct" message the rest of this increment's grammar gaps use — a
-// caller hitting this error should understand it's a not-yet-implemented
-// composition gap, not a "codegen doesn't know this syntax at all" gap or a
-// field-resolution failure.
-func TestCodegenValueExprDivisionModuloDeferred(t *testing.T) {
-	cases := []struct {
-		name string
-		src  string
-	}{
-		{name: "fallible operand inside addition", src: "p= Count / Price + 1\n"},
-		{name: "fallible operand inside multiplication", src: "p= Count / Price * Age\n"},
-		{name: "fallible ${} part in a template literal", src: "p= `total ${Count / Price}`\n"},
-		{name: "nested fallible operand", src: "p= Count / (Price / Age)\n"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ast, err := Parse(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.src, err)
-			}
-
-			_, err = GenerateGo(ast, Config{
-				PackageName:     "gopug",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err == nil {
-				t.Fatalf("GenerateGo(%q): expected a deferral error, got nil", tc.src)
-			}
-			if !strings.Contains(err.Error(), "not yet supported") {
-				t.Errorf("GenerateGo(%q): error %q does not describe a fallible-op deferral", tc.src, err.Error())
-			}
-			if strings.Contains(err.Error(), "cannot resolve field") {
-				t.Errorf("GenerateGo(%q): error %q looks like a field-resolution error, not a deferral", tc.src, err.Error())
-			}
-		})
-	}
-}
+// Composing a fallible `/`/`%` result into an arithmetic combiner, a nested
+// `/`/`%` operand, a ternary branch, or a template-literal `${}` part is no
+// longer a deferral either — see codegen_fallible_compose_test.go for the
+// differential build+run proofs (including the ternary short-circuit and
+// left-to-right error-order proofs).

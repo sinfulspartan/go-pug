@@ -240,67 +240,7 @@ func TestCodegenFallibleFormatting(t *testing.T) {
 	}
 }
 
-// TestCodegenFallibleDeferredBoundaries asserts GenerateGo returns the exact
-// slice-6b deferral message for every composition shape a fallible `/`/`%`
-// result can't yet flow into: nested inside an arithmetic combiner, inside a
-// template-literal `${}` part, inside a ternary branch, and nested inside
-// another `/`/`%` operand. Each is a clean "not yet supported" deferral at
-// GENERATE time, not a mis-emit or a confusing "cannot resolve field" error.
-func TestCodegenFallibleDeferredBoundaries(t *testing.T) {
-	cases := []struct {
-		name    string
-		src     string
-		wantMsg string
-	}{
-		{
-			name:    "fallible operand inside +",
-			src:     "p= Count / Price + 1\n",
-			wantMsg: "fallible operand (division/modulo) inside arithmetic not yet supported in codegen (slice 6b)",
-		},
-		{
-			name:    "fallible operand inside *",
-			src:     "p= Count / Price * Age\n",
-			wantMsg: "fallible operand (division/modulo) inside arithmetic not yet supported in codegen (slice 6b)",
-		},
-		{
-			name:    "fallible ${} part in a template literal",
-			src:     "p= `total ${Count / Price}`\n",
-			wantMsg: "fallible ${} part not yet supported (slice 6b)",
-		},
-		{
-			name:    "fallible ternary branch",
-			src:     "p= Flag ? Count / Price : 0\n",
-			wantMsg: "fallible ternary branch not yet supported (slice 6b)",
-		},
-		{
-			name:    "nested fallible operand",
-			src:     "p= Count / (Price / Age)\n",
-			wantMsg: "nested fallible operand not yet supported in codegen (slice 6b)",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ast, err := Parse(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.src, err)
-			}
-
-			_, err = GenerateGo(ast, Config{
-				PackageName:     "gopug",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err == nil {
-				t.Fatalf("GenerateGo(%q): expected a deferral error, got nil", tc.src)
-			}
-			if !strings.Contains(err.Error(), tc.wantMsg) {
-				t.Errorf("GenerateGo(%q): error %q does not contain expected deferral message %q", tc.src, err.Error(), tc.wantMsg)
-			}
-			if strings.Contains(err.Error(), "cannot resolve field") {
-				t.Errorf("GenerateGo(%q): error %q looks like a field-resolution error, not a deferral", tc.src, err.Error())
-			}
-		})
-	}
-}
+// Composing a fallible `/`/`%` result into an arithmetic combiner, a nested
+// `/`/`%` operand, a ternary branch, or a template-literal `${}` part is no
+// longer a deferral — see codegen_fallible_compose_test.go for the
+// differential build+run proofs.

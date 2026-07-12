@@ -439,32 +439,11 @@ func TestCodegenTernaryUnsupportedCondition(t *testing.T) {
 	}
 }
 
-// TestCodegenTernaryUnsupportedBranch asserts a ternary BRANCH containing a
-// fallible operator (`/`) propagates genValueExpr's division-deferral error
-// unchanged — the branch is compiled by the same genValueExpr the rest of
-// this increment already rejects `/` from, and the ternary wrapper doesn't
-// swallow or reword that error.
-func TestCodegenTernaryUnsupportedBranch(t *testing.T) {
-	src := "p= Flag ? Count / 2 : \"x\"\n"
-
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-
-	_, err = GenerateGo(ast, Config{
-		PackageName:     "gopug",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected a division-deferral error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "not yet supported") {
-		t.Errorf("GenerateGo(%q): error %q does not describe the division deferral", src, err.Error())
-	}
-}
+// A ternary BRANCH containing a fallible operator (`/`) is no longer
+// unsupported — it composes via the Pattern-2 short-circuit IIFE, see
+// codegen_fallible_compose_test.go's TestCodegenFallibleComposeTernary*
+// tests (including the headline short-circuit proof: an untaken fallible
+// branch's division by zero never executes and never errors).
 
 // TestCodegenTernaryUnrelatedLogicalStillUnsupported is a regression proof
 // that adding ternary support to genValueExpr did NOT accidentally unlock
