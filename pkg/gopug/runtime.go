@@ -1164,6 +1164,25 @@ func MethodIndexOf(recv, needle string) string {
 	return strconv.Itoa(strings.Index(recv, UnquoteArg(needle)))
 }
 
+// MethodIndexOfSlice reproduces Runtime.evaluateExpr's array-receiver
+// "indexOf" case: the 0-based ELEMENT index of the first elems[i] that
+// equals needle (after UnquoteArg), formatted as a decimal string, or "-1"
+// when no element matches. This is JS array-element equality, not a
+// substring search over a stringified array — the distinction that matters
+// for `["a","ab"].indexOf("a")` (element index 0) vs a value that is only a
+// substring of an element (never found). It is exported so codegen-
+// generated code can call it directly, keeping the array-receiver
+// "indexOf" semantics single-sourced in this one implementation.
+func MethodIndexOfSlice(elems []string, needle string) string {
+	target := UnquoteArg(needle)
+	for i, elem := range elems {
+		if elem == target {
+			return strconv.Itoa(i)
+		}
+	}
+	return "-1"
+}
+
 // MethodIncludes reproduces Runtime.evaluateExpr's "includes"/"contains"
 // string-method case on already-evaluated operands: "true" when recv
 // contains needle (after UnquoteArg), "false" otherwise. It is exported so
@@ -1175,6 +1194,17 @@ func MethodIncludes(recv, needle string) string {
 		return "true"
 	}
 	return "false"
+}
+
+// MethodIncludesSlice reproduces Runtime.evaluateExpr's array-receiver
+// "includes"/"contains" case: "true" when some elems[i] equals needle
+// (after UnquoteArg), "false" otherwise. This is JS array-element
+// membership, not substring containment over a stringified array. It is
+// exported so codegen-generated code can call it directly, keeping the
+// array-receiver "includes"/"contains" semantics single-sourced in this one
+// implementation.
+func MethodIncludesSlice(elems []string, needle string) string {
+	return strconv.FormatBool(MethodIndexOfSlice(elems, needle) != "-1")
 }
 
 // MethodStartsWith reproduces Runtime.evaluateExpr's "startsWith"
@@ -2322,6 +2352,27 @@ func (r *Runtime) lookupFilter(name string) (FilterFunc, bool) {
 	return nil, false
 }
 
+// evaluateExprRawAsStringSlice evaluates expr and, if the result is a slice
+// or array, stringifies each element (matching the "join" method's
+// element-stringify convention) and returns it with ok=true. Returns
+// ok=false when expr does not evaluate to a slice/array, so callers can
+// fall back to string-receiver semantics.
+func (r *Runtime) evaluateExprRawAsStringSlice(expr string) (elems []string, ok bool) {
+	rawObj := r.evaluateExprRaw(expr)
+	if rawObj == nil {
+		return nil, false
+	}
+	rv := reflect.ValueOf(rawObj)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, false
+	}
+	elems = make([]string, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		elems[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
+	}
+	return elems, true
+}
+
 // evaluateExprRaw evaluates an expression and returns a raw any value
 // rather than a string. Used when the caller needs a real Go slice or map
 // (e.g. the collection in an each loop). Special-cased for split, inline
@@ -2846,6 +2897,9 @@ CHECK_INDEX_OP:
 		case "indexOf":
 			if argsStr != "" {
 				needle, _ := r.evaluateExpr(argsStr)
+				if elems, ok := r.evaluateExprRawAsStringSlice(objExpr); ok {
+					return MethodIndexOfSlice(elems, needle), nil
+				}
 				return MethodIndexOf(objVal, needle), nil
 			}
 			return "-1", nil
@@ -2853,6 +2907,9 @@ CHECK_INDEX_OP:
 		case "includes", "contains":
 			if argsStr != "" {
 				needle, _ := r.evaluateExpr(argsStr)
+				if elems, ok := r.evaluateExprRawAsStringSlice(objExpr); ok {
+					return MethodIncludesSlice(elems, needle), nil
+				}
 				return MethodIncludes(objVal, needle), nil
 			}
 			return "false", nil
