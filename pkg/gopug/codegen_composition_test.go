@@ -321,46 +321,6 @@ func TestResolveCompositionNoExtendsStandaloneBlock(t *testing.T) {
 	}
 }
 
-// TestResolveCompositionDeferredInclude proves that a child using both
-// extends+block and include stays deferred: ResolveComposition succeeds
-// (extends+block is fully resolved, the IncludeNode is simply left in
-// place — include resolution is a later codegen increment), and GenerateGo
-// then returns a clean "unsupported" error on the leftover IncludeNode
-// rather than silently mis-generating.
-func TestResolveCompositionDeferredInclude(t *testing.T) {
-	dir := t.TempDir()
-	mustWriteFile(t, dir, "layout.pug", "doctype html\nhtml\n  body\n    block content\n      p Default\n")
-	mustWriteFile(t, dir, "partial.pug", "p Partial Content\n")
-	childPath := mustWriteFile(t, dir, "child.pug", "extends layout\nblock content\n  include partial.pug\n")
-
-	opts := &Options{Basedir: dir}
-	src, err := os.ReadFile(childPath)
-	if err != nil {
-		t.Fatalf("reading child template: %v", err)
-	}
-	ast, err := Parse(string(src), opts)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	resolved, err := ResolveComposition(ast, opts)
-	if err != nil {
-		t.Fatalf("ResolveComposition: unexpected error for an extends+block+include template: %v", err)
-	}
-
-	_, err = GenerateGo(resolved, Config{
-		PackageName: "main",
-		FuncName:    "Render",
-		DataType:    "map[string]any",
-	})
-	if err == nil {
-		t.Fatalf("GenerateGo: expected an unsupported-node error for a leftover include, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("GenerateGo error %q does not describe an unsupported construct", err.Error())
-	}
-}
-
 // TestResolveCompositionDeferredMixin proves that a layout declaring and
 // calling a mixin inside a block also stays deferred: ResolveComposition
 // resolves the extends+block chain and splices the mixin declaration/call

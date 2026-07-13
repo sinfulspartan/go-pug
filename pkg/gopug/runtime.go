@@ -1986,13 +1986,19 @@ func (r *Runtime) basedirResolveHint(inclPath string) string {
 		cand, "/"+strings.TrimLeft(inclPath, "/\\"))
 }
 
-// Path resolution (standard Pug semantics): a leading slash is Basedir-relative;
-// every other relative path resolves against the directory of the file doing the
-// including — the innermost active include when nested, or the entry file when
-// at the top level (falling back to Basedir for string renders). .pug files (or
-// no extension) are lexed, parsed, and rendered; all other files are written
-// raw. Cycle detection is via includeStack.
-func (r *Runtime) renderInclude(inc *IncludeNode) error {
+// resolveIncludeAbs applies renderInclude's own path-resolution and
+// cycle-detection rules to inc, without doing any I/O or touching
+// includeStack: a leading slash is Basedir-relative; every other relative
+// path resolves against the directory of the file doing the including — the
+// innermost active include when nested, or the entry file when at the top
+// level (falling back to Basedir for string renders); a cycle is any
+// already-active include path reappearing on r.includeStack; a path with no
+// extension gets ".pug" appended. It is shared by renderInclude and
+// codegen's generate-time include inliner (composition.go) so the two agree
+// byte-for-byte on which file an include resolves to and when a cycle fires.
+// unquoted is inc.Path with any surrounding quotes stripped, for callers that
+// need it in a basedirResolveHint.
+func (r *Runtime) resolveIncludeAbs(inc *IncludeNode) (abs string, unquoted string, err error) {
 	inclPath := inc.Path
 
 	if len(inclPath) >= 2 &&
@@ -2037,17 +2043,31 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 		resolved = filepath.Join(base, inclPath)
 	}
 
-	abs, err := filepath.Abs(resolved)
+	abs, err = filepath.Abs(resolved)
 	if err != nil {
-		return fmt.Errorf("include: cannot resolve path %q: %w", inclPath, err)
+		return "", inclPath, fmt.Errorf("include: cannot resolve path %q: %w", inclPath, err)
 	}
 
 	if slices.Contains(r.includeStack, abs) {
-		return fmt.Errorf("include: cycle detected — %q includes itself", abs)
+		return "", inclPath, fmt.Errorf("include: cycle detected — %q includes itself", abs)
 	}
 
 	if filepath.Ext(abs) == "" {
 		abs += ".pug"
+	}
+
+	return abs, inclPath, nil
+}
+
+// renderInclude resolves and renders an include directive. .pug files (or no
+// extension) are lexed, parsed, and rendered; all other files are written
+// raw (optionally through a registered filter). Cycle detection is via
+// includeStack; path resolution is shared with codegen's include inliner via
+// resolveIncludeAbs.
+func (r *Runtime) renderInclude(inc *IncludeNode) error {
+	abs, inclPath, err := r.resolveIncludeAbs(inc)
+	if err != nil {
+		return err
 	}
 
 	ext := strings.ToLower(filepath.Ext(abs))
