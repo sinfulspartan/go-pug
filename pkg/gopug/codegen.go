@@ -5,6 +5,7 @@ import (
 	"go/format"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -106,11 +107,41 @@ type Config struct {
 //
 // GenerateGo assumes complete, well-typed data and does no nil-guarding —
 // like Pug itself, and unlike the interpreter's lenient missing-value
-// handling. Any node or expression shape outside the supported subset (mixins,
-// includes/extends, dynamic class/style attributes, &attributes spreads,
+// handling. Any node or expression shape outside the supported subset
+// (includes/extends, dynamic class/style attributes, &attributes spreads,
 // operators, method calls, unless/case, unescaped output, comments, …)
 // returns a descriptive error instead of silently emitting something
 // incorrect; those shapes are later increments.
+//
+// A mixin is supported as of the first mixin increment, for the narrow
+// positional-string-parameter subset described here — matching the
+// interpreter's own mixin semantics exactly (see Runtime.renderMixinCall),
+// which fully ISOLATES a mixin's body: it sees only its own parameters, never
+// the caller's data or locals. Each top-level MixinDeclNode is emitted as its
+// own top-level Go helper function — `func <sanitized name>(w io.Writer, <one
+// string param per Pug parameter>) error` — generated in a PARAM-ONLY scope
+// (see genMixinFunc): a reference to one of the mixin's own parameters
+// resolves to its Go argument, exactly like a bare string field elsewhere in
+// this file, but a reference to anything else — a top-level data field, a
+// caller's `- var` local, the special `attributes`/`block` identifiers — is
+// FAIL-CLOSED: GenerateGo returns an error rather than emit "" the way the
+// interpreter's own isolation would (a lookup miss). This keeps the whole
+// feature within the bounded-agreement contract (byte-identical output, or a
+// clean compile-time error — never a silent divergence) while still covering
+// the common case, a mixin parameterized entirely by its own arguments. Each
+// MixinCallNode is emitted as a call to that helper: its arguments are built
+// by genValueExpr in the CALLER's own (data-visible) scope, exactly
+// len(decl.Parameters) of them are passed — a missing trailing argument
+// becomes the literal "" (matching the interpreter's own missing-arg
+// default), and an extra call argument beyond the parameter count is simply
+// ignored (no rest-parameter support yet) — mirroring
+// Runtime.renderMixinCall's own arg-binding loop exactly. A default
+// parameter value, a rest parameter, a `block` node in a mixin body (or block
+// content supplied at a call site), `attributes`/`&attributes` (in a body or
+// forwarded at a call site), a nested mixin call (one mixin's body calling
+// another), and a nil Config.DataReflectType (mixins need type information to
+// classify call arguments) are all later increments and return a distinct
+// error instead of guessing.
 func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if cfg.PackageName == "" {
 		return nil, fmt.Errorf("codegen: Config.PackageName is required")
@@ -123,6 +154,43 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	}
 
 	g := &generator{rootType: cfg.DataReflectType}
+
+	mixinDecls := map[string]*MixinDeclNode{}
+	for _, child := range ast.Children {
+		if m, ok := child.(*MixinDeclNode); ok {
+			mixinDecls[m.Name] = m
+		}
+	}
+
+	var mixinFuncsSrc []string
+	if len(mixinDecls) > 0 {
+		if cfg.DataReflectType == nil {
+			return nil, fmt.Errorf("codegen: unsupported mixin in codegen (Config.DataReflectType is required to classify a mixin call's arguments; type-blind mode is not supported for mixins in this increment)")
+		}
+
+		g.mixinDecls = mixinDecls
+		g.mixinFuncNames = make(map[string]string, len(mixinDecls))
+
+		names := make([]string, 0, len(mixinDecls))
+		for name := range mixinDecls {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+
+		used := map[string]bool{cfg.FuncName: true}
+		for _, name := range names {
+			g.mixinFuncNames[name] = uniqueGoName("pugMixin_"+sanitizeGoIdent(name), used)
+		}
+
+		for _, name := range names {
+			src, err := g.genMixinFunc(g.mixinFuncNames[name], mixinDecls[name])
+			if err != nil {
+				return nil, err
+			}
+			mixinFuncsSrc = append(mixinFuncsSrc, src)
+		}
+	}
+
 	for _, child := range ast.Children {
 		if err := g.genNode(child); err != nil {
 			return nil, err
@@ -156,6 +224,11 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	fmt.Fprintf(&src, "func %s(w io.Writer, d %s) error {\n", cfg.FuncName, cfg.DataType)
 	src.WriteString(g.body.String())
 	src.WriteString("\treturn nil\n}\n")
+
+	for _, fnSrc := range mixinFuncsSrc {
+		src.WriteString("\n")
+		src.WriteString(fnSrc)
+	}
 
 	formatted, err := format.Source([]byte(src.String()))
 	if err != nil {
@@ -222,6 +295,31 @@ type generator struct {
 	// within the generated function body, even when several such extractions
 	// appear in the same function.
 	tmpCounter int
+	// mixinDecls holds every top-level mixin declaration GenerateGo collected
+	// before generating any node, keyed by its Pug name, so a MixinCallNode
+	// encountered anywhere during generation (in the main render function or,
+	// once nested calls are supported, inside another mixin's own body) can
+	// look up its parameter count. nil when the template declares no mixin.
+	mixinDecls map[string]*MixinDeclNode
+	// mixinFuncNames maps a mixin's Pug name to the sanitized, collision-free
+	// Go identifier genMixinFunc emitted its helper function under (see
+	// GenerateGo's name-assignment pass), so genMixinCall knows which
+	// top-level function to call. nil when the template declares no mixin.
+	mixinFuncNames map[string]string
+	// paramOnlyScope is true only while genMixinFunc is generating a mixin
+	// body's statements. It makes resolveFieldExpr FAIL-CLOSED the moment an
+	// identifier misses the scope stack (which, in this mode, holds only the
+	// mixin's own parameters) instead of falling through to struct-field
+	// resolution against d — reproducing Runtime.renderMixinCall's own scope
+	// isolation (a mixin body sees only its parameters; everything else is a
+	// lookup miss, which the interpreter silently renders as "") as a clean
+	// GenerateGo error instead of a silent, potentially wrong "".
+	paramOnlyScope bool
+	// insideMixinBody is true only while genMixinFunc is generating a mixin
+	// body's statements, so genMixinCall can reject a nested mixin call (one
+	// mixin's body calling another) with a distinct, clean error rather than
+	// attempt to generate it — a later increment's job.
+	insideMixinBody bool
 }
 
 // nextTmp returns a fresh, monotonically increasing index for naming a
@@ -653,6 +751,15 @@ func (g *generator) genNode(n Node) error {
 		return g.genConditional(node)
 	case *CommentNode:
 		return g.genComment(node)
+	case *MixinDeclNode:
+		// Already collected and emitted as its own top-level helper function
+		// by GenerateGo before the main render function is generated (see the
+		// mixin-decl pass there); a declaration contributes no output of its
+		// own wherever it's encountered, matching
+		// Runtime.renderNode's own `case *MixinDeclNode: return nil` exactly.
+		return nil
+	case *MixinCallNode:
+		return g.genMixinCall(node)
 	default:
 		return fmt.Errorf("unsupported node/expr in codegen: %T", n)
 	}
@@ -2705,7 +2812,13 @@ func (g *generator) genScalarStringify(goExpr string, typ reflect.Type) (string,
 // of scope at a point where the interpreter's own scoping might still keep
 // it live; see scopeRestore's doc comment), checked BEFORE ever falling
 // through to struct-field resolution so a coincidentally-matching field
-// name is never silently substituted for it.
+// name is never silently substituted for it. While g.paramOnlyScope is set
+// (generating a mixin body — see genMixinFunc), a scope-stack miss is
+// ALWAYS an error, even before the leakedVarNames check: the mixin body's
+// scope holds only its own parameters, so a reference to anything else — a
+// top-level data field, a caller's `- var` local — must never fall through
+// to struct-field resolution against d, which would silently disagree with
+// the interpreter's own isolated mixin scope (Runtime.renderMixinCall).
 func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -2734,6 +2847,10 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 			goExpr += "." + goPath
 		}
 		return goExpr, typ, nil
+	}
+
+	if g.paramOnlyScope {
+		return "", nil, fmt.Errorf("mixin body references %q, which is not one of the mixin's own parameters; a mixin body is isolated and can only see its declared parameters in this increment", expr)
 	}
 
 	if g.leakedVarNames[first] {
@@ -3388,4 +3505,194 @@ func checkLiteralAgainstFieldKind(f float64, fieldType reflect.Type) error {
 	default:
 		return fmt.Errorf("unsupported numeric field type %s", fieldType)
 	}
+}
+
+// sanitizeGoIdent converts name (a Pug mixin name, which may contain a
+// hyphen or other character valid in Pug but not in a Go identifier) into a
+// valid Go identifier fragment: every rune that isn't a valid identifier
+// continuation (an ASCII letter, digit, or underscore) becomes an
+// underscore, and a leading digit — valid mid-identifier but not as the
+// first character — is handled by the caller's own fixed prefix ("pugMixin_"
+// in GenerateGo), so the result is always used as a suffix, never alone.
+func sanitizeGoIdent(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "_"
+	}
+	return b.String()
+}
+
+// uniqueGoName returns candidate unchanged and records it in used, unless
+// used already contains it (or, working backward, any earlier-numbered
+// suffix this same function generated), in which case it appends "_2",
+// "_3", … until it finds a name used does not yet contain — so two mixins
+// whose names sanitize to the same Go identifier (or a mixin whose
+// sanitized name happens to collide with the render function's own name,
+// pre-seeded into used by the caller) still each get a distinct top-level Go
+// function.
+func uniqueGoName(candidate string, used map[string]bool) string {
+	if !used[candidate] {
+		used[candidate] = true
+		return candidate
+	}
+	for i := 2; ; i++ {
+		c := fmt.Sprintf("%s_%d", candidate, i)
+		if !used[c] {
+			used[c] = true
+			return c
+		}
+	}
+}
+
+// genMixinFunc generates decl's entire body as a standalone top-level Go
+// function named fnName, `func <fnName>(w io.Writer, arg1 string, arg2
+// string, …) error` (one string parameter per decl.Parameters, positionally
+// named arg1, arg2, … rather than reusing the Pug parameter names
+// themselves, so a mixin parameter can never collide with the writer
+// parameter "w" or with any other generated identifier), and returns its
+// full Go source text.
+//
+// The body is generated in a PARAM-ONLY scope: g.scope holds only the
+// mixin's own parameters (each pushed as a string-typed scope entry mapping
+// the Pug parameter name to its Go argument), g.paramOnlyScope is set so
+// resolveFieldExpr fails closed on any OTHER identifier instead of falling
+// through to struct-field resolution against d (see resolveFieldExpr's own
+// doc comment), and g.insideMixinBody is set so a nested mixin call inside
+// the body is rejected by genMixinCall rather than attempted — reproducing
+// Runtime.renderMixinCall's own full isolation (a mixin body sees only its
+// parameters) as a compile-time, fail-closed GenerateGo error rather than a
+// silent "" the way the interpreter's own lookup miss would render it. A
+// default parameter value and a rest parameter are unconditionally
+// unsupported this increment (checked up front, before any body
+// generation) since neither the interpreter's default-value fallback nor
+// its variadic rest-argument collection has a codegen counterpart yet.
+//
+// g.body/g.static are reset (never swapped by value — a strings.Builder must
+// not be copied after first use) before returning; this is safe because
+// both are always still completely empty at the point GenerateGo calls
+// this, for every mixin, since every mixin helper is generated in its own
+// pass before the main render function's own body walk ever writes to
+// either one. g.scope is saved and restored by value (a plain slice, so
+// copying it is unremarkable) and g.paramOnlyScope/g.insideMixinBody are
+// restored to whatever they were before this call (both false, unless this
+// call is itself nested inside another — which genMixinFunc never does,
+// since GenerateGo only ever calls it for a top-level mixin declaration).
+func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, error) {
+	if len(decl.ParamDefaults) > 0 {
+		return "", fmt.Errorf("mixin %q: a default parameter value is not supported in codegen yet", decl.Name)
+	}
+	if decl.RestParamName != "" {
+		return "", fmt.Errorf("mixin %q: a rest parameter (...%s) is not supported in codegen yet", decl.Name, decl.RestParamName)
+	}
+
+	savedScope := g.scope
+	savedParamOnly := g.paramOnlyScope
+	savedInsideMixinBody := g.insideMixinBody
+
+	g.scope = nil
+	g.paramOnlyScope = true
+	g.insideMixinBody = true
+
+	argNames := make([]string, len(decl.Parameters))
+	for i, p := range decl.Parameters {
+		argName := fmt.Sprintf("arg%d", i+1)
+		argNames[i] = argName
+		g.pushScope(p, argName, reflectTypeString, false)
+	}
+
+	var bodyErr error
+	for _, child := range decl.Body {
+		if err := g.genNode(child); err != nil {
+			bodyErr = fmt.Errorf("mixin %q: %w", decl.Name, err)
+			break
+		}
+	}
+	if bodyErr == nil {
+		g.flushStatic()
+	}
+	fnBody := g.body.String()
+	g.body.Reset()
+	g.static.Reset()
+
+	g.scope = savedScope
+	g.paramOnlyScope = savedParamOnly
+	g.insideMixinBody = savedInsideMixinBody
+
+	if bodyErr != nil {
+		return "", bodyErr
+	}
+
+	var sig strings.Builder
+	fmt.Fprintf(&sig, "func %s(w io.Writer", fnName)
+	for _, argName := range argNames {
+		fmt.Fprintf(&sig, ", %s string", argName)
+	}
+	sig.WriteString(") error {\n")
+	sig.WriteString(fnBody)
+	sig.WriteString("return nil\n}\n")
+	return sig.String(), nil
+}
+
+// genMixinCall emits a call to call.Name's already-generated helper function
+// (see genMixinFunc), reproducing Runtime.renderMixinCall's own argument
+// binding exactly: an argument is built by genValueExpr in the CALLER's own
+// scope (data-visible, unlike the callee's own isolated body) for each of
+// the first len(decl.Parameters) call arguments — a missing trailing
+// argument (fewer call arguments than parameters) becomes the literal ""
+// instead, matching the interpreter's own missing-arg default — and any
+// call argument beyond the parameter count is simply ignored (no
+// rest-parameter support yet). A fallible argument expression (e.g. a
+// division) is extracted, in argument order, through the same
+// genFallibleExtraction every other fallible write site uses, so the
+// generated function returns that error immediately rather than call the
+// mixin helper with a value that was never actually computed.
+//
+// A nested mixin call (encountered while g.insideMixinBody is set — i.e.
+// one mixin's own body calling another), a call passing block content, and
+// a call forwarding attributes (&attributes) are all later increments and
+// return a distinct error instead of attempting to generate them.
+func (g *generator) genMixinCall(call *MixinCallNode) error {
+	if g.insideMixinBody {
+		return fmt.Errorf("mixin %q: a nested mixin call inside a mixin body is not supported in codegen yet", call.Name)
+	}
+	if len(call.BlockContent) > 0 {
+		return fmt.Errorf("mixin %q: block content passed to a mixin call is not supported in codegen yet", call.Name)
+	}
+	if len(call.Attributes) > 0 {
+		return fmt.Errorf("mixin %q: attributes forwarded to a mixin call (&attributes) are not supported in codegen yet", call.Name)
+	}
+
+	decl, ok := g.mixinDecls[call.Name]
+	if !ok {
+		return fmt.Errorf("unsupported mixin call %q in codegen: mixin %q is not defined at the top level (only a TOP-LEVEL mixin declaration is collected, matching Runtime.collectMixins — a declaration reached only through a nested composition/include position is not visible to a call)", call.Name, call.Name)
+	}
+	fnName := g.mixinFuncNames[call.Name]
+
+	args := make([]string, 0, len(decl.Parameters))
+	for i := range decl.Parameters {
+		if i >= len(call.Arguments) {
+			args = append(args, `""`)
+			continue
+		}
+		valExpr, fallible, err := g.genValueExpr(call.Arguments[i])
+		if err != nil {
+			return fmt.Errorf("mixin %q argument %d: %w", call.Name, i+1, err)
+		}
+		if fallible {
+			valExpr = g.genFallibleExtraction(valExpr)
+		}
+		args = append(args, valExpr)
+	}
+
+	callArgs := append([]string{"w"}, args...)
+	g.writeRaw(fmt.Sprintf("if err := %s(%s); err != nil {\nreturn err\n}\n", fnName, strings.Join(callArgs, ", ")))
+	return nil
 }
