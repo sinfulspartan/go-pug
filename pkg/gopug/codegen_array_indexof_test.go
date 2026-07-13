@@ -268,26 +268,19 @@ func TestCodegenArrayIndexOfBareNumericLocalDeferred(t *testing.T) {
 	}
 }
 
-// TestCodegenArrayLiteralEachIterationStillDeferred asserts that an array
-// literal used as an `each` collection (a wholly different lever — array-
-// literal ITERATION, not `.indexOf`/`.includes` — explicitly out of scope
-// here) is still rejected, unaffected by this file's `.indexOf`/`.includes`
-// support.
-func TestCodegenArrayLiteralEachIterationStillDeferred(t *testing.T) {
+// TestCodegenArrayLiteralEachIterationNowSupported proves that an array
+// literal used as an `each` collection — a wholly different lever from this
+// file's `.indexOf`/`.includes`/`.contains` receiver support, array-literal
+// ITERATION — is now supported (see codegen_each_array_literal_test.go for
+// the full differential coverage), unaffected by and independent of this
+// file's own `.indexOf`/`.includes` support.
+func TestCodegenArrayLiteralEachIterationNowSupported(t *testing.T) {
 	src := "each opt in [\"a\", \"b\", \"c\"]\n  p=opt\n"
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-	_, err = GenerateGo(ast, Config{
-		PackageName:     "gopug",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
+	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
+		src:         src,
+		data:        map[string]any{},
+		dataLiteral: "opsData{}",
 	})
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an unsupported error (array-literal each-iteration is out of scope), got nil", src)
-	}
 }
 
 // TestCodegenArrayIndexOfBareArrayLiteralValueStillDeferred asserts a bare

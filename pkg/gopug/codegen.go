@@ -2193,6 +2193,160 @@ func (g *generator) genStringArrayLiteral(arrayExpr, fullExpr string) (string, e
 	return "[]string{" + strings.Join(quoted, ", ") + "}", nil
 }
 
+// genFloat64ArrayLiteral is genStringArrayLiteral's numeric-literal
+// counterpart: it parses arrayExpr as a JS-style array literal with
+// NUMERIC-LITERAL elements only, using the same
+// findMatchingCloseBracket/splitTopLevel top-level comma split, each element
+// trimmed and required to parse via parseJSNumber — the exact parser the
+// interpreter's own evaluateExprRaw array-literal branch ultimately falls
+// through to for a bare numeric-literal element (ordinary decimal, hex,
+// octal, scientific notation, …), so the parsed element set is byte-identical
+// to what the interpreter would produce. Each element is emitted through
+// formatCanonicalLiteral (never the original Pug token, for the same reason
+// genOperand never does — see formatCanonicalLiteral's own doc comment) into
+// a `[]float64{...}` literal. Any element that isn't itself a plain numeric
+// literal (a quoted string, a bare identifier, a nested array/object literal,
+// a template literal, an expression, …) is deferred: this function only
+// supports the NUMERIC-array-literal shape, not a general element-value
+// compiler.
+func (g *generator) genFloat64ArrayLiteral(arrayExpr, fullExpr string) (string, error) {
+	arrayExpr = strings.TrimSpace(arrayExpr)
+	closeIdx := findMatchingCloseBracket(arrayExpr)
+	if closeIdx != len(arrayExpr)-1 {
+		return "", fmt.Errorf("unsupported array-literal receiver %q in codegen expression %q", arrayExpr, fullExpr)
+	}
+
+	inner := strings.TrimSpace(arrayExpr[1 : len(arrayExpr)-1])
+	if inner == "" {
+		return "[]float64{}", nil
+	}
+
+	parts := splitTopLevel(inner, ',')
+	lits := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		f, ok := parseJSNumber(p)
+		if !ok {
+			return "", fmt.Errorf("unsupported array-literal element %q in codegen expression %q (only a plain numeric-literal element is supported in this increment)", p, fullExpr)
+		}
+		lits = append(lits, formatCanonicalLiteral(f))
+	}
+	return "[]float64{" + strings.Join(lits, ", ") + "}", nil
+}
+
+// genEachArrayLiteral emits genEach's handling of a whole-bracket-wrapped
+// array literal used directly as an `each` collection (expr, already
+// confirmed by genEach to span the whole CollectionExpr via
+// findMatchingCloseBracket) — the other array-literal lever besides
+// `.indexOf`/`.includes`/`.contains` iteration over a REAL slice/array
+// method-call receiver. It splits the literal's elements with the same
+// splitTopLevel top-level comma split genStringArrayLiteral/
+// genFloat64ArrayLiteral use, classifying the WHOLE set in one pass: every
+// element must be either a plain quoted string literal (unwrapQuotedLiteral)
+// or a plain numeric literal (parseJSNumber), and every element must agree
+// on which of those two kinds it is — a mix of both, or any element that is
+// neither (a bare identifier, a field/dot-path, a nested array/object
+// literal, a template literal, any other expression), is rejected rather
+// than guessed at. An empty array literal (`[]`) is rejected too: with no
+// element to infer a type from, there is no way to know what Go type the
+// (never-executed, since a Go range over an empty slice runs zero times)
+// loop body would need to compile the item variable against.
+//
+// A homogeneous string-literal array is compiled via genStringArrayLiteral
+// into a `[]string`, elemTyp = string. A homogeneous numeric-literal array is
+// compiled via genFloat64ArrayLiteral into a `[]float64` — the interpreter's
+// own iteration of the SAME literal (Runtime.evaluateExprRaw's `[`-branch,
+// which evaluates each element with a recursive evaluateExprRaw call that
+// falls through, for a bare numeric-literal element, to
+// `s, _ := r.evaluateExpr(expr); return s` — the SAME parseJSNumber-based
+// canonical-decimal stringify genValueExpr's own bare-numeric-literal case
+// uses) always renders a numeric-literal element in this same canonical
+// decimal form, never the original token spelling, so modeling the element
+// as a Go float64 and stringifying it through genScalarStringify's Float64
+// case (strconv.FormatFloat with the same 'f', -1, 64 formatting) reproduces
+// that canonical form exactly — elemTyp = float64. Either classification then
+// pushes the item variable onto scope with its elemTyp exactly like the
+// field-collection path, so the loop body's existing scalar handling (a
+// dynamic attribute value, `#{}`/`= expr` buffered code, a template literal
+// `${...}` part, `if` truthiness) needs no new code at all to read it back
+// correctly. The numeric-literal classification additionally requires
+// type-aware mode (a non-nil Config.DataReflectType): resolveFieldExpr only
+// stringifies a scope var through its genuine reflect.Type in that mode, so
+// a numeric item variable read back in type-blind mode would otherwise be
+// used directly wherever a string is expected, invalid Go that GenerateGo's
+// own gofmt-only pass has no way to catch. The string-literal classification
+// has no such restriction: resolveFieldExpr's type-blind fallback returns
+// the scope var's bare Go identifier unconverted, which is already a valid
+// Go string, so it works correctly whether or not the generator is
+// type-aware.
+func (g *generator) genEachArrayLiteral(n *EachNode, expr string) error {
+	inner := strings.TrimSpace(expr[1 : len(expr)-1])
+	if inner == "" {
+		return fmt.Errorf("unsupported empty array-literal each collection %q in codegen", n.CollectionExpr)
+	}
+
+	parts := splitTopLevel(inner, ',')
+	allString, allNumeric := true, true
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if _, ok := unwrapQuotedLiteral(p); ok {
+			allNumeric = false
+			continue
+		}
+		if _, ok := parseJSNumber(p); ok {
+			allString = false
+			continue
+		}
+		return fmt.Errorf("unsupported array-literal each element %q in codegen each collection %q (only a plain string-literal or numeric-literal element is supported in this increment)", p, n.CollectionExpr)
+	}
+
+	var collExpr string
+	var elemTyp reflect.Type
+	var err error
+	switch {
+	case allString && !allNumeric:
+		collExpr, err = g.genStringArrayLiteral(expr, n.CollectionExpr)
+		elemTyp = reflectTypeString
+	case allNumeric && !allString:
+		// A numeric-literal loop item variable only stringifies correctly
+		// through genScalarStringify's Float64 case, which resolveFieldExpr
+		// reaches only in type-aware mode: in type-blind mode (rootType ==
+		// nil) resolveFieldExpr deliberately discards every scope var's
+		// type (see its own doc comment), so a later read of this item
+		// variable would emit the raw float64 Go value directly wherever a
+		// string is expected — invalid Go that GenerateGo's own gofmt-only
+		// formatting pass cannot catch, only a real `go build` would. Since
+		// genNumericExpr/genUnbufferedAssign impose this exact same
+		// type-blind restriction on a numeric `- var` local for the
+		// identical reason, requiring it here too is consistent, not an
+		// additional restriction unique to this feature.
+		if g.rootType == nil {
+			return fmt.Errorf("unsupported numeric array-literal each collection %q in codegen under a nil DataReflectType (type-blind mode)", n.CollectionExpr)
+		}
+		collExpr, err = g.genFloat64ArrayLiteral(expr, n.CollectionExpr)
+		elemTyp = reflectTypeFloat64
+	default:
+		err = fmt.Errorf("unsupported mixed string/numeric array-literal each collection %q in codegen (elements must be all string literals or all numeric literals)", n.CollectionExpr)
+	}
+	if err != nil {
+		return err
+	}
+
+	g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
+	mark := g.scopeMark()
+	g.pushScope(n.ItemVar, n.ItemVar, elemTyp, false)
+	for _, child := range n.Body {
+		if err := g.genNode(child); err != nil {
+			g.scopeRestore(mark)
+			return err
+		}
+	}
+	g.scopeRestore(mark)
+	g.flushStatic()
+	g.body.WriteString("}\n")
+	return nil
+}
+
 // genArrayIndexOfValueExpr emits genMethodCall's handling of
 // `<arrayLiteral>.indexOf(<arg>)` / `.includes(<arg>)` / `.contains(<arg>)`,
 // recognized when objExpr is itself a string-literal array literal (see
@@ -2596,13 +2750,16 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 	return "d." + goPath, typ, nil
 }
 
-// genEach emits a for-range loop over a slice field. Only the single-variable
-// form (`each x in <field>`) with no index variable and no `each`/`else`
-// empty-collection body is supported in this increment. In type-aware mode,
-// the loop item variable is scoped to the collection field's element type
-// (dereferencing pointers on the collection and/or its element), so a
-// dot-path rooted at the item variable inside the loop body resolves
-// correctly too.
+// genEach emits a for-range loop over a slice field, or — the other
+// array-literal lever besides `.indexOf`/`.includes`/`.contains` — over a
+// whole-bracket-wrapped array literal collection (`each x in ["a", "b"]` /
+// `each x in [1, 2, 3]`), delegated to genEachArrayLiteral. Only the
+// single-variable form (`each x in <field>`) with no index variable and no
+// `each`/`else` empty-collection body is supported in this increment. In
+// type-aware mode, the loop item variable is scoped to the collection
+// field's element type (dereferencing pointers on the collection and/or its
+// element), so a dot-path rooted at the item variable inside the loop body
+// resolves correctly too.
 func (g *generator) genEach(n *EachNode) error {
 	if n.ItemVar == "" {
 		return fmt.Errorf("unsupported each without an item variable in codegen")
@@ -2612,6 +2769,11 @@ func (g *generator) genEach(n *EachNode) error {
 	}
 	if len(n.EmptyBody) > 0 {
 		return fmt.Errorf("unsupported each/else in codegen")
+	}
+
+	collTrim := strings.TrimSpace(n.CollectionExpr)
+	if strings.HasPrefix(collTrim, "[") && findMatchingCloseBracket(collTrim) == len(collTrim)-1 {
+		return g.genEachArrayLiteral(n, collTrim)
 	}
 
 	collExpr, collTyp, err := g.resolveFieldExpr(n.CollectionExpr)
