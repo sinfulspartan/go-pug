@@ -1012,6 +1012,14 @@ func validGoIdentifier(name string) bool {
 // (`.split(...)`, an index expression, an array/object literal, a numeric
 // field, a fallible operator `/`/`%`/`*`/`-`, a method call, …) is deferred.
 //
+// A second, later increment added a genuinely bool-typed local alongside
+// this string-typed one: a comparison, a unary "!", a both-bool-operand
+// "||"/"&&", or a bare bool-typed field/local is classified by genBoolExpr
+// (tried first, below) and stored as a real Go bool rather than forced
+// through this string grammar — see genBoolExpr's own doc comment for the
+// full reasoning, in particular why "||"/"&&" needs an extra check that
+// genAssignRHS's OWN "||"/"&&" case (immediately below) does not.
+//
 // A `- var` re-declaring a name already bound in scope (whether from an
 // outer `- var`, an each-loop item variable, or an outer var of the same
 // name) is also deferred: Runtime.setVar does not create a fresh binding in
@@ -1019,7 +1027,7 @@ func validGoIdentifier(name string) bool {
 // interpreter's scopeStack it lives, which does not (in general) correspond
 // to Go's own block-scoped shadowing that a nested `:=` would produce. A nil
 // Config.DataReflectType (type-blind mode) is also deferred: there is no
-// type information to prove the RHS is string-shaped at all.
+// type information to prove the RHS is string- or bool-shaped at all.
 func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 	if g.rootType == nil {
 		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (Config.DataReflectType is required to type-check a `- var` right-hand side)", varName)
@@ -1029,6 +1037,20 @@ func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 	}
 	if g.isBound(varName) {
 		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (re-declaring or re-assigning an already-bound variable is not supported yet)", varName)
+	}
+
+	if boolExpr, ok, err := g.genBoolExpr(rhsExpr); err != nil {
+		return fmt.Errorf("unbuffered assignment to %q: %w", varName, err)
+	} else if ok {
+		goName := goLocalNameForVar(varName)
+		g.writeRaw(fmt.Sprintf("%s := %s\n", goName, boolExpr))
+		// See the matching comment in the string-local path below: the
+		// interpreter always evaluates the RHS even when the variable is
+		// never read afterward, so this blank-identifier use keeps that
+		// evaluation intact without requiring a reference.
+		g.body.WriteString(fmt.Sprintf("_ = %s\n", goName))
+		g.pushScope(varName, goName, reflectTypeBool, true)
+		return nil
 	}
 
 	goExpr, err := g.genAssignRHS(rhsExpr)
@@ -1046,6 +1068,153 @@ func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 
 	g.pushScope(varName, goName, reflectTypeString, true)
 	return nil
+}
+
+// genBoolExpr classifies rhs (a `- var x = <rhs>` right-hand side) as
+// bool-valued and, if so, compiles it to a genuine Go bool expression by
+// reusing genCondition — the SAME condition compiler `if`/`else` already
+// uses, so a comparison, a unary "!", a both-bool-operand "||"/"&&", or a
+// bare bool-typed field/local produces exactly the Go source genCondition
+// would emit for that same text in condition position. ok is false (with a
+// nil error) whenever rhs is definitively not one of these bool-valued
+// shapes, so the caller (genUnbufferedAssign) falls through to
+// genAssignRHS's STRING-local path unchanged; a non-nil error means rhs IS
+// one of these shapes but genCondition/genComparison could not compile it
+// (an incompatible comparison, an unsupported operand, …), which the caller
+// propagates as a hard failure instead of silently guessing at a fallback.
+//
+// A comparison and a unary "!" are unconditionally safe to treat this way:
+// Runtime.evaluateExpr's own comparison branch always returns the literal
+// string "true" or "false" (never anything else) when the comparison
+// succeeds, and its "!" branch always returns Not(inner) — likewise always
+// exactly "true" or "false" — regardless of what the inner operand's own
+// type or content is. So genCondition's Go bool for either shape agrees with
+// the interpreter's stored/stringified value no matter what operand kind
+// genCondition itself is able to compile (bool, numeric, or string).
+//
+// "||"/"&&" need an extra check the other two don't: in VALUE context (what
+// a `- var` RHS actually is), the interpreter's evaluateExpr returns the
+// first-truthy OPERAND'S VALUE, not a canonicalized "true"/"false" — so
+// `Name || "anon"` evaluates to "Ada" or "anon", a plain string, and
+// treating it as a Go bool would silently disagree with the interpreter the
+// moment it is read back as a string. Only when BOTH operands are
+// themselves provably bool-valued (a comparison, a unary "!", a bool
+// field/local, or a nested "||"/"&&" that is itself provably bool by the
+// same rule) does the first-truthy value happen to always be the canonical
+// string "true" or "false" — isProvablyBoolOperand decides this for both
+// operands before genCondition is ever invoked for a "||"/"&&" RHS; when it
+// is not satisfied, ok is false and the RHS falls through to
+// genAssignRHS's own, separately-proven "||"/"&&" string-local handling
+// unchanged.
+//
+// A top-level ternary is out of scope for this function — genAssignRHS
+// already owns ternary as a string-valued IIFE — so ok is simply false for
+// it here.
+func (g *generator) genBoolExpr(expr string) (goExpr string, ok bool, err error) {
+	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
+
+	if idx := findTernary(expr); idx >= 0 {
+		return "", false, nil
+	}
+
+	if idx := findBinaryOp(expr, "||"); idx >= 0 {
+		if !g.isProvablyBoolOperand(expr[:idx]) || !g.isProvablyBoolOperand(expr[idx+2:]) {
+			return "", false, nil
+		}
+		goExpr, err := g.genCondition(expr)
+		if err != nil {
+			return "", false, err
+		}
+		return goExpr, true, nil
+	}
+	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
+		if !g.isProvablyBoolOperand(expr[:idx]) || !g.isProvablyBoolOperand(expr[idx+2:]) {
+			return "", false, nil
+		}
+		goExpr, err := g.genCondition(expr)
+		if err != nil {
+			return "", false, err
+		}
+		return goExpr, true, nil
+	}
+
+	for _, op := range conditionComparisonOps {
+		if idx := findBinaryOp(expr, op); idx >= 0 {
+			goExpr, err := g.genCondition(expr)
+			if err != nil {
+				return "", false, err
+			}
+			return goExpr, true, nil
+		}
+	}
+
+	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		goExpr, err := g.genCondition(expr)
+		if err != nil {
+			return "", false, err
+		}
+		return goExpr, true, nil
+	}
+
+	if g.exprIsBoolTyped(expr) {
+		goExpr, err := g.genCondition(expr)
+		if err != nil {
+			return "", false, err
+		}
+		return goExpr, true, nil
+	}
+
+	return "", false, nil
+}
+
+// isProvablyBoolOperand reports whether expr, evaluated by the interpreter,
+// is guaranteed to already be the canonical string "true" or "false" —
+// equivalently, a genuine Go bool once codegen resolves it — rather than an
+// arbitrary passed-through value. This is exactly the condition genBoolExpr
+// needs of BOTH operands before it is safe to treat a "||"/"&&" RHS as
+// bool-valued (see genBoolExpr's doc comment for why). It mirrors
+// genCondition's own operator-precedence scan (ternary, ||, &&, the eight
+// comparison operators, then a unary "!") so a nested combinator is
+// classified consistently with how genCondition itself would compile it: a
+// comparison and a unary "!" are unconditionally provably bool (the
+// interpreter's evaluateExpr always canonicalizes both to "true"/"false"
+// regardless of their own operand types), a nested "||"/"&&" is provably
+// bool only when both of ITS operands are (checked recursively), and a bare
+// leaf is provably bool only when it resolves, via resolveFieldExpr, to an
+// actual bool-typed field or bool-typed `- var` local — never a string,
+// numeric, or other scalar leaf, which the interpreter's "||"/"&&" would
+// pass through unchanged as its own value rather than canonicalize.
+func (g *generator) isProvablyBoolOperand(expr string) bool {
+	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
+
+	if idx := findTernary(expr); idx >= 0 {
+		return false
+	}
+	if idx := findBinaryOp(expr, "||"); idx >= 0 {
+		return g.isProvablyBoolOperand(expr[:idx]) && g.isProvablyBoolOperand(expr[idx+2:])
+	}
+	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
+		return g.isProvablyBoolOperand(expr[:idx]) && g.isProvablyBoolOperand(expr[idx+2:])
+	}
+	for _, op := range conditionComparisonOps {
+		if idx := findBinaryOp(expr, op); idx >= 0 {
+			return true
+		}
+	}
+	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		return true
+	}
+	return g.exprIsBoolTyped(expr)
+}
+
+// exprIsBoolTyped reports whether expr is a bare identifier or dot-path that
+// resolveFieldExpr resolves to a field/local of reflect.Kind Bool — the only
+// bare-leaf shape genBoolExpr (and isProvablyBoolOperand) treat as
+// bool-valued; a numeric or string leaf is left to genAssignRHS's own,
+// separately-proven string-local handling.
+func (g *generator) exprIsBoolTyped(expr string) bool {
+	_, typ, err := g.resolveFieldExpr(expr)
+	return err == nil && typ != nil && typ.Kind() == reflect.Bool
 }
 
 // genAssignRHS compiles a `- var x = <rhs>` right-hand side to a Go string
@@ -1149,8 +1318,16 @@ func (g *generator) genAssignRHS(expr string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("unsupported unbuffered assignment right-hand side %q in codegen: %w", expr, err)
 	}
+	if typ != nil {
+		switch typ.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float64:
+			return "", fmt.Errorf("unsupported unbuffered assignment right-hand side %q in codegen (a numeric-valued `- var` local is not supported yet)", expr)
+		}
+	}
 	if typ == nil || typ.Kind() != reflect.String {
-		return "", fmt.Errorf("unsupported unbuffered assignment right-hand side %q in codegen (only a string literal, template literal, string concatenation, a ternary/||/&& over string operands, or a string-typed field/dot-path is supported as a `- var` right-hand side in this increment)", expr)
+		return "", fmt.Errorf("unsupported unbuffered assignment right-hand side %q in codegen (only a string literal, template literal, string concatenation, a ternary/||/&& over string operands, a bool-valued comparison/logical/bool-field (see genBoolExpr, tried before this function), or a string-typed field/dot-path is supported as a `- var` right-hand side in this increment)", expr)
 	}
 	return convertExpr(resolvedExpr, typ, reflectTypeString, "string"), nil
 }
