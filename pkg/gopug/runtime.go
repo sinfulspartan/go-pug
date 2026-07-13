@@ -448,6 +448,63 @@ func (r *Runtime) writeNewlineAfterDoctype(nodes []Node) {
 	}
 }
 
+// resolveClassTokenList resolves the words of a class= value that fell
+// through to the default (non-slice, non-map) case of the class-attribute
+// branch in renderTag. rawValExpr may be a whole-quoted static literal
+// (e.g. `"badge"`, or a shorthand+quoted-class merge like `"base foo bar"`)
+// or a bare, space-separated mix of static and dynamic tokens (e.g. the
+// shorthand+bare-variable merge `"text-end" cls`).
+//
+// A whole-quoted value is fully static in Pug: interpolation, concatenation,
+// and dynamic classes go through backticks, +, ternaries, or a bare
+// class=var — never a plain quoted string. So its words are kept verbatim
+// and are never evaluated, even when a word happens to share a name with an
+// in-scope variable. A non-quoted value's words are each evaluated as
+// expressions and dropped when they resolve to empty, so an empty variable's
+// identifier name never leaks into the output.
+func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
+	inner := rawValExpr
+	wasQuoted := false
+	if len(inner) >= 2 &&
+		((inner[0] == '"' && inner[len(inner)-1] == '"') ||
+			(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
+		inner = inner[1 : len(inner)-1]
+		wasQuoted = true
+	}
+	words := strings.Fields(inner)
+
+	if wasQuoted {
+		if len(words) == 0 {
+			evaluated, _ := r.evaluateExpr(rawValExpr)
+			return evaluated
+		}
+		return strings.Join(words, " ")
+	}
+
+	var resolved []string
+	for _, word := range words {
+		rawWord := r.evaluateExprRaw(word)
+		if rawWord != nil {
+			wv := reflect.ValueOf(rawWord)
+			if wv.Kind() == reflect.Slice || wv.Kind() == reflect.Array {
+				for i := 0; i < wv.Len(); i++ {
+					resolved = append(resolved, fmt.Sprintf("%v", wv.Index(i).Interface()))
+				}
+				continue
+			}
+		}
+		v, _ := r.evaluateExpr(word)
+		if v != "" {
+			resolved = append(resolved, v)
+		}
+	}
+	if len(resolved) > 0 {
+		return strings.Join(resolved, " ")
+	}
+	evaluated, _ := r.evaluateExpr(rawValExpr)
+	return evaluated
+}
+
 func (r *Runtime) renderTag(tag *TagNode) error {
 	if r.pretty() && !prettyInline(tag) {
 		r.prettyNewline()
@@ -677,81 +734,10 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 								sort.Strings(activeClasses)
 								evaluated = strings.Join(activeClasses, " ")
 							default:
-								inner := rawValExpr
-								wasQuoted := false
-								if len(inner) >= 2 &&
-									((inner[0] == '"' && inner[len(inner)-1] == '"') ||
-										(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
-									inner = inner[1 : len(inner)-1]
-									wasQuoted = true
-								}
-								words := strings.Fields(inner)
-								var resolved []string
-								for _, word := range words {
-									rawWord := r.evaluateExprRaw(word)
-									if rawWord != nil {
-										wv := reflect.ValueOf(rawWord)
-										if wv.Kind() == reflect.Slice || wv.Kind() == reflect.Array {
-											for i := 0; i < wv.Len(); i++ {
-												resolved = append(resolved, fmt.Sprintf("%v", wv.Index(i).Interface()))
-											}
-											continue
-										}
-									}
-									v, _ := r.evaluateExpr(word)
-									if v != "" {
-										resolved = append(resolved, v)
-									} else if wasQuoted && word != "" {
-										// Static class token from a quoted list —
-										// keep it literally. An unquoted word that
-										// resolved to "" is a variable/expression
-										// whose value is empty, so drop it rather
-										// than leaking the identifier name.
-										resolved = append(resolved, word)
-									}
-								}
-								if len(resolved) > 0 {
-									evaluated = strings.Join(resolved, " ")
-								} else {
-									evaluated, _ = r.evaluateExpr(rawValExpr)
-								}
+								evaluated = r.resolveClassTokenList(rawValExpr)
 							}
 						} else {
-							inner := rawValExpr
-							wasQuoted := false
-							if len(inner) >= 2 &&
-								((inner[0] == '"' && inner[len(inner)-1] == '"') ||
-									(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
-								inner = inner[1 : len(inner)-1]
-								wasQuoted = true
-							}
-							words := strings.Fields(inner)
-							var resolved []string
-							for _, word := range words {
-								rawWord := r.evaluateExprRaw(word)
-								if rawWord != nil {
-									wv := reflect.ValueOf(rawWord)
-									if wv.Kind() == reflect.Slice || wv.Kind() == reflect.Array {
-										for i := 0; i < wv.Len(); i++ {
-											resolved = append(resolved, fmt.Sprintf("%v", wv.Index(i).Interface()))
-										}
-										continue
-									}
-								}
-								v, _ := r.evaluateExpr(word)
-								if v != "" {
-									resolved = append(resolved, v)
-								} else if wasQuoted && word != "" {
-									// See note above: only keep literal tokens that
-									// came from a quoted static class list.
-									resolved = append(resolved, word)
-								}
-							}
-							if len(resolved) > 0 {
-								evaluated = strings.Join(resolved, " ")
-							} else {
-								evaluated, _ = r.evaluateExpr(rawValExpr)
-							}
+							evaluated = r.resolveClassTokenList(rawValExpr)
 						}
 					}
 				}

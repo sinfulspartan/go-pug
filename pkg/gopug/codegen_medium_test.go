@@ -94,62 +94,62 @@ func TestCodegenMediumGolden(t *testing.T) {
 
 // TestMediumCodegenMatchesInterpreter asserts the committed RenderMedium
 // produces output byte-identical to the interpreter rendering the
-// equivalent, identically typed map, for the badge-hidden case (the
-// badge-shown case is covered separately by
-// TestMediumCodegenBadgeShownAgreesWithPugSemantics — see that test's doc
-// comment for why it does not compare against the interpreter here).
+// equivalent, identically typed map, for both the badge-hidden and
+// badge-shown branches of codegenMediumSrc's `if badge` conditional.
 func TestMediumCodegenMatchesInterpreter(t *testing.T) {
 	tpl, err := gopug.Compile(codegenMediumSrc, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 
-	data := MediumData{
-		CardId:      "card-2",
-		Title:       "Another Card",
-		Description: "No badge on this one.",
-		Badge:       "",
-		Url:         "/article/2",
+	cases := []struct {
+		name string
+		data MediumData
+	}{
+		{
+			name: "badge hidden",
+			data: MediumData{
+				CardId:      "card-2",
+				Title:       "Another Card",
+				Description: "No badge on this one.",
+				Badge:       "",
+				Url:         "/article/2",
+			},
+		},
+		{
+			name: "badge shown",
+			data: mediumCGData(),
+		},
 	}
 
-	var buf bytes.Buffer
-	if err := RenderMedium(&buf, data); err != nil {
-		t.Fatalf("RenderMedium: %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := RenderMedium(&buf, tc.data); err != nil {
+				t.Fatalf("RenderMedium: %v", err)
+			}
 
-	want, err := tpl.Render(mediumDataToMap(data))
-	if err != nil {
-		t.Fatalf("interpreter Render: %v", err)
-	}
+			want, err := tpl.Render(mediumDataToMap(tc.data))
+			if err != nil {
+				t.Fatalf("interpreter Render: %v", err)
+			}
 
-	if buf.String() != want {
-		t.Errorf("codegen output does not match interpreter output\ncodegen:     %q\ninterpreter: %q", buf.String(), want)
+			if buf.String() != want {
+				t.Errorf("codegen output does not match interpreter output\ncodegen:     %q\ninterpreter: %q", buf.String(), want)
+			}
+		})
 	}
 }
 
-// TestMediumCodegenBadgeShownAgreesWithPugSemantics covers the badge-shown
-// case codegenMediumSrc's `span.badge= badge` line exercises — and
-// deliberately checks RenderMedium's output against a literal, pug.js-
-// verified expected string instead of the interpreter's own Render, because
-// the interpreter has a pre-existing, unrelated bug on exactly this shape: a
-// tag whose ONLY class comes from shorthand (`.badge`, no `class=` attribute)
-// and whose shorthand token's text happens to match the name of an in-scope
-// variable renders that variable's VALUE as the class instead of the literal
-// shorthand text (runtime.go's class-attribute branch re-evaluates each
-// whitespace-split "word" of the shorthand's quoted value as an expression,
-// which incorrectly resolves a bare word that shadows a variable name). Since
-// codegenMediumSrc's own variable for the badge text is itself named
-// "badge" — the same as the shorthand class token — this collision is
-// unavoidable for any template exercising the shown-badge branch, so the
-// interpreter renders `class="New"` here instead of the correct
-// `class="badge"` (confirmed against pug 3.0.4: `pug.render(codegenMediumSrc,
-// data)` produces `class="badge"`, matching codegen, not the interpreter).
-// This is an interpreter defect independent of codegen — codegen resolves
-// the shorthand class token at generate time as a plain static string, so it
-// is not exposed to it — and is out of scope for the codegen benchmark task;
-// it is called out here so the divergence is documented rather than silently
-// worked around.
-func TestMediumCodegenBadgeShownAgreesWithPugSemantics(t *testing.T) {
+// TestMediumCodegenBadgeShownThreeWayAgreement covers the badge-shown branch
+// codegenMediumSrc's `span.badge= badge` line exercises, where the shorthand
+// class token's text ("badge") collides with the name of the in-scope
+// variable it buffers as text content. Both engines must render the static
+// shorthand class literally rather than substituting the variable's value:
+// confirmed against pug 3.0.4 (`pug.render(codegenMediumSrc, data)` produces
+// `class="badge"`). This asserts the interpreter, the codegen output, and the
+// pug.js-verified literal all agree.
+func TestMediumCodegenBadgeShownThreeWayAgreement(t *testing.T) {
 	tpl, err := gopug.Compile(codegenMediumSrc, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -162,31 +162,23 @@ func TestMediumCodegenBadgeShownAgreesWithPugSemantics(t *testing.T) {
 		t.Fatalf("RenderMedium: %v", err)
 	}
 
-	const wantCodegen = `<div id="card-1" class="card"><h2>Hello World</h2><p>A short description of the card.</p><span class="badge">New</span><a href="/article/1">Read more</a></div>`
-	if buf.String() != wantCodegen {
-		t.Errorf("codegen output %q does not match the pug.js-verified expected output %q", buf.String(), wantCodegen)
+	const wantPugJS = `<div id="card-1" class="card"><h2>Hello World</h2><p>A short description of the card.</p><span class="badge">New</span><a href="/article/1">Read more</a></div>`
+	if buf.String() != wantPugJS {
+		t.Errorf("codegen output %q does not match the pug.js-verified expected output %q", buf.String(), wantPugJS)
 	}
 
 	interpreterOut, err := tpl.Render(mediumDataToMap(data))
 	if err != nil {
 		t.Fatalf("interpreter Render: %v", err)
 	}
-	if interpreterOut == wantCodegen {
-		t.Errorf("interpreter output now matches codegen/pug.js for the badge-shown case; the known class-shorthand/variable-name collision bug this test documents appears to be fixed — replace this test with a plain byte-identical comparison against the interpreter")
+	if interpreterOut != wantPugJS {
+		t.Errorf("interpreter output %q does not match the pug.js-verified expected output %q", interpreterOut, wantPugJS)
 	}
 }
 
 // BenchmarkCodegenMedium measures the generated RenderMedium function
 // directly, the codegen counterpart to benchmark_test.go's
 // BenchmarkRenderMedium (interpreter) and bench.js's RenderMedium (pug.js).
-//
-// Note for a future reader comparing the two: on badge-shown data this
-// benchmark and BenchmarkRenderMedium render DIFFERENT bytes, not just
-// different speeds — the interpreter has a pre-existing, unrelated
-// shorthand-class bug where `span.badge= badge` emits class="New" instead of
-// the correct class="badge" that this benchmark's codegen (and pug.js) both
-// produce. See TestMediumCodegenBadgeShownAgreesWithPugSemantics for the
-// documented divergence and root cause.
 func BenchmarkCodegenMedium(b *testing.B) {
 	data := mediumCGData()
 
