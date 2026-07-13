@@ -1133,6 +1133,14 @@ func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 // A top-level ternary is out of scope for this function — genAssignRHS
 // already owns ternary as a string-valued IIFE — so ok is simply false for
 // it here.
+//
+// A bare array-literal `.includes(...)`/`.contains(...)` call (the
+// manageGroupActive/navGroupActive idiom's simpler sibling —
+// `["a","b"].includes(currentPage)` needs no `!== -1` at all, since
+// MethodIncludesSlice already returns the interpreter's own canonical
+// "true"/"false") is checked the same way the bare-bool-field case is,
+// immediately before it: isArrayLiteralMethodCall recognizes the shape, and
+// genCondition (via genOperandTruthiness) compiles it.
 func (g *generator) genBoolExpr(expr string) (goExpr string, ok bool, err error) {
 	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
 
@@ -1172,6 +1180,14 @@ func (g *generator) genBoolExpr(expr string) (goExpr string, ok bool, err error)
 	}
 
 	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		goExpr, err := g.genCondition(expr)
+		if err != nil {
+			return "", false, err
+		}
+		return goExpr, true, nil
+	}
+
+	if isArrayLiteralMethodCall(expr, "includes", "contains") {
 		goExpr, err := g.genCondition(expr)
 		if err != nil {
 			return "", false, err
@@ -1225,6 +1241,9 @@ func (g *generator) isProvablyBoolOperand(expr string) bool {
 		}
 	}
 	if strings.HasPrefix(expr, "!") && !strings.HasPrefix(expr, "!=") {
+		return true
+	}
+	if isArrayLiteralMethodCall(expr, "includes", "contains") {
 		return true
 	}
 	return g.exprIsBoolTyped(expr)
@@ -1541,7 +1560,14 @@ func (g *generator) genValueExpr(expr string) (goExpr string, fallible bool, err
 		goExpr, err := g.genTemplateLiteral(expr)
 		return goExpr, false, err
 	}
-	if strings.HasPrefix(expr, "[") {
+	// A pure bracket-wrapped array literal (the whole expression, not just its
+	// prefix) is out of scope here — but `[...].indexOf(...)`/`.includes(...)`/
+	// `.contains(...)` is NOT a pure array literal (it doesn't end in "]"), so
+	// it must fall through the rest of this precedence chain down to the
+	// dot/method-call handling below, exactly like Runtime.evaluateExpr's own
+	// array-literal check (guarded by expr[len(expr)-1] == ']') never fires
+	// for that shape either.
+	if strings.HasPrefix(expr, "[") && strings.HasSuffix(expr, "]") && findMatchingCloseBracket(expr) == len(expr)-1 {
 		return "", false, fmt.Errorf("unsupported array literal in codegen value expression %q", expr)
 	}
 	if strings.HasPrefix(expr, "{") {
@@ -1797,6 +1823,10 @@ func (g *generator) genMethodCall(objExpr, rest string) (string, bool, error) {
 		return g.genJoinValueExpr(objExpr, argsStr, fullExpr)
 	case "toFixed", "toPrecision":
 		return g.genToFixedOrPrecisionValueExpr(objExpr, methodName, argsStr, fullExpr)
+	case "indexOf", "includes", "contains":
+		if strings.HasPrefix(strings.TrimSpace(objExpr), "[") {
+			return g.genArrayIndexOfValueExpr(objExpr, methodName, argsStr, fullExpr)
+		}
 	}
 
 	recvExpr, recvFallible, err := g.genValueExpr(objExpr)
@@ -2121,6 +2151,164 @@ func (g *generator) genToFixedOrPrecisionValueExpr(objExpr, methodName, argsStr,
 	default:
 		return "", false, fmt.Errorf("unsupported method %q in codegen value expression %q (receiver type %s is not numeric or string)", methodName, fullExpr, typ)
 	}
+}
+
+// genStringArrayLiteral parses arrayExpr — the receiver of an
+// `.indexOf`/`.includes`/`.contains` call the caller has already confirmed
+// starts with "[" — as a JS-style array literal with STRING-LITERAL elements
+// only, mirroring Runtime.evaluateExprRaw's own array-literal branch exactly:
+// the same findMatchingCloseBracket/splitTopLevel top-level comma split, each
+// element trimmed and required to be a plain quoted string literal
+// (unwrapQuotedLiteral), so the parsed element set is byte-identical to what
+// Runtime.evaluateExprRawAsStringSlice hands MethodIndexOfSlice/
+// MethodIncludesSlice for the SAME literal. Each element is then emitted
+// through strconv.Quote as a Go string literal, into a `[]string{...}`
+// literal. Any element that is not itself a plain quoted string literal (a
+// number, a bare identifier, a nested array/object literal, a template
+// literal, an expression, …) is deferred: this increment only supports the
+// STRING-array-literal shape the real manageGroupActive/navGroupActive idiom
+// uses, not a general element-value compiler.
+func (g *generator) genStringArrayLiteral(arrayExpr, fullExpr string) (string, error) {
+	arrayExpr = strings.TrimSpace(arrayExpr)
+	closeIdx := findMatchingCloseBracket(arrayExpr)
+	if closeIdx != len(arrayExpr)-1 {
+		return "", fmt.Errorf("unsupported array-literal receiver %q in codegen value expression %q", arrayExpr, fullExpr)
+	}
+
+	inner := strings.TrimSpace(arrayExpr[1 : len(arrayExpr)-1])
+	if inner == "" {
+		return "[]string{}", nil
+	}
+
+	parts := splitTopLevel(inner, ',')
+	quoted := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		lit, ok := unwrapQuotedLiteral(p)
+		if !ok {
+			return "", fmt.Errorf("unsupported array-literal element %q in codegen value expression %q (only a plain string-literal element is supported in this increment)", p, fullExpr)
+		}
+		quoted = append(quoted, strconv.Quote(lit))
+	}
+	return "[]string{" + strings.Join(quoted, ", ") + "}", nil
+}
+
+// genArrayIndexOfValueExpr emits genMethodCall's handling of
+// `<arrayLiteral>.indexOf(<arg>)` / `.includes(<arg>)` / `.contains(<arg>)`,
+// recognized when objExpr is itself a string-literal array literal (see
+// genStringArrayLiteral). It compiles the array literal to a Go []string and
+// the argument to a Go string via genTotalArg (a TOTAL genValueExpr result —
+// exactly what Runtime.evaluateExpr's own "indexOf"/"includes"/"contains"
+// case passes to the corresponding helper, see MethodIndexOfSlice/
+// MethodIncludesSlice's own doc comments), then calls the exported
+// gopug.MethodIndexOfSlice/gopug.MethodIncludesSlice directly — the SAME
+// helper Runtime's own array-receiver branch calls, so the two paths can
+// never drift apart. A 0-arg call passes the interpreter's own no-argument
+// default ("-1" for indexOf, "false" for includes/contains) without even
+// resolving the array literal, matching Runtime.evaluateExpr's own early
+// return for that shape.
+func (g *generator) genArrayIndexOfValueExpr(objExpr, methodName, argsStr, fullExpr string) (string, bool, error) {
+	if argsStr == "" {
+		if methodName == "indexOf" {
+			return `"-1"`, false, nil
+		}
+		return `"false"`, false, nil
+	}
+
+	elemsGoExpr, err := g.genStringArrayLiteral(objExpr, fullExpr)
+	if err != nil {
+		return "", false, err
+	}
+	needle, err := g.genTotalArg(argsStr, fullExpr)
+	if err != nil {
+		return "", false, err
+	}
+
+	g.needsGopug = true
+	if methodName == "indexOf" {
+		return "gopug.MethodIndexOfSlice(" + elemsGoExpr + ", " + needle + ")", false, nil
+	}
+	return "gopug.MethodIncludesSlice(" + elemsGoExpr + ", " + needle + ")", false, nil
+}
+
+// isArrayLiteralMethodCall reports whether expr is a bare
+// `<arrayLiteral>.<methodName>(...)` call — the receiver starts with "[" and
+// the method name (before the "(") is one of wantMethods — without building
+// any Go code for it. It is the shared shape test genOperand (for
+// `.indexOf` in a numeric comparison operand) and genOperandTruthiness/
+// genBoolExpr/isProvablyBoolOperand (for a bare `.includes`/`.contains` bool
+// value) use to decide whether to route an expression through
+// genArrayIndexOfValueExpr at all.
+func isArrayLiteralMethodCall(expr string, wantMethods ...string) bool {
+	dotIdx := findTopLevelDot(expr)
+	if dotIdx <= 0 {
+		return false
+	}
+	objExpr := strings.TrimSpace(expr[:dotIdx])
+	if !strings.HasPrefix(objExpr, "[") {
+		return false
+	}
+	rest := expr[dotIdx+1:]
+	before, _, found := strings.Cut(rest, "(")
+	if !found {
+		return false
+	}
+	methodName := strings.TrimSpace(before)
+	for _, m := range wantMethods {
+		if methodName == m {
+			return true
+		}
+	}
+	return false
+}
+
+// splitArrayLiteralMethodCall splits expr (already confirmed by
+// isArrayLiteralMethodCall to be a bare `<arrayLiteral>.<methodName>(...)`
+// call) into its receiver, method name, and argument text, the same way
+// genValueExpr's own dot-handling block and genMethodCall do.
+func splitArrayLiteralMethodCall(expr string) (objExpr, methodName, argsStr string) {
+	dotIdx := findTopLevelDot(expr)
+	objExpr = strings.TrimSpace(expr[:dotIdx])
+	rest := expr[dotIdx+1:]
+	before, inner, _ := strings.Cut(rest, "(")
+	methodName = strings.TrimSpace(before)
+	argsStr, _, _ = strings.Cut(strings.TrimSpace(inner), ")")
+	argsStr = strings.TrimSpace(argsStr)
+	return objExpr, methodName, argsStr
+}
+
+// tryArrayIndexOfNumericOperand recognizes a bare array-literal
+// `.indexOf(...)` call as a condition/comparison operand — the receiver end
+// of the manageGroupActive/navGroupActive `!== -1` idiom — and, if expr
+// matches that shape, compiles it to a Go int expression via
+// genArrayIndexOfValueExpr (which already emits the single-sourced
+// gopug.MethodIndexOfSlice call) plus a guaranteed-safe strconv.Atoi of its
+// decimal-integer result: MethodIndexOfSlice always returns either "-1" or a
+// non-negative decimal index, never a value Atoi can fail to parse, so the
+// parse error is intentionally discarded, the same way genLengthOperand's own
+// len()/RuneCountInString wrapper never guards a computation that can't fail.
+// ok is false when expr is not this shape (including a bare `.includes`/
+// `.contains` call, which returns a bool-shaped result rather than a numeric
+// index and is handled separately, in genOperandTruthiness), so genOperand's
+// other cases apply unchanged.
+func (g *generator) tryArrayIndexOfNumericOperand(expr string) (goExpr string, ok bool, err error) {
+	if !isArrayLiteralMethodCall(expr, "indexOf") {
+		return "", false, nil
+	}
+	objExpr, methodName, argsStr := splitArrayLiteralMethodCall(expr)
+
+	callExpr, fallible, err := g.genArrayIndexOfValueExpr(objExpr, methodName, argsStr, expr)
+	if err != nil {
+		return "", false, err
+	}
+	if fallible {
+		return "", false, fmt.Errorf("unsupported array %q call in codegen condition %q (a fallible result is not supported here)", methodName, expr)
+	}
+
+	g.needsStrconv = true
+	n := g.nextTmp()
+	iv := fmt.Sprintf("__i%d", n)
+	return fmt.Sprintf("func() int {\n\t%s, _ := strconv.Atoi(%s)\n\treturn %s\n}()", iv, callExpr, iv), true, nil
 }
 
 // genTernaryValueExpr emits a value-context ternary `cond ? a : b` (expr,
@@ -2639,9 +2827,14 @@ func (g *generator) genCondition(expr string) (string, error) {
 }
 
 // genOperandTruthiness emits the truthiness form of a single condition
-// operand with no top-level operator: a `.length` expression (needs
-// Config.DataReflectType, since classifying its base requires a type), or a
-// bare field/dot-path. A bool field is used bare (native, already the exact
+// operand with no top-level operator: a bare array-literal `.includes(...)`/
+// `.contains(...)` call (MethodIncludesSlice always returns the canonical
+// string "true" or "false", so its truthiness is a plain `== "true"`
+// comparison — no gopug.Truthy needed, since that helper's falsy-set nuances
+// never apply to a value restricted to exactly those two strings), a
+// `.length` expression (needs Config.DataReflectType, since classifying its
+// base requires a type), or a bare field/dot-path. A bool field is used bare
+// (native, already the exact
 // "true"/"false" form Runtime.isTruthy's FormatBool-derived check mirrors,
 // with no need for gopug.Truthy) and a numeric field is compared against
 // zero (also native — a numeric field's stringify can never produce one of
@@ -2654,6 +2847,17 @@ func (g *generator) genCondition(expr string) (string, error) {
 // with fmt and isTruthy-test that (e.g. an empty slice stringifies to "[]",
 // which is truthy, a footgun this increment doesn't try to reproduce).
 func (g *generator) genOperandTruthiness(expr string) (string, error) {
+	if isArrayLiteralMethodCall(expr, "includes", "contains") {
+		goExpr, fallible, err := g.genValueExpr(expr)
+		if err != nil {
+			return "", err
+		}
+		if fallible {
+			return "", fmt.Errorf("unsupported array includes/contains call in codegen condition %q (a fallible result is not supported here)", expr)
+		}
+		return goExpr + ` == "true"`, nil
+	}
+
 	if dotIdx := findTopLevelDot(expr); dotIdx > 0 && expr[dotIdx+1:] == "length" {
 		if g.rootType == nil {
 			return "", fmt.Errorf("unsupported .length condition %q in codegen (Config.DataReflectType is required to classify operands)", expr)
@@ -2744,13 +2948,22 @@ func formatCanonicalLiteral(f float64) string {
 // genOperand resolves a single condition operand — one side of a
 // comparison, or the whole condition when it's bare — to a Go expression
 // plus its operandKind classification. The supported shapes, checked in
-// this order: a `.length` expression, a numeric literal (parseJSNumber
-// succeeds), a quoted string literal (unwrapQuotedLiteral succeeds), and a
-// bare field/dot-path resolving (via resolveFieldExpr) to a bool, string, or
-// numeric scalar. Anything else — including a non-scalar field, an operator
-// sub-expression, or a method call other than `.length` — returns an error.
+// this order: an array-literal `.indexOf(...)` call (see
+// tryArrayIndexOfNumericOperand — the manageGroupActive/navGroupActive
+// `!== -1` idiom's left operand), a `.length` expression, a numeric literal
+// (parseJSNumber succeeds), a quoted string literal (unwrapQuotedLiteral
+// succeeds), and a bare field/dot-path resolving (via resolveFieldExpr) to a
+// bool, string, or numeric scalar. Anything else — including a non-scalar
+// field, an operator sub-expression, or a method call other than `.length`/
+// array-literal `.indexOf` — returns an error.
 func (g *generator) genOperand(expr string) (string, operandKind, error) {
 	expr = strings.TrimSpace(expr)
+
+	if goExpr, ok, err := g.tryArrayIndexOfNumericOperand(expr); err != nil {
+		return "", operandKind{}, err
+	} else if ok {
+		return goExpr, operandKind{shape: shapeOperandNumericField, numType: reflectTypeInt}, nil
+	}
 
 	if dotIdx := findTopLevelDot(expr); dotIdx > 0 && expr[dotIdx+1:] == "length" {
 		return g.genLengthOperand(expr[:dotIdx], expr)

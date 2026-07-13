@@ -2,7 +2,6 @@ package gopug
 
 import (
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -275,19 +274,26 @@ func TestCodegenUnbufferedNumericBoolRHSDeferred(t *testing.T) {
 	}
 }
 
-// TestCodegenUnbufferedArrayIndexOfBoolRHSDeferred asserts the
+// TestCodegenUnbufferedArrayIndexOfBoolRHSSupported proves the
 // array-literal-".indexOf(...) !== -1" idiom (the manageGroupActive/
-// navGroupActive corpus pattern) is rejected rather than guessed at: it
-// needs array-literal RHS + ".indexOf" support this slice does not add.
-func TestCodegenUnbufferedArrayIndexOfBoolRHSDeferred(t *testing.T) {
-	src := "- var x = [\"a\", \"b\"].indexOf(Name) !== -1\np=x\n"
-	err := genUnbufferedErr(t, src)
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an unsupported-RHS error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("GenerateGo(%q): error %q does not describe an unsupported construct", src, err.Error())
-	}
+// navGroupActive corpus pattern) is now a supported bool-valued `- var` RHS,
+// reading back correctly in both a condition and a stringify position — see
+// codegen_array_indexof_test.go for the full differential coverage of this
+// shape (both real corpus arrays, `.includes`, `=== -1`, and every deferral).
+func TestCodegenUnbufferedArrayIndexOfBoolRHSSupported(t *testing.T) {
+	src := "- var x = [\"a\", \"b\"].indexOf(Name) !== -1\nif x\n  p yes\nelse\n  p no\np=x\n"
+	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
+		name:        "found",
+		src:         src,
+		data:        map[string]any{"Name": "a"},
+		dataLiteral: `opsData{Name: "a"}`,
+	})
+	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
+		name:        "not found",
+		src:         src,
+		data:        map[string]any{"Name": "c"},
+		dataLiteral: `opsData{Name: "c"}`,
+	})
 }
 
 // --- Scope/shadow/leaked-name reuse (unchanged, type-agnostic) ---
