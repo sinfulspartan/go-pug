@@ -1,6 +1,10 @@
 package gopug
 
-import "path/filepath"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
 
 // ResolveComposition is codegen's generate-time counterpart to the
 // interpreter's render-time renderExtends: it resolves ast's extends chain
@@ -44,6 +48,44 @@ func ResolveComposition(ast *DocumentNode, opts *Options) (*DocumentNode, error)
 	}
 
 	return &DocumentNode{Children: reduceBlocks(resolved.Children)}, nil
+}
+
+// ResolveCompositionFile is ResolveComposition's file-path-aware entry
+// point: it reads path, parses it, and resolves its extends+block chain
+// exactly as RenderFile does for the interpreter, so a caller that only has
+// a file path — not an already-parsed AST — gets the same relative-extends
+// resolution RenderFile gives.
+//
+// ResolveComposition alone cannot do this for a subdirectory child with a
+// relative extends (e.g. "extends base.pug" in a file at layout/page.pug):
+// resolving that path requires knowing the child's own directory, which
+// resolveExtendsAST derives from Options.entryFile — an unexported field a
+// caller outside this package cannot set. ResolveCompositionFile mirrors
+// RenderFile's preamble (read the file, copy opts so the caller's struct is
+// never mutated, default Basedir to the file's directory, set entryFile to
+// path) before parsing and resolving, so the resolution is identical to
+// what RenderFile would produce for the same file.
+func ResolveCompositionFile(path string, opts *Options) (*DocumentNode, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %q: %w", path, err)
+	}
+
+	copied := Options{}
+	if opts != nil {
+		copied = *opts
+	}
+	if copied.Basedir == "" {
+		copied.Basedir = filepath.Dir(path)
+	}
+	copied.entryFile = path
+
+	ast, err := Parse(string(src), &copied)
+	if err != nil {
+		return nil, err
+	}
+
+	return ResolveComposition(ast, &copied)
 }
 
 // reduceBlocks returns a new node slice equal to nodes with every top-level
