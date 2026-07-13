@@ -69,36 +69,21 @@ func TestCodegenMixinBlockClosureSurroundedByRealSiblingContent(t *testing.T) {
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
 
-// TestCodegenMixinBlockDynamicContentReferencingParamFailsClosed documents
-// the scope crux this increment's design rests on: block content the
+// TestCodegenMixinBlockDynamicContentReferencingParamNowResolves documents
+// the scope crux the block-content mechanism rests on: block content the
 // interpreter renders against the CALLEE's own isolated parameter scope
-// (Runtime.renderMixinBlockSlot, reached while the mixin's own param frame
-// is active) — so a caller's block content referencing the mixin's OWN
+// (Runtime.renderMixinBlockSlot, reached while the mixin's own param frame is
+// active) — so a caller's block content referencing the mixin's OWN
 // parameter name actually resolves it, a genuinely surprising interpreter
-// behavior codegen does not attempt to reproduce. This pins that interpreter
-// output first, then asserts GenerateGo fails closed instead of guessing.
-func TestCodegenMixinBlockDynamicContentReferencingParamFailsClosed(t *testing.T) {
+// behavior. Unlike a plain non-parameter reference (still fail-closed — see
+// the data-field/caller-local tests below), a reference to a DECLARED
+// parameter is exactly the shape genMixinBlockClosure's own param-scope
+// mechanism models, so this is byte-identical rather than deferred; see
+// codegen_mixin_block_dynamic_test.go for the fuller differential coverage
+// of this mechanism.
+func TestCodegenMixinBlockDynamicContentReferencingParamNowResolves(t *testing.T) {
 	src := "mixin w(label)\n  block\n+w(\"L\")\n  p= label\n"
-
-	tmpl, err := Compile(src, nil)
-	if err != nil {
-		t.Fatalf("Compile(%q): %v", src, err)
-	}
-	want, err := tmpl.Render(map[string]any{})
-	if err != nil {
-		t.Fatalf("interpreter Render: %v", err)
-	}
-	if want != "<p>L</p>" {
-		t.Fatalf("interpreter Render(%q) = %q, want %q (documents the mixin-param-scope surprise the fail-closed codegen error below is guarding)", src, want, "<p>L</p>")
-	}
-
-	err = genMixinErr(t, src, false)
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected a fail-closed dynamic-block-content error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "label") {
-		t.Errorf("GenerateGo error %q does not name the offending identifier %q", err.Error(), "label")
-	}
+	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
 
 // TestCodegenMixinBlockDynamicContentReferencingDataFieldFailsClosed is

@@ -3809,6 +3809,21 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 // discarded without generating it at all, matching
 // Runtime.renderMixinCall/renderMixinBlockSlot's own silent-discard exactly
 // (callerBlock is set regardless of whether the body ever reads it).
+//
+// When the call has non-empty block content AND the callee has a slot (the
+// only case genMixinBlockClosure's own param scope needs anything to bind),
+// each call argument is hoisted into a stable `__margN` local — one per
+// DECLARED parameter, in declaration order, "" for a missing trailing
+// argument, extra call arguments beyond the parameter count ignored — BEFORE
+// the call statement, and that same local (not the inline expression) is
+// what both the helper call and the block-content closure use: a single
+// evaluation feeds both, exactly mirroring
+// Runtime.renderMixinCall/evaluateMixinArg evaluating each argument once
+// caller-side into `scope[param]`, a value both the mixin body and (while its
+// boundary+param frame is active) the block content read from that same map
+// entry. Every OTHER call shape (no slot, or a slot with empty/no block
+// content) is unchanged from before: each argument is still the inline
+// genValueExpr result, no `__margN` local introduced at all.
 func (g *generator) genMixinCall(call *MixinCallNode) error {
 	if g.insideMixinBody {
 		return fmt.Errorf("mixin %q: a nested mixin call inside a mixin body is not supported in codegen yet", call.Name)
@@ -3826,25 +3841,43 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 	}
 	fnName := g.mixinFuncNames[call.Name]
 
+	hasSlot := g.mixinHasSlot[call.Name]
+	dynamicBlock := hasSlot && len(call.BlockContent) > 0
+
 	args := make([]string, 0, len(decl.Parameters)+1)
+	var margNames []string
+	var callID int
+	if dynamicBlock {
+		margNames = make([]string, len(decl.Parameters))
+		callID = g.nextTmp()
+	}
 	for i := range decl.Parameters {
+		var valExpr string
 		if i >= len(call.Arguments) {
-			args = append(args, `""`)
-			continue
+			valExpr = `""`
+		} else {
+			v, fallible, err := g.genValueExpr(call.Arguments[i])
+			if err != nil {
+				return fmt.Errorf("mixin %q argument %d: %w", call.Name, i+1, err)
+			}
+			if fallible {
+				v = g.genFallibleExtraction(v)
+			}
+			valExpr = v
 		}
-		valExpr, fallible, err := g.genValueExpr(call.Arguments[i])
-		if err != nil {
-			return fmt.Errorf("mixin %q argument %d: %w", call.Name, i+1, err)
+		if dynamicBlock {
+			margName := fmt.Sprintf("__marg%d_%d", callID, i)
+			g.writeRaw(fmt.Sprintf("%s := %s\n", margName, valExpr))
+			margNames[i] = margName
+			args = append(args, margName)
+		} else {
+			args = append(args, valExpr)
 		}
-		if fallible {
-			valExpr = g.genFallibleExtraction(valExpr)
-		}
-		args = append(args, valExpr)
 	}
 
-	if g.mixinHasSlot[call.Name] {
+	if hasSlot {
 		if len(call.BlockContent) > 0 {
-			closureExpr, err := g.genMixinBlockClosure(call.BlockContent, call.Name)
+			closureExpr, err := g.genMixinBlockClosure(call.BlockContent, call.Name, decl.Parameters, margNames)
 			if err != nil {
 				return err
 			}
@@ -3865,39 +3898,49 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 // }`, suitable to pass directly as genMixinCall's block-callback argument.
 //
 // Runtime.renderMixinBlockSlot renders this exact content WHILE the callee's
-// own isolated scope is active (Runtime.renderMixinCall sets callerBlock and
-// pushes the mixin's own param frame together, before the body walk ever
-// reaches the slot) — so a dynamic reference inside block content resolves
-// against the CALLEE's parameters, never the caller's data or locals, the
-// opposite of what genValueExpr(call.Arguments[i]) does for the call's own
-// positional arguments a few lines above. Modeling that scope correctly is a
-// later increment; this one sidesteps the question entirely by generating
-// the closure body in an EMPTY, FAIL-CLOSED scope (g.scope = nil,
-// g.paramOnlyScope = true, reusing the exact guard genMixinFunc's own body
-// generation uses): pure static markup (tags/text/static attributes/static
-// classes) performs no identifier lookup at all, so it generates — and
-// renders — identically regardless of which scope would have been active,
-// while ANY identifier reference (an interpolation, a buffered `= expr`, a
-// dynamic attribute/class, an `if` condition, an `each` over a field, or the
-// special `block` keyword used as a value) hits resolveFieldExpr's
-// paramOnlyScope check and fails closed with a clean, generate-time error
-// instead of guessing which scope it would have resolved against.
+// own isolated scope is active (Runtime.renderMixinCall pushes the mixin
+// boundary sentinel and its own param frame together, before the body walk
+// ever reaches the slot) — so a dynamic reference inside block content
+// resolves against the CALLEE's PARAMETERS, bound to THIS call's argument
+// values, never the caller's data or locals: the interpreter's own scope
+// lookup (Runtime.lookup) stops descending at the mixin_boundary sentinel
+// before ever reaching a caller frame, so even a caller local that happens to
+// share a parameter's name is hidden entirely — the parameter wins.
+//
+// This models that scope directly rather than sidestepping it: params and
+// margNames are genMixinCall's own decl.Parameters and the `__margN` local
+// names it hoisted each call argument into (same order, one per declared
+// parameter, "" for a missing trailing argument) — the SAME locals fed to
+// the helper call itself, so the closure and the mixin body see the
+// identical value from a single evaluation, exactly mirroring
+// Runtime.renderMixinCall/evaluateMixinArg evaluating each argument once
+// caller-side into `scope[param]`. The closure body is generated in a scope
+// containing ONLY those bindings (g.scope holds exactly params[i] mapped to
+// margNames[i], g.paramOnlyScope = true, reusing the exact guard
+// genMixinFunc's own body generation uses): a reference to a declared
+// parameter resolves to its `__margN` local, while ANY OTHER identifier (a
+// top-level data field, a caller's `- var` local, `attributes`, the special
+// `block` keyword used as a value) hits resolveFieldExpr's paramOnlyScope
+// check and fails closed with a clean, generate-time error instead of
+// guessing — a deliberate asymmetry: the interpreter renders "" for that
+// missed lookup, this refuses to reproduce it silently.
+//
 // g.insideBlockClosure is set so a nested mixin call written as part of the
 // block content (`+other(...)`) is also rejected, rather than attempted with
-// the wrong (empty) scope, and so is ANY unbuffered code statement
+// the wrong scope, and so is ANY unbuffered code statement
 // (genUnbufferedStatement's own g.insideBlockClosure check) — even a
 // literal-only `- var x = "hi"` a later reference would resolve purely
 // against its own local scope entry, never reaching this function's guard at
-// all, is refused unconditionally: this increment's contract for block
-// content is "pure static markup", and admitting a self-contained local is a
-// distinct, untested claim this increment deliberately does not make.
+// all, is refused unconditionally: a param-scoped unbuffered local inside
+// block content is a distinct, untested claim this increment deliberately
+// does not make.
 //
 // g.body/g.static are saved and swapped out (not reset) for the duration,
 // since — unlike genMixinFunc, which always runs before the main render
 // function's own body walk has written anything — genMixinCall is reached
 // FROM WITHIN that walk, so g.body may already hold real, unrelated
 // statements that must survive this call untouched.
-func (g *generator) genMixinBlockClosure(content []Node, mixinName string) (string, error) {
+func (g *generator) genMixinBlockClosure(content []Node, mixinName string, params []string, margNames []string) (string, error) {
 	savedBody := g.body
 	savedStatic := g.static
 	savedScope := g.scope
@@ -3909,6 +3952,9 @@ func (g *generator) genMixinBlockClosure(content []Node, mixinName string) (stri
 	g.body = strings.Builder{}
 	g.static = strings.Builder{}
 	g.scope = nil
+	for i, p := range params {
+		g.pushScope(p, margNames[i], reflectTypeString, false)
+	}
 	g.paramOnlyScope = true
 	g.insideMixinBody = false
 	g.insideBlockClosure = true
