@@ -2697,8 +2697,10 @@ CHECK_INDEX_OP:
 						return fmt.Sprintf("%v", fv.Interface()), nil
 					}
 				} else if rv.Kind() == reflect.Struct {
-					if fv := rv.FieldByName(rest); fv.IsValid() {
-						return fmt.Sprintf("%v", fv.Interface()), nil
+					if sf, ok := resolveStructField(rv.Type(), rest); ok {
+						if fv := rv.FieldByName(sf.Name); fv.IsValid() {
+							return fmt.Sprintf("%v", fv.Interface()), nil
+						}
 					}
 				}
 			}
@@ -3659,6 +3661,60 @@ func (r *Runtime) lookup(key string) (any, bool) {
 	return current, true
 }
 
+// resolveStructField maps a Pug identifier to an EXPORTED Go struct field of
+// t (a struct type, already pointer-dereferenced), mirroring encoding/json's
+// field-matching precedence so that lowercase Pug locals and reserved-word
+// or snake_case identifiers can bind to exported Go fields:
+//  1. An exact field name — reflect.Type.FieldByName(name). This is the fast
+//     path: the common case (an already-matching field, or a map, which
+//     never reaches this helper) costs nothing beyond the single call. If
+//     the exact match is unexported, it is not returned — resolution falls
+//     through to the loop below instead (an unexported field can still be
+//     found there via a tag or a case-insensitive match on a DIFFERENT,
+//     exported field).
+//  2. A `pug:"name"` struct tag — an explicit escape hatch for any mismatch.
+//     A blank or "-" tag is never matched.
+//  3. A case-insensitive name match — handles the common lowercase-Pug-local
+//     to PascalCase-Go-field case, including Go initialisms (id → ID,
+//     url → URL). The first case-insensitive match in struct declaration
+//     order wins if no tag matches.
+//
+// An unexported field is never returned by any tier: reflect.Value.Interface
+// panics on a value obtained from an unexported field, and an unexported
+// field is unreachable from generated code living in a separate package
+// anyway, so treating it as a miss (the Pug identifier renders "", exactly
+// like any other unresolvable field) is the only safe behavior — matching
+// encoding/json, which likewise never matches unexported fields.
+//
+// Both the interpreter's field access and the codegen backend's struct-field
+// resolution call this single helper so the two engines can never diverge on
+// how a Pug identifier maps onto a Go struct field.
+func resolveStructField(t reflect.Type, name string) (reflect.StructField, bool) {
+	if sf, ok := t.FieldByName(name); ok && sf.IsExported() {
+		return sf, true
+	}
+
+	var ciMatch reflect.StructField
+	haveCI := false
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if tag := f.Tag.Get("pug"); tag != "" && tag != "-" && tag == name {
+			return f, true
+		}
+		if !haveCI && strings.EqualFold(f.Name, name) {
+			ciMatch = f
+			haveCI = true
+		}
+	}
+	if haveCI {
+		return ciMatch, true
+	}
+	return reflect.StructField{}, false
+}
+
 func (r *Runtime) getField(obj any, field string) any {
 	if obj == nil {
 		return nil
@@ -3681,18 +3737,20 @@ func (r *Runtime) getField(obj any, field string) any {
 			return val.Interface()
 		}
 	} else if v.Kind() == reflect.Struct {
-		fieldVal := v.FieldByName(field)
-		if fieldVal.IsValid() {
-			// Dereference pointer-typed fields: nil pointer → nil so that
-			// isTruthy returns false and || / ternary fallbacks are reachable;
-			// non-nil pointer → the pointed-to value so it renders correctly.
-			if fieldVal.Kind() == reflect.Ptr {
-				if fieldVal.IsNil() {
-					return nil
+		if sf, ok := resolveStructField(v.Type(), field); ok {
+			fieldVal := v.FieldByName(sf.Name)
+			if fieldVal.IsValid() {
+				// Dereference pointer-typed fields: nil pointer → nil so that
+				// isTruthy returns false and || / ternary fallbacks are reachable;
+				// non-nil pointer → the pointed-to value so it renders correctly.
+				if fieldVal.Kind() == reflect.Ptr {
+					if fieldVal.IsNil() {
+						return nil
+					}
+					return fieldVal.Elem().Interface()
 				}
-				return fieldVal.Elem().Interface()
+				return fieldVal.Interface()
 			}
-			return fieldVal.Interface()
 		}
 	}
 

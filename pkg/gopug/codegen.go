@@ -447,26 +447,33 @@ func derefType(t reflect.Type) reflect.Type {
 	return t
 }
 
-// typeForPath walks a dot-path of already-split field-name segments starting
-// from typ, dereferencing pointers at each step, and returns the resolved
-// leaf reflect.Type. path is the original dotted expression, used only for
-// the error message. An empty segments slice returns typ unchanged (the
-// path is exactly the starting type itself, e.g. a bound each-loop scalar
-// used bare).
-func typeForPath(typ reflect.Type, path string, segments []string) (reflect.Type, error) {
+// resolveFieldPath walks a dot-path of already-split Pug identifier segments
+// starting from typ, dereferencing pointers at each step and mapping each
+// segment to its Go struct field via resolveStructField (the same exact
+// name → `pug` tag → case-insensitive rule the interpreter's getField uses),
+// so a lowercase or tagged Pug identifier resolves to its exported Go field.
+// Returns the resolved leaf reflect.Type and the dot-joined RESOLVED Go
+// field names (e.g. "TaskPreview.AdjusterName"), not the verbatim Pug
+// segments. path is the original dotted expression, used only for the error
+// message. An empty segments slice returns typ unchanged and an empty
+// goPath (the path is exactly the starting type itself, e.g. a bound
+// each-loop scalar used bare).
+func resolveFieldPath(typ reflect.Type, path string, segments []string) (reflect.Type, string, error) {
 	cur := typ
+	var goSegs []string
 	for _, seg := range segments {
 		cur = derefType(cur)
 		if cur == nil || cur.Kind() != reflect.Struct {
-			return nil, fmt.Errorf("unsupported field path %q: %s is not a field of a struct", path, seg)
+			return nil, "", fmt.Errorf("unsupported field path %q: %s is not a field of a struct", path, seg)
 		}
-		f, ok := cur.FieldByName(seg)
+		f, ok := resolveStructField(cur, seg)
 		if !ok {
-			return nil, fmt.Errorf("unsupported field path %q: %q is not a field of %s", path, seg, cur)
+			return nil, "", fmt.Errorf("unsupported field path %q: %q is not a field of %s", path, seg, cur)
 		}
+		goSegs = append(goSegs, f.Name)
 		cur = f.Type
 	}
-	return cur, nil
+	return cur, strings.Join(goSegs, "."), nil
 }
 
 // Basic (unnamed) reflect.Types for the scalar kinds resolveFieldExpr's
@@ -1788,22 +1795,25 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 		if g.rootType == nil {
 			return val, nil, nil
 		}
-		typ, err := typeForPath(boundTyp, expr, segments[1:])
+		typ, goPath, err := resolveFieldPath(boundTyp, expr, segments[1:])
 		if err != nil {
 			return "", nil, err
 		}
-		return val, typ, nil
+		goExpr := first
+		if goPath != "" {
+			goExpr += "." + goPath
+		}
+		return goExpr, typ, nil
 	}
 
-	goExpr := "d." + val
 	if g.rootType == nil {
-		return goExpr, nil, nil
+		return "d." + val, nil, nil
 	}
-	typ, err := typeForPath(g.rootType, expr, segments)
+	typ, goPath, err := resolveFieldPath(g.rootType, expr, segments)
 	if err != nil {
 		return "", nil, err
 	}
-	return goExpr, typ, nil
+	return "d." + goPath, typ, nil
 }
 
 // genEach emits a for-range loop over a slice field. Only the single-variable
