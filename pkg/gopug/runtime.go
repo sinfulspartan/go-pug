@@ -1521,10 +1521,31 @@ func (r *Runtime) evaluateMixinArg(call *MixinCallNode, i int) (string, error) {
 	return r.evaluateExpr(call.Arguments[i])
 }
 
-// executeStatement executes an unbuffered code statement, handling assignment
-// (var = expr), increment (var++), and decrement (var--).
-// For anything else the expression is evaluated and the result discarded.
-func (r *Runtime) executeStatement(stmt string) error {
+// unbufferedStmtKind classifies an unbuffered code statement's shape, as
+// classifyUnbufferedStmt determines it.
+type unbufferedStmtKind int
+
+const (
+	unbufferedOther     unbufferedStmtKind = iota // bare expression, evaluated and discarded
+	unbufferedIncrement                           // x++
+	unbufferedDecrement                           // x--
+	unbufferedAddAssign                           // x += rhs
+	unbufferedSubAssign                           // x -= rhs
+	unbufferedAssign                              // x = rhs
+)
+
+// classifyUnbufferedStmt strips a leading var/let/const keyword from stmt and
+// classifies its shape in the exact order executeStatement's own dispatch
+// chain checks them, so both the interpreter and the codegen backend split a
+// statement at the same character position — a single source of truth for
+// WHERE a `-` code statement's operator sits, rather than two independently
+// maintained copies of the same scan that could quietly drift apart.
+//
+// varName and rhsExpr are populated for every kind except unbufferedOther,
+// where the whole (var-stripped) statement is returned as rhsExpr for the
+// caller to evaluate-and-discard, matching the interpreter's own fallback
+// behavior for a bare expression statement.
+func classifyUnbufferedStmt(stmt string) (kind unbufferedStmtKind, varName, rhsExpr string) {
 	stmt = strings.TrimSpace(stmt)
 
 	for _, kw := range []string{"var ", "let ", "const "} {
@@ -1535,7 +1556,35 @@ func (r *Runtime) executeStatement(stmt string) error {
 	}
 
 	if strings.HasSuffix(stmt, "++") {
-		varName := strings.TrimSpace(stmt[:len(stmt)-2])
+		return unbufferedIncrement, strings.TrimSpace(stmt[:len(stmt)-2]), ""
+	}
+	if strings.HasSuffix(stmt, "--") {
+		return unbufferedDecrement, strings.TrimSpace(stmt[:len(stmt)-2]), ""
+	}
+
+	if idx := strings.Index(stmt, "+="); idx > 0 {
+		return unbufferedAddAssign, strings.TrimSpace(stmt[:idx]), strings.TrimSpace(stmt[idx+2:])
+	}
+
+	if idx := strings.Index(stmt, "-="); idx > 0 {
+		return unbufferedSubAssign, strings.TrimSpace(stmt[:idx]), strings.TrimSpace(stmt[idx+2:])
+	}
+
+	if idx := findAssignOp(stmt); idx >= 0 {
+		return unbufferedAssign, strings.TrimSpace(stmt[:idx]), strings.TrimSpace(stmt[idx+1:])
+	}
+
+	return unbufferedOther, "", stmt
+}
+
+// executeStatement executes an unbuffered code statement, handling assignment
+// (var = expr), increment (var++), decrement (var--), and += / -=.
+// For anything else the expression is evaluated and the result discarded.
+func (r *Runtime) executeStatement(stmt string) error {
+	kind, varName, rhsExpr := classifyUnbufferedStmt(stmt)
+
+	switch kind {
+	case unbufferedIncrement:
 		val, _ := r.lookup(varName)
 		n, ok := toFloat(val)
 		if !ok {
@@ -1543,9 +1592,8 @@ func (r *Runtime) executeStatement(stmt string) error {
 		}
 		r.setVar(varName, n+1)
 		return nil
-	}
-	if strings.HasSuffix(stmt, "--") {
-		varName := strings.TrimSpace(stmt[:len(stmt)-2])
+
+	case unbufferedDecrement:
 		val, _ := r.lookup(varName)
 		n, ok := toFloat(val)
 		if !ok {
@@ -1553,61 +1601,48 @@ func (r *Runtime) executeStatement(stmt string) error {
 		}
 		r.setVar(varName, n-1)
 		return nil
-	}
 
-	if strings.Contains(stmt, "+=") {
-		if idx := strings.Index(stmt, "+="); idx > 0 {
-			varName := strings.TrimSpace(stmt[:idx])
-			rhsExpr := strings.TrimSpace(stmt[idx+2:])
-			cur, _ := r.lookup(varName)
-			curF, _ := toFloat(cur)
-			rhs, err := r.evaluateExpr(rhsExpr)
-			if err != nil {
-				return err
-			}
-			rhsF, ok := toFloat(rhs)
-			if ok {
-				r.setVar(varName, curF+rhsF)
-			} else {
-				r.setVar(varName, fmt.Sprintf("%v", cur)+rhs)
-			}
-			return nil
+	case unbufferedAddAssign:
+		cur, _ := r.lookup(varName)
+		curF, _ := toFloat(cur)
+		rhs, err := r.evaluateExpr(rhsExpr)
+		if err != nil {
+			return err
 		}
-	}
-
-	if strings.Contains(stmt, "-=") {
-		if idx := strings.Index(stmt, "-="); idx > 0 {
-			varName := strings.TrimSpace(stmt[:idx])
-			rhsExpr := strings.TrimSpace(stmt[idx+2:])
-			cur, _ := r.lookup(varName)
-			curF, _ := toFloat(cur)
-			rhs, err := r.evaluateExpr(rhsExpr)
-			if err != nil {
-				return err
-			}
-			rhsF, ok := toFloat(rhs)
-			if ok {
-				r.setVar(varName, curF-rhsF)
-			} else {
-				// Non-numeric RHS: no meaningful subtraction — leave the
-				// variable unchanged and return an error so the template
-				// author is informed rather than silently losing the update.
-				return fmt.Errorf("operator -=: cannot subtract non-numeric value %q from %v", rhs, cur)
-			}
-			return nil
+		rhsF, ok := toFloat(rhs)
+		if ok {
+			r.setVar(varName, curF+rhsF)
+		} else {
+			r.setVar(varName, fmt.Sprintf("%v", cur)+rhs)
 		}
-	}
+		return nil
 
-	if idx := findAssignOp(stmt); idx >= 0 {
-		varName := strings.TrimSpace(stmt[:idx])
-		rhsExpr := strings.TrimSpace(stmt[idx+1:])
+	case unbufferedSubAssign:
+		cur, _ := r.lookup(varName)
+		curF, _ := toFloat(cur)
+		rhs, err := r.evaluateExpr(rhsExpr)
+		if err != nil {
+			return err
+		}
+		rhsF, ok := toFloat(rhs)
+		if !ok {
+			// Non-numeric RHS: no meaningful subtraction — leave the
+			// variable unchanged and return an error so the template
+			// author is informed rather than silently losing the update.
+			return fmt.Errorf("operator -=: cannot subtract non-numeric value %q from %v", rhs, cur)
+		}
+		r.setVar(varName, curF-rhsF)
+		return nil
+
+	case unbufferedAssign:
 		rawVal := r.evaluateExprRaw(rhsExpr)
 		r.setVar(varName, rawVal)
 		return nil
-	}
 
-	_, err := r.evaluateExpr(stmt)
-	return err
+	default: // unbufferedOther
+		_, err := r.evaluateExpr(rhsExpr)
+		return err
+	}
 }
 
 // setVar writes a variable, updating the innermost scope that already contains

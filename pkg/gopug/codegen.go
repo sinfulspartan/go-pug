@@ -93,7 +93,13 @@ type Config struct {
 // receiver, most other method calls, an array/object literal, …), or a
 // non-scalar field type (struct, slice, map, pointer, interface, float32,
 // …) reached outside of index/`.length`, is out of scope and returns an
-// error rather than guessing. When
+// error rather than guessing. An unbuffered `- var x = <rhs>` assignment
+// (typed mode only) is also supported for a narrow, separately-proven RHS
+// grammar — a string literal, a template literal, string concatenation, a
+// ternary/`||`/`&&` over string operands, or a string-typed field/dot-path —
+// emitted as a Go string local later references resolve to (see
+// genUnbufferedAssign/genAssignRHS for the bounded-agreement proof this rests
+// on, which is narrower than genValueExpr's own grammar on purpose). When
 // DataReflectType is nil, every field is assumed to be a string (the
 // original untyped skeleton behavior), and only static/bare attributes and
 // bare-field conditions are supported, unchanged.
@@ -167,11 +173,25 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 type generator struct {
 	body   strings.Builder
 	static strings.Builder
-	// scope holds each-loop item variables currently in scope, innermost
-	// last, so a bare identifier or dot-path whose first segment matches one
-	// of them resolves to the Go loop variable directly instead of being
-	// treated as a field of d.
+	// scope holds each-loop item variables AND `- var` locals currently in
+	// scope, innermost last, so a bare identifier or dot-path whose first
+	// segment matches one of them resolves to the Go loop variable/local
+	// directly instead of being treated as a field of d.
 	scope []scopeVar
+	// leakedVarNames records the Pug name of every `- var` local a
+	// scopeRestore call has ever popped out of scope (see scopeRestore's own
+	// doc comment for why this is necessary: Runtime's real scopeStack does
+	// not frame a scope at several of the boundaries codegen's g.scope does,
+	// so a popped `- var` name can still be live in the interpreter).
+	// resolveFieldExpr consults this, after a scope-lookup miss and before
+	// ever falling through to struct-field resolution, to refuse a reference
+	// that could silently disagree with the interpreter instead of guessing.
+	// Once a name is recorded it stays recorded for the rest of code
+	// generation (deliberately global, not un-recorded when a same-named
+	// local later goes out of scope again elsewhere) — the safe, simple
+	// choice, since generation is a single one-shot pass with no use for
+	// "forgetting" a name was ever unsafe.
+	leakedVarNames map[string]bool
 	// rootType is the reflect.Type of the data struct (Config.DataReflectType).
 	// When nil, the generator is in type-blind, string-assuming mode; when
 	// non-nil, resolveFieldExpr walks it (and each scope entry's typ) to
@@ -405,24 +425,35 @@ func (g *generator) genFallibleTemplatePart(goExpr string) string {
 	return fmt.Sprintf("func() string {\n\t%s, _ := %s\n\treturn %s\n}()", valVar, goExpr, valVar)
 }
 
-// scopeVar is one entry in the generator's each-loop variable scope stack: a
-// Go loop variable name paired with its element reflect.Type (nil in
-// type-blind mode).
+// scopeVar is one entry in the generator's local-variable scope stack: a Pug
+// identifier (name) paired with the Go expression/variable name that
+// generated code substitutes for it (goName), its reflect.Type (nil in
+// type-blind mode), and whether it is a `- var` local (isVarLocal) as
+// opposed to an each-loop item variable. An each-loop item variable pushes
+// goName == name (the Go range variable is named after the Pug one,
+// unchanged from before this field existed) and isVarLocal == false; a
+// `- var` local pushes a prefixed goName (see goLocalNameForVar) and
+// isVarLocal == true, so a Pug var can never collide with the generated
+// function's own receiver/writer/tmp names, AND so scopeRestore can tell the
+// two apart when a scope pop needs to record which names go out of scope
+// (see scopeRestore's own doc comment for why that distinction matters).
 type scopeVar struct {
-	name string
-	typ  reflect.Type
+	name       string
+	goName     string
+	typ        reflect.Type
+	isVarLocal bool
 }
 
 // lookupScope searches the scope stack innermost-first for name, returning
-// its bound type and whether it was found. A found entry's typ is nil only
+// its full entry and whether it was found. A found entry's typ is nil only
 // when the generator itself is in type-blind mode (rootType == nil).
-func (g *generator) lookupScope(name string) (reflect.Type, bool) {
+func (g *generator) lookupScope(name string) (scopeVar, bool) {
 	for i := len(g.scope) - 1; i >= 0; i-- {
 		if g.scope[i].name == name {
-			return g.scope[i].typ, true
+			return g.scope[i], true
 		}
 	}
-	return nil, false
+	return scopeVar{}, false
 }
 
 func (g *generator) isBound(name string) bool {
@@ -430,12 +461,70 @@ func (g *generator) isBound(name string) bool {
 	return ok
 }
 
-func (g *generator) pushScope(name string, typ reflect.Type) {
-	g.scope = append(g.scope, scopeVar{name: name, typ: typ})
+func (g *generator) pushScope(name, goName string, typ reflect.Type, isVarLocal bool) {
+	g.scope = append(g.scope, scopeVar{name: name, goName: goName, typ: typ, isVarLocal: isVarLocal})
 }
 
-func (g *generator) popScope() {
-	g.scope = g.scope[:len(g.scope)-1]
+// scopeMark returns the current scope depth, for a caller that is about to
+// process a list of sibling nodes (a tag's children, an if/else branch's
+// body, an each-loop's body) to save and later restore with scopeRestore —
+// so any `- var`/each-loop binding introduced while processing that list
+// goes out of scope again once the list finishes, exactly mirroring the Go
+// lexical block the generated code for that list lives in.
+func (g *generator) scopeMark() int {
+	return len(g.scope)
+}
+
+// scopeRestore truncates the scope stack back to mark, discarding every
+// binding pushed since the matching scopeMark call — and, for every
+// `- var` local among those discarded bindings (isVarLocal — never an
+// each-loop item variable), records its Pug name into leakedVarNames FIRST,
+// so a LATER out-of-scope reference to that same name is rejected by
+// resolveFieldExpr instead of silently falling through to struct-field
+// resolution.
+//
+// This exists because Runtime's OWN scopeStack does not frame a scope at
+// every one of these boundaries the way codegen's g.scope does: renderEach
+// (and a mixin call) push/pop a real scopeStack frame, matching codegen's
+// each-loop-body pop exactly, but renderConditional and a tag's children
+// loop do NOT push a frame at all — a `- var` assigned inside an `if`
+// branch or a tag's children is stored via Runtime.setVar into whichever
+// frame is already innermost at that point (typically the enclosing
+// each-loop iteration's frame, or the function-wide root frame), so it
+// stays live and readable by a LATER SIBLING after that `if`/tag block
+// closes, for as long as that enclosing frame itself survives. If the
+// referenced name also happens to satisfy resolveStructField's exact/tag/
+// case-insensitive matching against a real struct field — proven
+// empirically to fire for both an EXACT-name collision (Runtime.setVar's
+// walk-and-overwrite finds and mutates an existing same-named top-level
+// key, so a later read returns whatever was last assigned, not any
+// "original" field value) and a case-differing collision (resolveStructField's
+// third, case-insensitive tier) — a naive codegen that just pops the
+// binding and falls through to `d.Field` would silently read a value the
+// interpreter never produces. Since this is exactly as true for an
+// each-loop-body `- var` (Runtime's frame pop there is real, but nothing
+// stops a DIFFERENT already-existing outer-frame same-named key from being
+// mutated during the loop, or a differently-cased struct field from
+// matching afterward) as it is for an if/tag-children one, EVERY
+// scopeRestore call in the generator applies this same guard uniformly —
+// deliberately more conservative than only guarding the exact shape the bug
+// was first found in. Only a `- var` binding is ever recorded (an
+// each-loop item variable is a pre-existing, differently-typed mechanism
+// this feature does not touch); the top-level statement list is never
+// scope-restored at all (no call site does it), so a `- var` declared at
+// the top level — the real-world headline shape this feature targets —
+// never enters leakedVarNames and stays resolvable for the rest of the
+// generated function, exactly like Runtime's own root-frame `- var`.
+func (g *generator) scopeRestore(mark int) {
+	for i := mark; i < len(g.scope); i++ {
+		if g.scope[i].isVarLocal {
+			if g.leakedVarNames == nil {
+				g.leakedVarNames = make(map[string]bool)
+			}
+			g.leakedVarNames[g.scope[i].name] = true
+		}
+	}
+	g.scope = g.scope[:mark]
 }
 
 // derefType unwraps t through any number of pointer indirections, returning
@@ -588,11 +677,14 @@ func (g *generator) genTag(tag *TagNode) error {
 	}
 	g.writeStatic(">")
 
+	mark := g.scopeMark()
 	for _, child := range tag.Children {
 		if err := g.genNode(child); err != nil {
+			g.scopeRestore(mark)
 			return err
 		}
 	}
+	g.scopeRestore(mark)
 
 	g.writeStatic("</" + tag.Name + ">")
 	return nil
@@ -796,14 +888,15 @@ func (g *generator) genInterpolation(n *InterpolationNode) error {
 // genCode emits a buffered, escaped code node (`= expr`) as a write of
 // html.EscapeString(genValueExpr(expr)) — the same escaping genInterpolation
 // applies, since `= expr` and `#{expr}` are both HTML-escaped-by-default
-// value positions in the interpreter. An unbuffered statement (`- expr`,
-// executed for its side effect with no output) and an unescaped buffered
-// node (`!= expr`, written raw) are both out of scope for this increment —
-// the interpreter's unbuffered path can run arbitrary variable
-// assignment/loop statements genValueExpr has no model for, and unescaped
-// output would need a value-context compiler decision about whether the
-// emitted Go is trusted not to need escaping — so both return a clear
-// unsupported error instead of guessing.
+// value positions in the interpreter. An unescaped buffered node (`!= expr`,
+// written raw) is out of scope for this increment — it would need a
+// value-context compiler decision about whether the emitted Go is trusted
+// not to need escaping — so it returns a clear unsupported error instead of
+// guessing. An unbuffered statement (`- stmt`, executed for its side effect
+// with no output) is dispatched to genUnbufferedStatement, which supports
+// only the plain-assignment subset (`- var x = <rhs>`) described there; every
+// other unbuffered shape (mutation, a bare expression statement) still
+// returns a clear unsupported error.
 func (g *generator) genCode(n *CodeNode) error {
 	switch n.Type {
 	case CodeBuffered:
@@ -820,8 +913,246 @@ func (g *generator) genCode(n *CodeNode) error {
 	case CodeUnescaped:
 		return fmt.Errorf("unsupported unescaped code != %s in codegen", n.Expression)
 	default:
-		return fmt.Errorf("unsupported unbuffered code - %s in codegen", n.Expression)
+		return g.genUnbufferedStatement(n.Expression)
 	}
+}
+
+// genUnbufferedStatement emits an unbuffered code statement (`- stmt`),
+// classified by classifyUnbufferedStmt — the SAME classifier
+// Runtime.executeStatement itself uses, so codegen and the interpreter agree
+// character-for-character on where a statement's operator sits. Only a plain
+// assignment (`- var x = <rhs>`, dispatched to genUnbufferedAssign) is
+// supported in this increment; a mutation (`x++`/`x--`/`x += e`/`x -= e`) and
+// a bare expression statement (evaluated and discarded by the interpreter,
+// possibly for a side effect or an error genValueExpr has no model for) each
+// return their own clear, distinct unsupported error instead of guessing.
+func (g *generator) genUnbufferedStatement(stmt string) error {
+	kind, varName, rhsExpr := classifyUnbufferedStmt(stmt)
+
+	switch kind {
+	case unbufferedAssign:
+		return g.genUnbufferedAssign(varName, rhsExpr)
+	case unbufferedIncrement, unbufferedDecrement:
+		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (increment/decrement is not supported yet)", stmt)
+	case unbufferedAddAssign, unbufferedSubAssign:
+		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (+=/-= is not supported yet)", stmt)
+	default:
+		return fmt.Errorf("unsupported unbuffered code - %s in codegen (a bare expression statement is not supported yet)", stmt)
+	}
+}
+
+// goLocalNameForVar derives the Go local variable name a `- var name = rhs`
+// unbuffered assignment binds to: a fixed "__v_" prefix followed by name
+// itself. The prefix guarantees the emitted local can never collide with the
+// generated function's own receiver ("d"), writer ("w"), the "gopug" import
+// alias, or any of the generator's own tmp-name families (__vN, __errN,
+// __iN, __eN, __lN, __okN, all of which have a bare digit immediately after
+// the letter, never an underscore) — so a Pug var literally named "data" or
+// "d" still can never shadow the struct receiver.
+func goLocalNameForVar(name string) string {
+	return "__v_" + name
+}
+
+// validGoIdentifier reports whether name is a valid Go identifier: an
+// underscore or ASCII letter followed by any number of underscores, ASCII
+// letters, or digits. A Pug `- var` target normally already satisfies this
+// (Pug identifiers share Go's basic identifier grammar, minus JS's leading
+// "$"), but genUnbufferedAssign checks it explicitly rather than assume, so
+// a stray character produces a clean deferral instead of malformed Go source.
+func validGoIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		isLetter := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		if i == 0 && !isLetter {
+			return false
+		}
+		if i > 0 && !isLetter && !isDigit {
+			return false
+		}
+	}
+	return true
+}
+
+// genUnbufferedAssign emits a `- var x = <rhs>` unbuffered assignment
+// (varName/rhsExpr already split by classifyUnbufferedStmt) as a Go string
+// local, then registers it in the generator's scope so later references to x
+// resolve to that local instead of a struct field.
+//
+// Support is intentionally narrow — see genAssignRHS for the exact RHS
+// grammar — because of the bounded-agreement invariant this whole feature
+// rests on: Runtime.executeStatement stores r.evaluateExprRaw(rhs) (a RAW,
+// un-stringified value) and only stringifies it later, at each USE site
+// (Runtime.lookupAndStringify). Runtime.evaluateExprRaw special-cases very
+// few RHS shapes (a top-level ternary, recursing into itself on the taken
+// branch; a top-level `.split(...)` call; an inline object/array literal; a
+// top-level index expression; a bare identifier/dot-path, resolved via
+// Runtime.lookup and returned RAW/un-stringified) — every OTHER shape falls
+// through to its own `s, _ := r.evaluateExpr(expr); return s`, meaning the
+// "raw" value IS already the plain string genValueExpr independently proves
+// equal to r.evaluateExpr(rhs). So a top-level ternary/`||`/`&&`/string
+// literal/template literal/`+` concatenation is safe by that fallthrough
+// (recursively, for whichever of these shapes each operand/branch is in
+// turn) — genAssignRHS supports exactly these. A bare identifier/dot-path
+// is the one shape that does NOT fall through: Runtime.lookup returns the
+// field's raw Go value directly, so the invariant only holds when that
+// value's later stringification (Runtime.lookupAndStringify's per-type
+// switch) is byte-identical to genScalarStringify's per-type Go code — true
+// for every scalar Go kind lookupAndStringify special-cases (string, bool,
+// every sized int/uint kind, float64), by construction: genScalarStringify
+// emits exactly those switch cases' own strconv calls. This increment still
+// restricts the bare-field/dot-path leaf to a string-typed field only,
+// matching the real-world shapes (a computed string attribute value) this
+// increment targets; the broader scalar case is provably just as safe (the
+// same per-Kind-matching argument above applies unchanged) but is left for a
+// later increment rather than widened here. Every other RHS shape
+// (`.split(...)`, an index expression, an array/object literal, a numeric
+// field, a fallible operator `/`/`%`/`*`/`-`, a method call, …) is deferred.
+//
+// A `- var` re-declaring a name already bound in scope (whether from an
+// outer `- var`, an each-loop item variable, or an outer var of the same
+// name) is also deferred: Runtime.setVar does not create a fresh binding in
+// that case — it MUTATES the existing one in place, wherever in the
+// interpreter's scopeStack it lives, which does not (in general) correspond
+// to Go's own block-scoped shadowing that a nested `:=` would produce. A nil
+// Config.DataReflectType (type-blind mode) is also deferred: there is no
+// type information to prove the RHS is string-shaped at all.
+func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
+	if g.rootType == nil {
+		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (Config.DataReflectType is required to type-check a `- var` right-hand side)", varName)
+	}
+	if !validGoIdentifier(varName) {
+		return fmt.Errorf("unsupported unbuffered assignment target %q in codegen (only a bare identifier is supported as a `- var` left-hand side)", varName)
+	}
+	if g.isBound(varName) {
+		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (re-declaring or re-assigning an already-bound variable is not supported yet)", varName)
+	}
+
+	goExpr, err := g.genAssignRHS(rhsExpr)
+	if err != nil {
+		return fmt.Errorf("unbuffered assignment to %q: %w", varName, err)
+	}
+
+	goName := goLocalNameForVar(varName)
+	g.writeRaw(fmt.Sprintf("%s := %s\n", goName, goExpr))
+	// The interpreter always evaluates the RHS, even when the variable is
+	// never read afterward (side effects, or simply an unused local); Go
+	// rejects a declared-and-unused local, so this blank-identifier use
+	// keeps the RHS's evaluation intact without requiring a reference.
+	g.body.WriteString(fmt.Sprintf("_ = %s\n", goName))
+
+	g.pushScope(varName, goName, reflectTypeString, true)
+	return nil
+}
+
+// genAssignRHS compiles a `- var x = <rhs>` right-hand side to a Go string
+// expression, for the narrow, PROVEN-safe grammar subset genUnbufferedAssign
+// documents: a top-level ternary (condition via genCondition, both branches
+// recursed through genAssignRHS, emitted as a func() string {}() IIFE — the
+// same shape genTernaryValueExpr uses for a total ternary), `||`/`&&`
+// (recursed operands combined via genOrValueExpr/genAndValueExpr, matching
+// genValueExpr's own value-context logical operators exactly), a quoted
+// string literal, a backtick template literal (delegated to
+// genTemplateLiteral unchanged — genValueExpr's OWN grammar inside `${...}`
+// is fine here even though it is broader than this function's, because
+// Runtime.evaluateExprRaw never descends into a template literal's
+// structure at all: ANY top-level template literal falls straight through to
+// its `s, _ := r.evaluateExpr(expr); return s` fallback, regardless of what
+// its `${...}` parts contain), `+` string concatenation (both operands
+// recursed through genAssignRHS, combined via gopug.Add — matching
+// genValueExpr's own total `+` case), and finally a bare identifier/dot-path
+// that resolveFieldExpr proves is a string-typed field (see
+// genUnbufferedAssign's doc comment for why the leaf is restricted to
+// string). Every other shape — a numeric/bool/other-scalar field, an
+// arithmetic operator, a comparison, `!`, an index expression, a method
+// call, an array/object literal, anything genValueExpr itself already
+// rejects — returns a descriptive "unsupported" error instead of guessing;
+// this function is deliberately narrower than genValueExpr's own grammar,
+// not a synonym for it, precisely because the bounded-agreement invariant
+// this feature depends on is not proven for genValueExpr's full grammar in
+// RAW-assignment position (see genUnbufferedAssign).
+func (g *generator) genAssignRHS(expr string) (string, error) {
+	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
+
+	if idx := findTernary(expr); idx >= 0 {
+		rest := expr[idx+1:]
+		colonIdx := findBinaryOp(rest, ":")
+		if colonIdx < 0 {
+			return "", fmt.Errorf("malformed ternary expression in codegen unbuffered assignment: %s", expr)
+		}
+		condExpr, err := g.genCondition(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		trueExpr, err := g.genAssignRHS(rest[:colonIdx])
+		if err != nil {
+			return "", err
+		}
+		falseExpr, err := g.genAssignRHS(rest[colonIdx+1:])
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("func() string {\n\tif %s {\n\t\treturn %s\n\t}\n\treturn %s\n}()", condExpr, trueExpr, falseExpr), nil
+	}
+
+	if idx := findBinaryOp(expr, "||"); idx >= 0 {
+		leftExpr, err := g.genAssignRHS(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rightExpr, err := g.genAssignRHS(expr[idx+2:])
+		if err != nil {
+			return "", err
+		}
+		g.needsGopug = true
+		goExpr, _ := g.genOrValueExpr(leftExpr, false, rightExpr, false)
+		return goExpr, nil
+	}
+	if idx := findBinaryOp(expr, "&&"); idx >= 0 {
+		leftExpr, err := g.genAssignRHS(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rightExpr, err := g.genAssignRHS(expr[idx+2:])
+		if err != nil {
+			return "", err
+		}
+		g.needsGopug = true
+		goExpr, _ := g.genAndValueExpr(leftExpr, false, rightExpr, false)
+		return goExpr, nil
+	}
+
+	if lit, ok := unwrapQuotedLiteral(expr); ok {
+		return strconv.Quote(lit), nil
+	}
+	if strings.HasPrefix(expr, "`") {
+		return g.genTemplateLiteral(expr)
+	}
+
+	if idx := findBinaryOp(expr, "+"); idx >= 0 {
+		leftExpr, err := g.genAssignRHS(expr[:idx])
+		if err != nil {
+			return "", err
+		}
+		rightExpr, err := g.genAssignRHS(expr[idx+1:])
+		if err != nil {
+			return "", err
+		}
+		g.needsGopug = true
+		return "gopug.Add(" + leftExpr + ", " + rightExpr + ")", nil
+	}
+
+	resolvedExpr, typ, err := g.resolveFieldExpr(expr)
+	if err != nil {
+		return "", fmt.Errorf("unsupported unbuffered assignment right-hand side %q in codegen: %w", expr, err)
+	}
+	if typ == nil || typ.Kind() != reflect.String {
+		return "", fmt.Errorf("unsupported unbuffered assignment right-hand side %q in codegen (only a string literal, template literal, string concatenation, a ternary/||/&& over string operands, or a string-typed field/dot-path is supported as a `- var` right-hand side in this increment)", expr)
+	}
+	return convertExpr(resolvedExpr, typ, reflectTypeString, "string"), nil
 }
 
 // genValueExpr emits a Go expression equal to what Runtime.evaluateExpr(expr)
@@ -1766,16 +2097,21 @@ func (g *generator) genScalarStringify(goExpr string, typ reflect.Type) (string,
 
 // resolveFieldExpr translates a Pug bare identifier or dot-path into the
 // equivalent Go expression against the data parameter d, taking any
-// currently bound each-loop variables into account, and — when the
-// generator is type-aware (rootType != nil) — resolves the expression's
-// reflect.Type by walking the struct fields along the path (an each-loop
-// variable's own type if the first segment is bound, otherwise rootType),
-// dereferencing pointers at each step. In type-blind mode (rootType == nil)
-// the returned type is always nil, preserving the untyped skeleton's
-// behavior exactly. Anything that isn't a bare identifier or dot-path (an
-// operator, method call, literal, index expression, …), or a dot-path
-// segment that isn't a field of the struct type it's resolved against, is
-// out of scope for this increment and returns an error.
+// currently bound each-loop variables/`- var` locals into account, and —
+// when the generator is type-aware (rootType != nil) — resolves the
+// expression's reflect.Type by walking the struct fields along the path (an
+// each-loop variable's own type if the first segment is bound, otherwise
+// rootType), dereferencing pointers at each step. In type-blind mode
+// (rootType == nil) the returned type is always nil, preserving the untyped
+// skeleton's behavior exactly. Anything that isn't a bare identifier or
+// dot-path (an operator, method call, literal, index expression, …), or a
+// dot-path segment that isn't a field of the struct type it's resolved
+// against, is out of scope for this increment and returns an error — as is
+// a first segment recorded in leakedVarNames (a `- var` local that went out
+// of scope at a point where the interpreter's own scoping might still keep
+// it live; see scopeRestore's doc comment), checked BEFORE ever falling
+// through to struct-field resolution so a coincidentally-matching field
+// name is never silently substituted for it.
 func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -1791,19 +2127,23 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 	}
 
 	first := segments[0]
-	if boundTyp, ok := g.lookupScope(first); ok {
+	if sv, ok := g.lookupScope(first); ok {
 		if g.rootType == nil {
 			return val, nil, nil
 		}
-		typ, goPath, err := resolveFieldPath(boundTyp, expr, segments[1:])
+		typ, goPath, err := resolveFieldPath(sv.typ, expr, segments[1:])
 		if err != nil {
 			return "", nil, err
 		}
-		goExpr := first
+		goExpr := sv.goName
 		if goPath != "" {
 			goExpr += "." + goPath
 		}
 		return goExpr, typ, nil
+	}
+
+	if g.leakedVarNames[first] {
+		return "", nil, fmt.Errorf("unsupported reference to %q in codegen: an unbuffered `- var %s` was declared inside an if/tag/each block the interpreter does not scope the same way codegen does, so it may still be live there at runtime even though codegen's own scope has already closed it — not supported yet", first, first)
 	}
 
 	if g.rootType == nil {
@@ -1849,14 +2189,15 @@ func (g *generator) genEach(n *EachNode) error {
 	}
 
 	g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
-	g.pushScope(n.ItemVar, elemTyp)
+	mark := g.scopeMark()
+	g.pushScope(n.ItemVar, n.ItemVar, elemTyp, false)
 	for _, child := range n.Body {
 		if err := g.genNode(child); err != nil {
-			g.popScope()
+			g.scopeRestore(mark)
 			return err
 		}
 	}
-	g.popScope()
+	g.scopeRestore(mark)
 	g.flushStatic()
 	g.body.WriteString("}\n")
 	return nil
@@ -1899,20 +2240,25 @@ func (g *generator) genConditional(n *ConditionalNode) error {
 	}
 
 	g.writeRaw(fmt.Sprintf("if %s {\n", cond))
+	mark := g.scopeMark()
 	for _, child := range n.Consequent {
 		if err := g.genNode(child); err != nil {
+			g.scopeRestore(mark)
 			return err
 		}
 	}
+	g.scopeRestore(mark)
 	g.flushStatic()
 
 	if len(n.Alternate) > 0 {
 		g.body.WriteString("} else {\n")
 		for _, child := range n.Alternate {
 			if err := g.genNode(child); err != nil {
+				g.scopeRestore(mark)
 				return err
 			}
 		}
+		g.scopeRestore(mark)
 		g.flushStatic()
 	}
 
