@@ -256,18 +256,22 @@ func TestGenBoolExprBoundary(t *testing.T) {
 
 // --- Deferrals ---
 
-// TestCodegenUnbufferedNumericBoolRHSDeferred asserts a numeric field RHS is
-// rejected with a clear, distinct "numeric-valued" message — not the generic
-// string-grammar message — since a future slice, not this one, owns
-// FormatFloat stringify + "!= 0" truthiness for a numeric local.
+// TestCodegenUnbufferedNumericBoolRHSDeferred asserts a bare numeric field
+// RHS is NOT treated as bool-valued (genBoolExpr's exprIsBoolTyped correctly
+// rejects a non-Bool Kind) — it falls through past genBoolExpr to the
+// numeric-local classifier (genNumericExpr, a later slice than this
+// bool-local one), which now accepts it as a genuine numeric local rather
+// than erroring. See codegen_unbuffered_numeric_test.go for that slice's own
+// coverage; this test's remaining job is only to prove genBoolExpr itself
+// never mis-classifies a numeric field as bool.
 func TestCodegenUnbufferedNumericBoolRHSDeferred(t *testing.T) {
-	src := "- var x = Count\np=x\n"
-	err := genUnbufferedErr(t, src)
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an unsupported-RHS error, got nil", src)
+	g := &generator{rootType: opsDataReflectType}
+	_, ok, err := g.genBoolExpr("Count")
+	if err != nil {
+		t.Fatalf("genBoolExpr(%q): unexpected error: %v", "Count", err)
 	}
-	if !strings.Contains(err.Error(), "numeric-valued") {
-		t.Errorf("GenerateGo(%q): error %q does not describe an unsupported numeric-valued local", src, err.Error())
+	if ok {
+		t.Errorf("genBoolExpr(%q): ok = true, want false (a numeric field must not be classified as bool-valued)", "Count")
 	}
 }
 

@@ -546,13 +546,13 @@ func TestCodegenUnbufferedNonStringRawRHSDeferred(t *testing.T) {
 }
 
 // TestCodegenUnbufferedNonStringFieldRHSDeferred asserts a bare RHS that
-// resolves to a non-string scalar field (here, a numeric field) is rejected:
-// this slice's bare-field/dot-path leaf is deliberately restricted to a
-// string-typed field only, matching the real-world shapes it targets (see
-// genUnbufferedAssign's doc comment for why the broader scalar case is
-// provably just as safe but intentionally out of scope here).
+// resolves to a scalar field kind neither this string-local path nor the
+// numeric-local classifier (genNumericExpr) supports — a float32 field,
+// which genScalarStringify itself has no case for — is still rejected. Every
+// OTHER numeric kind (int, the sized int/uint kinds, float64) is now a
+// supported numeric local; see codegen_unbuffered_numeric_test.go.
 func TestCodegenUnbufferedNonStringFieldRHSDeferred(t *testing.T) {
-	src := "- var x = Count\np=x\n"
+	src := "- var x = Float32Val\np=x\n"
 	err := genUnbufferedErr(t, src)
 	if err == nil {
 		t.Fatalf("GenerateGo(%q): expected an unsupported-RHS error, got nil", src)

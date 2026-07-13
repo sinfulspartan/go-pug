@@ -196,8 +196,11 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 // TestCodegenValueExprUnsupported asserts that every construct outside this
 // increment's value-context grammar — every operator besides `-`, `+`, `*`,
 // `/`, `%`, a top-level ternary, and `||`/`&&`/`!`/comparison, an
-// array/object literal, a still-deferred method call, an unbuffered code
-// statement, and unescaped buffered output — is rejected with a clear
+// array/object literal, a still-deferred method call, a still-unsupported
+// unbuffered code statement (a mutation, here — a `- var` assignment now has
+// its own dedicated coverage in codegen_unbuffered_test.go,
+// codegen_unbuffered_bool_test.go, and codegen_unbuffered_numeric_test.go),
+// and unescaped buffered output — is rejected with a clear
 // "unsupported" error rather than silently emitting something that might not
 // match the interpreter. A template literal itself is no longer in this list
 // (genTemplateLiteral now supports it, see codegen_valueexpr_template_test.go),
@@ -238,7 +241,7 @@ func TestCodegenValueExprUnsupported(t *testing.T) {
 		{name: "template literal with a deferred ${} method call", src: "p= `hello ${Flag.toFixed(2)}`\n"},
 		{name: "array literal", src: "p= [1, 2, 3]\n"},
 		{name: "object literal", src: "p= {a: 1}\n"},
-		{name: "unbuffered code statement", src: "- var x = 1\n"},
+		{name: "unbuffered mutation statement", src: "- x++\n"},
 		{name: "unescaped buffered output", src: "p!= Count\n"},
 	}
 

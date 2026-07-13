@@ -1020,6 +1020,17 @@ func validGoIdentifier(name string) bool {
 // full reasoning, in particular why "||"/"&&" needs an extra check that
 // genAssignRHS's OWN "||"/"&&" case (immediately below) does not.
 //
+// A third increment added a genuinely numeric-typed local: a bare numeric
+// field/dot-path (of any kind genScalarStringify itself supports) or a bare
+// numeric literal is classified by genNumericExpr (tried after genBoolExpr,
+// before genAssignRHS) and stored as a Go value of that exact numeric type —
+// see genNumericExpr's own doc comment for why this is exactly as safe as
+// the string-field case above, and why it must be restricted to a BARE
+// field/literal rather than any arithmetic expression (arithmetic stays on
+// genAssignRHS's existing STRING path, since Runtime.evaluateExprRaw itself
+// only special-cases a bare identifier/dot-path, never an operator
+// expression, as a raw un-stringified value).
+//
 // A `- var` re-declaring a name already bound in scope (whether from an
 // outer `- var`, an each-loop item variable, or an outer var of the same
 // name) is also deferred: Runtime.setVar does not create a fresh binding in
@@ -1050,6 +1061,18 @@ func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 		// evaluation intact without requiring a reference.
 		g.body.WriteString(fmt.Sprintf("_ = %s\n", goName))
 		g.pushScope(varName, goName, reflectTypeBool, true)
+		return nil
+	}
+
+	if numExpr, numTyp, ok := g.genNumericExpr(rhsExpr); ok {
+		goName := goLocalNameForVar(varName)
+		g.writeRaw(fmt.Sprintf("%s := %s\n", goName, numExpr))
+		// See the matching comment in the string-local path below: the
+		// interpreter always evaluates the RHS even when the variable is
+		// never read afterward, so this blank-identifier use keeps that
+		// evaluation intact without requiring a reference.
+		g.body.WriteString(fmt.Sprintf("_ = %s\n", goName))
+		g.pushScope(varName, goName, numTyp, true)
 		return nil
 	}
 
@@ -1215,6 +1238,58 @@ func (g *generator) isProvablyBoolOperand(expr string) bool {
 func (g *generator) exprIsBoolTyped(expr string) bool {
 	_, typ, err := g.resolveFieldExpr(expr)
 	return err == nil && typ != nil && typ.Kind() == reflect.Bool
+}
+
+// genNumericExpr classifies rhs (a `- var x = <rhs>` right-hand side) as one
+// of the two shapes Runtime.evaluateExprRaw hands back as a genuine RAW,
+// un-stringified numeric Go value rather than falling through to its own
+// "evaluate then stringify" default: a bare identifier/dot-path resolving
+// (via resolveFieldExpr) to a field or `- var` local whose reflect.Kind is
+// one genScalarStringify itself has a case for (every sized int/uint kind,
+// and float64 — deliberately NOT float32, which genScalarStringify has no
+// case for and so cannot stringify byte-identically to lookupAndStringify's
+// own Sprintf-based fallback for it), or a bare numeric literal
+// (parseJSNumber), always modeled as a Go float64 local — the natural type
+// for a bare JS number literal, matching how the interpreter itself stores
+// every JS number.
+//
+// ok is false (with an empty goExpr/typ) whenever rhs is definitively not
+// one of these two shapes, so the caller (genUnbufferedAssign, which tries
+// this AFTER genBoolExpr and BEFORE genAssignRHS) falls through to
+// genAssignRHS's existing STRING-local grammar unchanged. This is safe
+// specifically because neither parseJSNumber nor resolveFieldExpr's own
+// bare-identifier/dot-path shape check ever matches an expression containing
+// a top-level operator: an arithmetic RHS (`a + b`) — which
+// Runtime.evaluateExprRaw does NOT special-case, so it stays on the STRING
+// path via its own `s, _ := r.evaluateExpr(expr); return s` fallthrough — is
+// never intercepted here, and a comparison/bool RHS is never reached at all
+// since genBoolExpr already claimed it first.
+//
+// Once a field/local is proven numeric this way, it is exactly as safe to
+// store as its own native Go type as the string-field case above: the SAME
+// argument applies unchanged (genScalarStringify's per-Kind switch is
+// byte-identical to lookupAndStringify's own per-Kind switch by
+// construction), just for the numeric Kind cases of that switch rather than
+// its String case.
+func (g *generator) genNumericExpr(expr string) (goExpr string, typ reflect.Type, ok bool) {
+	expr = stripBalancedOuterParens(strings.TrimSpace(expr))
+
+	if f, isNum := parseJSNumber(expr); isNum {
+		return "float64(" + formatCanonicalLiteral(f) + ")", reflectTypeFloat64, true
+	}
+
+	resolvedExpr, fieldTyp, err := g.resolveFieldExpr(expr)
+	if err != nil || fieldTyp == nil {
+		return "", nil, false
+	}
+	switch fieldTyp.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float64:
+		return resolvedExpr, fieldTyp, true
+	default:
+		return "", nil, false
+	}
 }
 
 // genAssignRHS compiles a `- var x = <rhs>` right-hand side to a Go string

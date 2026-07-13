@@ -45,31 +45,42 @@ import (
 // codegen_index_length_test.go. IntKeyMap is an int-keyed map used only to
 // exercise the non-string-keyed-map index deferral (an index expression
 // against it is never expected to build/render, so it needs no interpreter
-// counterpart).
+// counterpart). Offer is a nested struct with its own int ID field, used by
+// the numeric-local differential tests to prove a dot-path RHS (`Offer.ID`)
+// resolves to a genuine numeric `- var` local. UintVal is a plain uint field
+// and NamedCount a named-int-kind field (opsNamedCount, distinct from a bare
+// `int`), each used to prove genScalarStringify's exact supported-kind set
+// carries over unchanged to a numeric local. Float32Val is a float32 field —
+// a kind genScalarStringify has no case for — used to prove that kind still
+// defers cleanly rather than being silently accepted as numeric.
 type opsData struct {
-	Name      string
-	Count     int
-	Price     float64
-	Flag      bool
-	FlagB     bool
-	FlagC     bool
-	Items     []string
-	Age       int8
-	B         uint8
-	BigInt    int64
-	BigUint   uint64
-	Str1      string
-	Str2      string
-	Slug      string
-	Firms     []opsFirm
-	Zero      int
-	User      opsUser
-	Nums      []int
-	Prices    []float64
-	Meta      map[string]string
-	Counts    map[string]int
-	Idx       int
-	IntKeyMap map[int]string
+	Name       string
+	Count      int
+	Price      float64
+	Flag       bool
+	FlagB      bool
+	FlagC      bool
+	Items      []string
+	Age        int8
+	B          uint8
+	BigInt     int64
+	BigUint    uint64
+	Str1       string
+	Str2       string
+	Slug       string
+	Firms      []opsFirm
+	Zero       int
+	User       opsUser
+	Nums       []int
+	Prices     []float64
+	Meta       map[string]string
+	Counts     map[string]int
+	Idx        int
+	IntKeyMap  map[int]string
+	Offer      opsOffer
+	UintVal    uint
+	NamedCount opsNamedCount
+	Float32Val float32
 }
 
 // opsFirm is opsData.Firms's element type.
@@ -81,6 +92,16 @@ type opsFirm struct {
 type opsUser struct {
 	Name string
 }
+
+// opsOffer is opsData.Offer's type.
+type opsOffer struct {
+	ID int
+}
+
+// opsNamedCount is a named type sharing int's underlying kind, distinct from
+// a bare int field, used to prove a numeric local carries a field's exact Go
+// type through (not merely its reflect.Kind).
+type opsNamedCount int
 
 var opsDataReflectType = reflect.TypeOf(opsData{})
 
@@ -96,30 +117,40 @@ type opsUser struct {
 	Name string
 }
 
+type opsOffer struct {
+	ID int
+}
+
+type opsNamedCount int
+
 type opsData struct {
-	Name      string
-	Count     int
-	Price     float64
-	Flag      bool
-	FlagB     bool
-	FlagC     bool
-	Items     []string
-	Age       int8
-	B         uint8
-	BigInt    int64
-	BigUint   uint64
-	Str1      string
-	Str2      string
-	Slug      string
-	Firms     []opsFirm
-	Zero      int
-	User      opsUser
-	Nums      []int
-	Prices    []float64
-	Meta      map[string]string
-	Counts    map[string]int
-	Idx       int
-	IntKeyMap map[int]string
+	Name       string
+	Count      int
+	Price      float64
+	Flag       bool
+	FlagB      bool
+	FlagC      bool
+	Items      []string
+	Age        int8
+	B          uint8
+	BigInt     int64
+	BigUint    uint64
+	Str1       string
+	Str2       string
+	Slug       string
+	Firms      []opsFirm
+	Zero       int
+	User       opsUser
+	Nums       []int
+	Prices     []float64
+	Meta       map[string]string
+	Counts     map[string]int
+	Idx        int
+	IntKeyMap  map[int]string
+	Offer      opsOffer
+	UintVal    uint
+	NamedCount opsNamedCount
+	Float32Val float32
 }
 `
 
