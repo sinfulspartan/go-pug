@@ -136,12 +136,32 @@ type Config struct {
 // default), and an extra call argument beyond the parameter count is simply
 // ignored (no rest-parameter support yet) — mirroring
 // Runtime.renderMixinCall's own arg-binding loop exactly. A default
-// parameter value, a rest parameter, a `block` node in a mixin body (or block
-// content supplied at a call site), `attributes`/`&attributes` (in a body or
+// parameter value, a rest parameter, `attributes`/`&attributes` (in a body or
 // forwarded at a call site), a nested mixin call (one mixin's body calling
 // another), and a nil Config.DataReflectType (mixins need type information to
 // classify call arguments) are all later increments and return a distinct
 // error instead of guessing.
+//
+// A mixin's `block` slot — the caller's own indented content passed to a
+// call — is supported for the STATIC subset only (see genMixinFunc and
+// genMixinCall): when a decl's body contains a `block` node anywhere,
+// reachable through the same nesting genNode itself walks, the generated
+// helper gains one extra nilable `func(io.Writer) error` parameter, and a
+// call passing block content generates that content as a closure IN A FAIL-
+// CLOSED, EMPTY SCOPE — matching Runtime.renderMixinBlockSlot's own behavior
+// (the block content renders while the CALLEE's own param scope is active,
+// never the caller's) without needing to model that scope: pure static
+// markup generates fine, since it performs no identifier lookup either way,
+// while ANY identifier reference (a data field, a caller local, or the
+// callee's own parameter — codegen cannot yet tell which), a nested mixin
+// call, and any unbuffered code statement (even a literal-only `- var`
+// local, self-contained and provably safe, but a distinct, untested claim
+// this increment deliberately does not make) are all refused with a clean
+// error instead of guessed at. A call passing block content to a decl
+// with NO `block` slot silently discards that content, matching the
+// interpreter's own silent-discard behavior exactly (Runtime.renderMixinCall
+// sets callerBlock regardless; it is simply never read if the body has no
+// slot to read it from).
 func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if cfg.PackageName == "" {
 		return nil, fmt.Errorf("codegen: Config.PackageName is required")
@@ -170,6 +190,10 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 
 		g.mixinDecls = mixinDecls
 		g.mixinFuncNames = make(map[string]string, len(mixinDecls))
+		g.mixinHasSlot = make(map[string]bool, len(mixinDecls))
+		for name, decl := range mixinDecls {
+			g.mixinHasSlot[name] = mixinBodyHasBlockSlot(decl.Body)
+		}
 
 		names := make([]string, 0, len(mixinDecls))
 		for name := range mixinDecls {
@@ -306,20 +330,45 @@ type generator struct {
 	// GenerateGo's name-assignment pass), so genMixinCall knows which
 	// top-level function to call. nil when the template declares no mixin.
 	mixinFuncNames map[string]string
-	// paramOnlyScope is true only while genMixinFunc is generating a mixin
-	// body's statements. It makes resolveFieldExpr FAIL-CLOSED the moment an
-	// identifier misses the scope stack (which, in this mode, holds only the
-	// mixin's own parameters) instead of falling through to struct-field
-	// resolution against d — reproducing Runtime.renderMixinCall's own scope
-	// isolation (a mixin body sees only its parameters; everything else is a
-	// lookup miss, which the interpreter silently renders as "") as a clean
-	// GenerateGo error instead of a silent, potentially wrong "".
+	// mixinHasSlot maps a mixin's Pug name to whether its decl body contains a
+	// `block` node anywhere (see mixinBodyHasBlockSlot), computed once by
+	// GenerateGo's collection pass so both genMixinFunc (whether to add the
+	// helper's block-callback parameter) and genMixinCall (whether to build a
+	// closure or pass nil for that parameter, or silently discard block
+	// content passed to a slotless mixin) agree on the same answer for a
+	// given mixin. nil when the template declares no mixin.
+	mixinHasSlot map[string]bool
+	// paramOnlyScope is true while genMixinFunc is generating a mixin body's
+	// statements, AND while genMixinBlockClosure is generating a call site's
+	// block-content closure. It makes resolveFieldExpr FAIL-CLOSED the moment
+	// an identifier misses the scope stack (empty, in the closure case; the
+	// mixin's own parameters, in the mixin-body case) instead of falling
+	// through to struct-field resolution against d — reproducing
+	// Runtime.renderMixinCall's own scope isolation (a mixin body sees only
+	// its parameters; block content is rendered against that SAME isolated
+	// scope, never the caller's — see genMixinBlockClosure's own doc comment)
+	// as a clean GenerateGo error instead of a silent, potentially wrong "".
 	paramOnlyScope bool
 	// insideMixinBody is true only while genMixinFunc is generating a mixin
 	// body's statements, so genMixinCall can reject a nested mixin call (one
 	// mixin's body calling another) with a distinct, clean error rather than
 	// attempt to generate it — a later increment's job.
 	insideMixinBody bool
+	// insideBlockClosure is true only while genMixinBlockClosure is
+	// generating a call site's block-content closure, so genMixinCall can
+	// reject a nested mixin call found there (`+other(...)` written as part
+	// of the content passed to `+outer`'s block slot) with its own distinct
+	// error, separate from insideMixinBody's — a later increment's job.
+	insideBlockClosure bool
+	// blockParamName is the Go parameter name genMixinFunc chose for the
+	// current mixin's block-callback parameter ("pugBlock") while it is
+	// generating that mixin's body — empty when the current decl has no
+	// `block` slot, or whenever no mixin body is being generated at all
+	// (including while genMixinBlockClosure builds a call site's own block
+	// closure, which is never itself inside a slot-bearing mixin body). A
+	// `*BlockNode` reached by genNode invokes this parameter when non-empty
+	// and refuses (as an unsupported node) otherwise.
+	blockParamName string
 }
 
 // nextTmp returns a fresh, monotonically increasing index for naming a
@@ -760,6 +809,12 @@ func (g *generator) genNode(n Node) error {
 		return nil
 	case *MixinCallNode:
 		return g.genMixinCall(node)
+	case *BlockNode:
+		if g.blockParamName != "" {
+			g.writeRaw(fmt.Sprintf("if %s != nil {\nif err := %s(w); err != nil {\nreturn err\n}\n}\n", g.blockParamName, g.blockParamName))
+			return nil
+		}
+		return fmt.Errorf("unsupported node/expr in codegen: %T", n)
 	default:
 		return fmt.Errorf("unsupported node/expr in codegen: %T", n)
 	}
@@ -1033,7 +1088,25 @@ func (g *generator) genCode(n *CodeNode) error {
 // a bare expression statement (evaluated and discarded by the interpreter,
 // possibly for a side effect or an error genValueExpr has no model for) each
 // return their own clear, distinct unsupported error instead of guessing.
+//
+// While g.insideBlockClosure is set (generating a call site's block-content
+// closure — see genMixinBlockClosure), EVERY unbuffered statement is refused
+// unconditionally, even a literal-only assignment a later reference inside
+// the same closure would resolve purely against its own local scope entry
+// (never touching resolveFieldExpr's paramOnlyScope guard at all, since a
+// scope-stack HIT is returned before that guard is ever reached — this was
+// confirmed to generate valid, byte-identical Go for the narrow literal-RHS
+// case during this feature's own development). That narrower case is
+// deliberately NOT admitted here: this increment's contract for block
+// content is "pure static markup, no identifier resolution of any kind", and
+// widening it to "some `- var` locals are fine, if self-contained" is a
+// distinct claim this increment does not make or test — a later increment's
+// job, not an accidental side effect of this one.
 func (g *generator) genUnbufferedStatement(stmt string) error {
+	if g.insideBlockClosure {
+		return fmt.Errorf("unsupported unbuffered code `- %s` in codegen: an unbuffered statement inside block content passed to a mixin call is not supported yet (block content is restricted to static markup in this increment)", stmt)
+	}
+
 	kind, varName, rhsExpr := classifyUnbufferedStmt(stmt)
 
 	switch kind {
@@ -2813,12 +2886,18 @@ func (g *generator) genScalarStringify(goExpr string, typ reflect.Type) (string,
 // it live; see scopeRestore's doc comment), checked BEFORE ever falling
 // through to struct-field resolution so a coincidentally-matching field
 // name is never silently substituted for it. While g.paramOnlyScope is set
-// (generating a mixin body — see genMixinFunc), a scope-stack miss is
-// ALWAYS an error, even before the leakedVarNames check: the mixin body's
-// scope holds only its own parameters, so a reference to anything else — a
-// top-level data field, a caller's `- var` local — must never fall through
-// to struct-field resolution against d, which would silently disagree with
-// the interpreter's own isolated mixin scope (Runtime.renderMixinCall).
+// — generating a mixin body (see genMixinFunc), where g.scope holds the
+// mixin's own parameters, or generating a call site's block-content closure
+// (see genMixinBlockClosure), where g.scope is empty — a scope-stack miss is
+// ALWAYS an error, even before the leakedVarNames check: in the mixin-body
+// case, the body's scope holds only its own parameters, so a reference to
+// anything else (a top-level data field, a caller's `- var` local) must
+// never fall through to struct-field resolution against d; in the
+// block-closure case, EVERY identifier is a scope-stack miss by
+// construction (the scope is empty), so this same guard is what makes pure
+// static block content the only admitted shape — either way, falling
+// through would silently disagree with the interpreter's own isolated
+// mixin scope (Runtime.renderMixinCall/renderMixinBlockSlot).
 func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -2850,7 +2929,7 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 	}
 
 	if g.paramOnlyScope {
-		return "", nil, fmt.Errorf("mixin body references %q, which is not one of the mixin's own parameters; a mixin body is isolated and can only see its declared parameters in this increment", expr)
+		return "", nil, fmt.Errorf("reference to %q is not resolvable in this isolated scope (a mixin body can only see its declared parameters, and block content passed to a mixin call is generated in a fail-closed empty scope — dynamic block content is not supported in codegen yet)", expr)
 	}
 
 	if g.leakedVarNames[first] {
@@ -3552,13 +3631,61 @@ func uniqueGoName(candidate string, used map[string]bool) string {
 	}
 }
 
+// blockParamGoName is the fixed Go parameter name genMixinFunc adds to a
+// slot-bearing mixin's helper signature for its block-callback. It can never
+// collide with a positional argument (always named "argN") or with the
+// writer parameter "w".
+const blockParamGoName = "pugBlock"
+
+// mixinBodyHasBlockSlot reports whether body contains a `block` node
+// (*BlockNode, regardless of its Name — Runtime.renderNode's own dispatch
+// for a *BlockNode reached while r.inMixin is true renders the caller's
+// block content unconditionally, never consulting Name, so codegen mirrors
+// that by treating every *BlockNode reachable from a mixin's decl body as
+// its slot) anywhere reachable through the same node-nesting shapes genNode
+// itself walks: a tag's children, a text run's own nodes, an if/else
+// branch, or an each-loop body. The slot can be nested arbitrarily deep,
+// e.g. inside a wrapping div.
+func mixinBodyHasBlockSlot(body []Node) bool {
+	for _, n := range body {
+		if nodeHasBlockSlot(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeHasBlockSlot is mixinBodyHasBlockSlot's single-node recursive step.
+func nodeHasBlockSlot(n Node) bool {
+	switch node := n.(type) {
+	case *BlockNode:
+		return true
+	case *TagNode:
+		return mixinBodyHasBlockSlot(node.Children)
+	case *TextRunNode:
+		return mixinBodyHasBlockSlot(node.Nodes)
+	case *ConditionalNode:
+		return mixinBodyHasBlockSlot(node.Consequent) || mixinBodyHasBlockSlot(node.Alternate)
+	case *EachNode:
+		return mixinBodyHasBlockSlot(node.Body) || mixinBodyHasBlockSlot(node.EmptyBody)
+	default:
+		return false
+	}
+}
+
 // genMixinFunc generates decl's entire body as a standalone top-level Go
 // function named fnName, `func <fnName>(w io.Writer, arg1 string, arg2
 // string, …) error` (one string parameter per decl.Parameters, positionally
 // named arg1, arg2, … rather than reusing the Pug parameter names
 // themselves, so a mixin parameter can never collide with the writer
 // parameter "w" or with any other generated identifier), and returns its
-// full Go source text.
+// full Go source text. When g.mixinHasSlot[decl.Name] is true (decl.Body
+// contains a `block` node — see mixinBodyHasBlockSlot), the signature gains
+// one further nilable parameter, `pugBlock func(io.Writer) error`, and every
+// `*BlockNode` genNode reaches while generating this body invokes it (see
+// genNode's own *BlockNode case) — once per occurrence, matching the
+// interpreter rendering the caller's block content anew at each `block`
+// keyword (Runtime.renderMixinBlockSlot).
 //
 // The body is generated in a PARAM-ONLY scope: g.scope holds only the
 // mixin's own parameters (each pushed as a string-typed scope entry mapping
@@ -3581,10 +3708,11 @@ func uniqueGoName(candidate string, used map[string]bool) string {
 // this, for every mixin, since every mixin helper is generated in its own
 // pass before the main render function's own body walk ever writes to
 // either one. g.scope is saved and restored by value (a plain slice, so
-// copying it is unremarkable) and g.paramOnlyScope/g.insideMixinBody are
-// restored to whatever they were before this call (both false, unless this
-// call is itself nested inside another — which genMixinFunc never does,
-// since GenerateGo only ever calls it for a top-level mixin declaration).
+// copying it is unremarkable) and g.paramOnlyScope/g.insideMixinBody/
+// g.blockParamName are restored to whatever they were before this call
+// (all zero, unless this call is itself nested inside another — which
+// genMixinFunc never does, since GenerateGo only ever calls it for a
+// top-level mixin declaration).
 func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, error) {
 	if len(decl.ParamDefaults) > 0 {
 		return "", fmt.Errorf("mixin %q: a default parameter value is not supported in codegen yet", decl.Name)
@@ -3593,13 +3721,21 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 		return "", fmt.Errorf("mixin %q: a rest parameter (...%s) is not supported in codegen yet", decl.Name, decl.RestParamName)
 	}
 
+	hasSlot := g.mixinHasSlot[decl.Name]
+
 	savedScope := g.scope
 	savedParamOnly := g.paramOnlyScope
 	savedInsideMixinBody := g.insideMixinBody
+	savedBlockParamName := g.blockParamName
 
 	g.scope = nil
 	g.paramOnlyScope = true
 	g.insideMixinBody = true
+	if hasSlot {
+		g.blockParamName = blockParamGoName
+	} else {
+		g.blockParamName = ""
+	}
 
 	argNames := make([]string, len(decl.Parameters))
 	for i, p := range decl.Parameters {
@@ -3625,6 +3761,7 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 	g.scope = savedScope
 	g.paramOnlyScope = savedParamOnly
 	g.insideMixinBody = savedInsideMixinBody
+	g.blockParamName = savedBlockParamName
 
 	if bodyErr != nil {
 		return "", bodyErr
@@ -3634,6 +3771,9 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 	fmt.Fprintf(&sig, "func %s(w io.Writer", fnName)
 	for _, argName := range argNames {
 		fmt.Fprintf(&sig, ", %s string", argName)
+	}
+	if hasSlot {
+		fmt.Fprintf(&sig, ", %s func(io.Writer) error", blockParamGoName)
 	}
 	sig.WriteString(") error {\n")
 	sig.WriteString(fnBody)
@@ -3655,16 +3795,26 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 // generated function returns that error immediately rather than call the
 // mixin helper with a value that was never actually computed.
 //
-// A nested mixin call (encountered while g.insideMixinBody is set — i.e.
-// one mixin's own body calling another), a call passing block content, and
-// a call forwarding attributes (&attributes) are all later increments and
-// return a distinct error instead of attempting to generate them.
+// A nested mixin call (encountered while g.insideMixinBody or
+// g.insideBlockClosure is set — i.e. one mixin's own body, or a call site's
+// own block-content closure, calling another mixin) and a call forwarding
+// attributes (&attributes) are later increments and return a distinct error
+// instead of attempting to generate them.
+//
+// Block content: when the callee's decl has a `block` slot
+// (g.mixinHasSlot[call.Name]), a non-empty call.BlockContent is generated as
+// a closure (see genMixinBlockClosure) and passed as the helper's final
+// argument; empty block content passes a literal `nil` instead. When the
+// callee's decl has NO slot, call.BlockContent — if any — is silently
+// discarded without generating it at all, matching
+// Runtime.renderMixinCall/renderMixinBlockSlot's own silent-discard exactly
+// (callerBlock is set regardless of whether the body ever reads it).
 func (g *generator) genMixinCall(call *MixinCallNode) error {
 	if g.insideMixinBody {
 		return fmt.Errorf("mixin %q: a nested mixin call inside a mixin body is not supported in codegen yet", call.Name)
 	}
-	if len(call.BlockContent) > 0 {
-		return fmt.Errorf("mixin %q: block content passed to a mixin call is not supported in codegen yet", call.Name)
+	if g.insideBlockClosure {
+		return fmt.Errorf("mixin %q: a nested mixin call inside block content passed to a mixin call is not supported in codegen yet", call.Name)
 	}
 	if len(call.Attributes) > 0 {
 		return fmt.Errorf("mixin %q: attributes forwarded to a mixin call (&attributes) are not supported in codegen yet", call.Name)
@@ -3676,7 +3826,7 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 	}
 	fnName := g.mixinFuncNames[call.Name]
 
-	args := make([]string, 0, len(decl.Parameters))
+	args := make([]string, 0, len(decl.Parameters)+1)
 	for i := range decl.Parameters {
 		if i >= len(call.Arguments) {
 			args = append(args, `""`)
@@ -3692,7 +3842,101 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 		args = append(args, valExpr)
 	}
 
+	if g.mixinHasSlot[call.Name] {
+		if len(call.BlockContent) > 0 {
+			closureExpr, err := g.genMixinBlockClosure(call.BlockContent, call.Name)
+			if err != nil {
+				return err
+			}
+			args = append(args, closureExpr)
+		} else {
+			args = append(args, "nil")
+		}
+	}
+
 	callArgs := append([]string{"w"}, args...)
 	g.writeRaw(fmt.Sprintf("if err := %s(%s); err != nil {\nreturn err\n}\n", fnName, strings.Join(callArgs, ", ")))
 	return nil
+}
+
+// genMixinBlockClosure generates content — the block content a call site
+// passed to a slot-bearing mixin (call.BlockContent) — as a self-contained
+// Go function literal expression, `func(w io.Writer) error { … return nil
+// }`, suitable to pass directly as genMixinCall's block-callback argument.
+//
+// Runtime.renderMixinBlockSlot renders this exact content WHILE the callee's
+// own isolated scope is active (Runtime.renderMixinCall sets callerBlock and
+// pushes the mixin's own param frame together, before the body walk ever
+// reaches the slot) — so a dynamic reference inside block content resolves
+// against the CALLEE's parameters, never the caller's data or locals, the
+// opposite of what genValueExpr(call.Arguments[i]) does for the call's own
+// positional arguments a few lines above. Modeling that scope correctly is a
+// later increment; this one sidesteps the question entirely by generating
+// the closure body in an EMPTY, FAIL-CLOSED scope (g.scope = nil,
+// g.paramOnlyScope = true, reusing the exact guard genMixinFunc's own body
+// generation uses): pure static markup (tags/text/static attributes/static
+// classes) performs no identifier lookup at all, so it generates — and
+// renders — identically regardless of which scope would have been active,
+// while ANY identifier reference (an interpolation, a buffered `= expr`, a
+// dynamic attribute/class, an `if` condition, an `each` over a field, or the
+// special `block` keyword used as a value) hits resolveFieldExpr's
+// paramOnlyScope check and fails closed with a clean, generate-time error
+// instead of guessing which scope it would have resolved against.
+// g.insideBlockClosure is set so a nested mixin call written as part of the
+// block content (`+other(...)`) is also rejected, rather than attempted with
+// the wrong (empty) scope, and so is ANY unbuffered code statement
+// (genUnbufferedStatement's own g.insideBlockClosure check) — even a
+// literal-only `- var x = "hi"` a later reference would resolve purely
+// against its own local scope entry, never reaching this function's guard at
+// all, is refused unconditionally: this increment's contract for block
+// content is "pure static markup", and admitting a self-contained local is a
+// distinct, untested claim this increment deliberately does not make.
+//
+// g.body/g.static are saved and swapped out (not reset) for the duration,
+// since — unlike genMixinFunc, which always runs before the main render
+// function's own body walk has written anything — genMixinCall is reached
+// FROM WITHIN that walk, so g.body may already hold real, unrelated
+// statements that must survive this call untouched.
+func (g *generator) genMixinBlockClosure(content []Node, mixinName string) (string, error) {
+	savedBody := g.body
+	savedStatic := g.static
+	savedScope := g.scope
+	savedParamOnly := g.paramOnlyScope
+	savedInsideMixinBody := g.insideMixinBody
+	savedInsideBlockClosure := g.insideBlockClosure
+	savedBlockParamName := g.blockParamName
+
+	g.body = strings.Builder{}
+	g.static = strings.Builder{}
+	g.scope = nil
+	g.paramOnlyScope = true
+	g.insideMixinBody = false
+	g.insideBlockClosure = true
+	g.blockParamName = ""
+
+	var bodyErr error
+	for _, child := range content {
+		if err := g.genNode(child); err != nil {
+			bodyErr = err
+			break
+		}
+	}
+	if bodyErr == nil {
+		g.flushStatic()
+	}
+	closureBody := g.body.String()
+
+	g.body = savedBody
+	g.static = savedStatic
+	g.scope = savedScope
+	g.paramOnlyScope = savedParamOnly
+	g.insideMixinBody = savedInsideMixinBody
+	g.insideBlockClosure = savedInsideBlockClosure
+	g.blockParamName = savedBlockParamName
+
+	if bodyErr != nil {
+		return "", fmt.Errorf("mixin %q: block content: %w", mixinName, bodyErr)
+	}
+
+	return "func(w io.Writer) error {\n" + closureBody + "return nil\n}", nil
 }

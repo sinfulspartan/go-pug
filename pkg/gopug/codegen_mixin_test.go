@@ -222,14 +222,14 @@ func TestCodegenMixinDeferrals(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name:    "block keyword in a mixin body",
-			src:     "mixin wrap(title)\n  .box\n    h1= title\n    block\n+wrap(\"X\")\n",
-			wantSub: "BlockNode",
+			name:    "if block as a value inside a mixin body",
+			src:     "mixin wrap(title)\n  .box\n    h1= title\n    if block\n      p has-block\n+wrap(\"X\")\n  p child\n",
+			wantSub: "block",
 		},
 		{
-			name:    "block content passed to a call",
-			src:     "mixin wrap(title)\n  .box\n    h1= title\n+wrap(\"X\")\n  p child\n",
-			wantSub: "block content",
+			name:    "nested mixin call inside block content passed to a call",
+			src:     "mixin inner(x)\n  p= x\nmixin outer(y)\n  .outer\n    block\n+outer(\"Y\")\n  +inner(\"Z\")\n",
+			wantSub: "nested mixin call",
 		},
 		{
 			name:    "attributes forwarded at a call",
