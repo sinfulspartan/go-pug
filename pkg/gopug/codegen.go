@@ -1662,20 +1662,19 @@ func (g *generator) genDynamicClass(trimmed string) error {
 	return nil
 }
 
-// genInterpolation emits a write of a #{expr} interpolation. The value is
-// built by genValueExpr — a bare field/dot-path (unchanged from before this
-// increment) or, as of the value-context expression compiler, an expression
-// built from string/numeric/bool literals and the `+` operator — then always
-// wrapped in html.EscapeString. Escaping a value genValueExpr already knows
-// can't contain an HTML-special character (a bare numeric/bool field's
-// stringify) is redundant work, but it is never wrong: it can't change the
-// bytes those stringifications produce, so wrapping unconditionally keeps
-// this function simple without breaking byte-identical output. Unescaped
-// interpolation (`!{expr}`) is not yet supported.
+// genInterpolation emits a write of an interpolation, either the default
+// escaped `#{expr}` or, when n.Unescaped is set, `!{expr}`. The value is
+// built by genValueExpr — a bare field/dot-path or an expression built from
+// string/numeric/bool literals and the supported operators — the same way
+// for both forms, since Runtime.renderInterpolation itself computes the
+// identical value for either and differs only in whether it wraps that value
+// in html.EscapeString (runtime.go's `if !interp.Unescaped` branch). The
+// escaped form wraps the value in html.EscapeString and sets g.needsHTML so
+// the "html" import is emitted; the unescaped form writes the value directly,
+// with no wrapper and no needsHTML — it introduces no use of the "html"
+// package, so a template using only unescaped output must not pull in an
+// unused import.
 func (g *generator) genInterpolation(n *InterpolationNode) error {
-	if n.Unescaped {
-		return fmt.Errorf("unsupported unescaped interpolation !{%s} in codegen", n.Expression)
-	}
 	valExpr, fallible, err := g.genValueExpr(n.Expression)
 	if err != nil {
 		return err
@@ -1683,23 +1682,28 @@ func (g *generator) genInterpolation(n *InterpolationNode) error {
 	if fallible {
 		valExpr = g.genFallibleExtraction(valExpr)
 	}
+	if n.Unescaped {
+		g.writeExprWrite(valExpr)
+		return nil
+	}
 	g.needsHTML = true
 	g.writeExprWrite("html.EscapeString(" + valExpr + ")")
 	return nil
 }
 
-// genCode emits a buffered, escaped code node (`= expr`) as a write of
-// html.EscapeString(genValueExpr(expr)) — the same escaping genInterpolation
-// applies, since `= expr` and `#{expr}` are both HTML-escaped-by-default
-// value positions in the interpreter. An unescaped buffered node (`!= expr`,
-// written raw) is out of scope for this increment — it would need a
-// value-context compiler decision about whether the emitted Go is trusted
-// not to need escaping — so it returns a clear unsupported error instead of
-// guessing. An unbuffered statement (`- stmt`, executed for its side effect
-// with no output) is dispatched to genUnbufferedStatement, which supports
-// only the plain-assignment subset (`- var x = <rhs>`) described there; every
-// other unbuffered shape (mutation, a bare expression statement) still
-// returns a clear unsupported error.
+// genCode emits a buffered code node, either the default escaped `= expr`
+// (CodeBuffered) or the unescaped `!= expr` (CodeUnescaped), as a write of
+// genValueExpr(expr) — wrapped in html.EscapeString for CodeBuffered, written
+// raw for CodeUnescaped — mirroring Runtime.renderCode's own two cases
+// exactly (runtime.go: CodeBuffered writes html.EscapeString(val), CodeUnescaped
+// writes val raw; both compute val the same way via evaluateCode). Only
+// CodeBuffered sets g.needsHTML, since only it emits an html.EscapeString
+// call; CodeUnescaped introduces no use of the "html" package. An unbuffered
+// statement (`- stmt`, executed for its side effect with no output) is
+// dispatched to genUnbufferedStatement, which supports only the
+// plain-assignment subset (`- var x = <rhs>`) described there; every other
+// unbuffered shape (mutation, a bare expression statement) still returns a
+// clear unsupported error.
 func (g *generator) genCode(n *CodeNode) error {
 	switch n.Type {
 	case CodeBuffered:
@@ -1714,7 +1718,15 @@ func (g *generator) genCode(n *CodeNode) error {
 		g.writeExprWrite("html.EscapeString(" + valExpr + ")")
 		return nil
 	case CodeUnescaped:
-		return fmt.Errorf("unsupported unescaped code != %s in codegen", n.Expression)
+		valExpr, fallible, err := g.genValueExpr(n.Expression)
+		if err != nil {
+			return err
+		}
+		if fallible {
+			valExpr = g.genFallibleExtraction(valExpr)
+		}
+		g.writeExprWrite(valExpr)
+		return nil
 	default:
 		return g.genUnbufferedStatement(n.Expression)
 	}

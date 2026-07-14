@@ -1,0 +1,356 @@
+package gopug
+
+import (
+	"strings"
+	"testing"
+)
+
+// genUnescapedDifferential builds src through GenerateGo, runs it via
+// runGeneratedGo, and compares its output against the interpreter's own
+// Compile().Render output for the same data — the interpreter's Render
+// output is always the oracle, never a hand-computed expectation. It is used
+// for every non-error case in this file (both `!{expr}` and `!= expr`, and
+// their escaped `#{expr}`/`= expr` counterparts).
+func genUnescapedDifferential(t *testing.T, src string, data map[string]any, dataLiteral string) string {
+	t.Helper()
+
+	ast, err := Parse(src, nil)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	generated, err := GenerateGo(ast, Config{
+		PackageName:     "main",
+		FuncName:        "RenderOps",
+		DataType:        "opsData",
+		DataReflectType: opsDataReflectType,
+	})
+	if err != nil {
+		t.Fatalf("GenerateGo(%q): %v", src, err)
+	}
+
+	tmpl, err := Compile(src, nil)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", src, err)
+	}
+	want, err := tmpl.Render(data)
+	if err != nil {
+		t.Fatalf("interpreter Render(%q): %v", src, err)
+	}
+
+	got := runGeneratedGo(t, generated, dataLiteral)
+	if got != want {
+		t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, src)
+	}
+	return got
+}
+
+// TestCodegenUnescapedDiscriminatingHTMLSpecials is the headline proof: a
+// string field holding HTML-special characters (`<`, `>`, `&`, `"`) renders
+// RAW through both unescaped forms (`!{expr}` and `!= expr`), while the
+// SAME field renders HTML-escaped through both escaped forms (`#{expr}` and
+// `= expr`). The raw and escaped bytes are asserted explicitly (not merely
+// checked for equality with the interpreter), so an implementation that
+// escaped by mistake would fail the unescaped assertions even though it
+// still matched some other, wrongly-escaped "oracle".
+func TestCodegenUnescapedDiscriminatingHTMLSpecials(t *testing.T) {
+	data := map[string]any{"Name": `<b>&"x"`}
+	dataLiteral := "opsData{Name: `<b>&\"x\"`}"
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{name: "unescaped interpolation", src: "p !{Name}\n", want: `<p><b>&"x"</p>`},
+		{name: "unescaped buffered code", src: "p!= Name\n", want: `<p><b>&"x"</p>`},
+		{name: "escaped interpolation (regression)", src: "p #{Name}\n", want: "<p>&lt;b&gt;&amp;&#34;x&#34;</p>"},
+		{name: "escaped buffered code (regression)", src: "p= Name\n", want: "<p>&lt;b&gt;&amp;&#34;x&#34;</p>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := genUnescapedDifferential(t, tc.src, data, dataLiteral)
+			if got != tc.want {
+				t.Errorf("codegen output %q does not match expected %q for %q", got, tc.want, tc.src)
+			}
+		})
+	}
+}
+
+// TestCodegenUnescapedFaultInjection proves TestCodegenUnescapedDiscriminatingHTMLSpecials
+// is actually exercising the generated code's output, not merely checking it
+// built and ran: comparing the unescaped generated output against the
+// deliberately WRONG (HTML-escaped) expectation must fail — an
+// implementation that still escaped the value would pass this check only if
+// it emitted raw bytes, exactly what this slice is proving.
+func TestCodegenUnescapedFaultInjection(t *testing.T) {
+	dataLiteral := "opsData{Name: `<b>&\"x\"`}"
+	wrongWant := "<p>&lt;b&gt;&amp;&#34;x&#34;</p>"
+
+	for _, src := range []string{"p !{Name}\n", "p!= Name\n"} {
+		ast, err := Parse(src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", src, err)
+		}
+
+		got := runGeneratedGo(t, generated, dataLiteral)
+		if got == wrongWant {
+			t.Fatalf("fault injection did not fault: generated output %q unexpectedly matched the deliberately wrong (escaped) expectation %q for %q", got, wrongWant, src)
+		}
+	}
+}
+
+// TestCodegenUnescapedNoSpecials is the sanity companion to the
+// discriminating case: a string field with no HTML-special characters
+// renders identically whether escaped or unescaped, for both interpolation
+// and buffered code.
+func TestCodegenUnescapedNoSpecials(t *testing.T) {
+	data := map[string]any{"Name": "hello"}
+	dataLiteral := `opsData{Name: "hello"}`
+
+	for _, src := range []string{"p !{Name}\n", "p!= Name\n", "p #{Name}\n", "p= Name\n"} {
+		t.Run(src, func(t *testing.T) {
+			genUnescapedDifferential(t, src, data, dataLiteral)
+		})
+	}
+}
+
+// TestCodegenUnescapedNumericAndBool proves a numeric and a bool field
+// stringify identically through the unescaped forms as the escaped ones —
+// neither can produce an HTML-special character, so escaping was always a
+// no-op for these, but the codegen path must still build and match.
+func TestCodegenUnescapedNumericAndBool(t *testing.T) {
+	cases := []struct {
+		name        string
+		src         string
+		data        map[string]any
+		dataLiteral string
+	}{
+		{name: "numeric interpolation", src: "p !{Count}\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
+		{name: "numeric buffered code", src: "p!= Count\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
+		{name: "bool interpolation", src: "p !{Flag}\n", data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
+		{name: "bool buffered code", src: "p!= Flag\n", data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			genUnescapedDifferential(t, tc.src, tc.data, tc.dataLiteral)
+		})
+	}
+}
+
+// TestCodegenUnescapedExpression proves a `+`-concatenation expression
+// (genValueExpr's supported operator surface) renders unescaped RAW, over
+// two string fields each holding an HTML-special character — proving the
+// unescaped path composes with genValueExpr's expression support, not just
+// its bare-field leaf.
+func TestCodegenUnescapedExpression(t *testing.T) {
+	data := map[string]any{"Str1": "<a>", "Str2": "<b>"}
+	dataLiteral := `opsData{Str1: "<a>", Str2: "<b>"}`
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{name: "unescaped interpolation expression", src: "p !{Str1 + Str2}\n", want: "<p><a><b></p>"},
+		{name: "unescaped buffered code expression", src: "p!= Str1 + Str2\n", want: "<p><a><b></p>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := genUnescapedDifferential(t, tc.src, data, dataLiteral)
+			if got != tc.want {
+				t.Errorf("codegen output %q does not match expected %q for %q", got, tc.want, tc.src)
+			}
+		})
+	}
+}
+
+// TestCodegenUnescapedFallibleSuccess proves genFallibleExtraction's
+// prelude — the same extraction the escaped path uses — composes correctly
+// with the unescaped write: a successful division renders the quotient with
+// no extraction machinery leaking into the output, for both `!{}` and `!=`.
+func TestCodegenUnescapedFallibleSuccess(t *testing.T) {
+	data := map[string]any{"Count": 10}
+	dataLiteral := "opsData{Count: 10}"
+
+	for _, src := range []string{"p !{Count / 2}\n", "p!= Count / 2\n"} {
+		t.Run(src, func(t *testing.T) {
+			genUnescapedDifferential(t, src, data, dataLiteral)
+		})
+	}
+}
+
+// TestCodegenUnescapedFallibleError proves error parity for the unescaped
+// forms: both the interpreter and the generated code abort with the
+// identical "division by zero" error for a fallible unescaped expression —
+// exactly the same error-propagation shape the escaped path already proves
+// in codegen_fallible_test.go.
+func TestCodegenUnescapedFallibleError(t *testing.T) {
+	for _, src := range []string{"p !{Count / Zero}\n", "p!= Count / Zero\n"} {
+		t.Run(src, func(t *testing.T) {
+			runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
+				name:        src,
+				src:         src,
+				data:        map[string]any{"Count": 10, "Zero": 0},
+				dataLiteral: "opsData{Count: 10, Zero: 0}",
+			})
+		})
+	}
+}
+
+// TestCodegenUnescapedUnsupportedExpressionSameSurface proves the unescaped
+// supported expression set is co-extensive with the escaped one: an array
+// literal, a construct genValueExpr already defers for the escaped forms,
+// is rejected identically — with the SAME error message — for the unescaped
+// forms, proving no new deferral (and no new acceptance) was introduced.
+func TestCodegenUnescapedUnsupportedExpressionSameSurface(t *testing.T) {
+	genErr := func(t *testing.T, src string) string {
+		t.Helper()
+		ast, err := Parse(src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", src, err)
+		}
+		_, err = GenerateGo(ast, Config{
+			PackageName:     "gopug",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err == nil {
+			t.Fatalf("GenerateGo(%q): expected an unsupported-construct error, got nil", src)
+		}
+		return err.Error()
+	}
+
+	escapedInterp := genErr(t, "p #{[1, 2, 3]}\n")
+	unescapedInterp := genErr(t, "p !{[1, 2, 3]}\n")
+	if unescapedInterp != escapedInterp {
+		t.Errorf("unescaped interpolation error %q does not match escaped interpolation error %q for the same unsupported expression", unescapedInterp, escapedInterp)
+	}
+	if !strings.Contains(unescapedInterp, "unsupported") {
+		t.Errorf("unescaped interpolation error %q does not describe an unsupported construct", unescapedInterp)
+	}
+
+	escapedCode := genErr(t, "p= [1, 2, 3]\n")
+	unescapedCode := genErr(t, "p!= [1, 2, 3]\n")
+	if unescapedCode != escapedCode {
+		t.Errorf("unescaped buffered code error %q does not match escaped buffered code error %q for the same unsupported expression", unescapedCode, escapedCode)
+	}
+	if !strings.Contains(unescapedCode, "unsupported") {
+		t.Errorf("unescaped buffered code error %q does not describe an unsupported construct", unescapedCode)
+	}
+}
+
+// TestCodegenUnescapedAttributeStillDeferred pins that this slice's scope is
+// TEXT output only: an unescaped attribute value (`div(x!= f)`) still hard-
+// errors with its own distinct message, unchanged by this slice's genCode/
+// genInterpolation edits.
+func TestCodegenUnescapedAttributeStillDeferred(t *testing.T) {
+	src := "div(x!=Name)\n"
+	ast, err := Parse(src, nil)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	_, err = GenerateGo(ast, Config{
+		PackageName:     "gopug",
+		FuncName:        "RenderOps",
+		DataType:        "opsData",
+		DataReflectType: opsDataReflectType,
+	})
+	if err == nil {
+		t.Fatalf("GenerateGo(%q): expected an unsupported unescaped-attribute error, got nil", src)
+	}
+	if !strings.Contains(err.Error(), "unescaped attribute") {
+		t.Errorf("GenerateGo(%q): error %q does not describe an unsupported unescaped attribute", src, err.Error())
+	}
+}
+
+// TestCodegenUnescapedOnlyTemplateImportGating proves a template using ONLY
+// unescaped output (no escaped `#{}`/`=` node anywhere) still compiles and
+// runs without an unused "html" import: genInterpolation/genCode's
+// unescaped arm never sets g.needsHTML, since it never emits an
+// html.EscapeString call.
+func TestCodegenUnescapedOnlyTemplateImportGating(t *testing.T) {
+	src := "p !{Name}\np!= Count\n"
+	ast, err := Parse(src, nil)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	generated, err := GenerateGo(ast, Config{
+		PackageName:     "main",
+		FuncName:        "RenderOps",
+		DataType:        "opsData",
+		DataReflectType: opsDataReflectType,
+	})
+	if err != nil {
+		t.Fatalf("GenerateGo(%q): %v", src, err)
+	}
+
+	if strings.Contains(string(generated), `"html"`) {
+		t.Errorf("GenerateGo(%q) imports \"html\" even though the template contains only unescaped output:\n%s", src, generated)
+	}
+
+	tmpl, err := Compile(src, nil)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", src, err)
+	}
+	want, err := tmpl.Render(map[string]any{"Name": "hello", "Count": 42})
+	if err != nil {
+		t.Fatalf("interpreter Render: %v", err)
+	}
+
+	got := runGeneratedGo(t, generated, `opsData{Name: "hello", Count: 42}`)
+	if got != want {
+		t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, src)
+	}
+}
+
+// TestCodegenUnescapedAlongsideEscapedImportGating proves the "html" import
+// is still emitted when a template mixes unescaped and escaped output — the
+// unescaped arm's needsHTML skip must not suppress the import an escaped
+// sibling node in the SAME template still needs.
+func TestCodegenUnescapedAlongsideEscapedImportGating(t *testing.T) {
+	src := "p !{Name}\np= Name\n"
+	ast, err := Parse(src, nil)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	generated, err := GenerateGo(ast, Config{
+		PackageName:     "main",
+		FuncName:        "RenderOps",
+		DataType:        "opsData",
+		DataReflectType: opsDataReflectType,
+	})
+	if err != nil {
+		t.Fatalf("GenerateGo(%q): %v", src, err)
+	}
+
+	if !strings.Contains(string(generated), `"html"`) {
+		t.Errorf("GenerateGo(%q) does not import \"html\" even though the template contains an escaped node:\n%s", src, generated)
+	}
+
+	tmpl, err := Compile(src, nil)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", src, err)
+	}
+	want, err := tmpl.Render(map[string]any{"Name": `<b>&"x"`})
+	if err != nil {
+		t.Fatalf("interpreter Render: %v", err)
+	}
+
+	got := runGeneratedGo(t, generated, "opsData{Name: `<b>&\"x\"`}")
+	if got != want {
+		t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, src)
+	}
+}

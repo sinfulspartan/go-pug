@@ -5,16 +5,20 @@ import "testing"
 // TestCodegenUnsupported asserts that constructs outside this increment's
 // grammar subset return a clear "unsupported" error from GenerateGo rather
 // than silently emitting output that doesn't match the interpreter — mixins,
-// includes, unless, dynamic attributes, and unescaped interpolation are all
-// later increments per the codegen design doc; a plain else-if chain is now
-// supported (see codegen_comment_elseif_test.go), so the case below instead
-// covers an else-if chain whose OWN condition is still outside genCondition's
-// grammar, proving that error still propagates (fail-closed) through the
-// else-if recursion. An each-loop index variable over a slice/array FIELD
-// collection is likewise no longer in this list — it is now supported (see
+// includes, unless, and dynamic attributes are all later increments per the
+// codegen design doc; a plain else-if chain is now supported (see
+// codegen_comment_elseif_test.go), so the case below instead covers an
+// else-if chain whose OWN condition is still outside genCondition's grammar,
+// proving that error still propagates (fail-closed) through the else-if
+// recursion. An each-loop index variable over a slice/array FIELD collection
+// is likewise no longer in this list — it is now supported (see
 // codegen_each_index_test.go) — so the "each with index variable" case below
 // was changed to an each-index over an ARRAY-LITERAL collection, which
 // remains unsupported (see TestCodegenEachIndexArrayLiteralDeferred).
+// Unescaped interpolation (`!{expr}`) is no longer in this list either — it
+// is now supported, over the same expression surface as escaped
+// interpolation, including in type-blind mode (a nil Config.DataReflectType)
+// for a bare field reference — see codegen_unescaped_test.go.
 func TestCodegenUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -23,10 +27,6 @@ func TestCodegenUnsupported(t *testing.T) {
 		{
 			name: "dynamic attribute value",
 			src:  "a(href=Link)",
-		},
-		{
-			name: "unescaped interpolation",
-			src:  "p !{Raw}",
 		},
 		{
 			name: "unless",
