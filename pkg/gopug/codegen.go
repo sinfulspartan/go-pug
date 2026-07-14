@@ -633,6 +633,16 @@ type scopeVar struct {
 	goName     string
 	typ        reflect.Type
 	isVarLocal bool
+
+	// indexRawGoName is set only for an each-loop INDEX variable: the Go
+	// name of the underlying raw `int` range-index local this string
+	// variable was derived from (goName itself holds
+	// `strconv.Itoa(indexRawGoName)`, matching the interpreter's own
+	// `scope[IndexVar] = strconv.Itoa(i)`). It lets a numeric-literal
+	// comparison against the index (`if i == 0`, `if i > 1`) compile
+	// against the exact underlying int rather than attempting a string
+	// comparison, which is unset for every other scope var.
+	indexRawGoName string
 }
 
 // lookupScope searches the scope stack innermost-first for name, returning
@@ -654,6 +664,16 @@ func (g *generator) isBound(name string) bool {
 
 func (g *generator) pushScope(name, goName string, typ reflect.Type, isVarLocal bool) {
 	g.scope = append(g.scope, scopeVar{name: name, goName: goName, typ: typ, isVarLocal: isVarLocal})
+}
+
+// pushIndexScope binds an each-loop INDEX variable: a STRING scope var
+// (goName holds `strconv.Itoa(rawIntGoName)`, mirroring the interpreter's
+// own `scope[IndexVar] = strconv.Itoa(i)` exactly — see genEach's doc
+// comment), with rawIntGoName recorded so a numeric-literal comparison
+// against it (genComparison) can compile against the underlying int instead
+// of the string.
+func (g *generator) pushIndexScope(name, goName, rawIntGoName string) {
+	g.scope = append(g.scope, scopeVar{name: name, goName: goName, typ: reflectTypeString, indexRawGoName: rawIntGoName})
 }
 
 // scopeMark returns the current scope depth, for a caller that is about to
@@ -3570,19 +3590,34 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 // genEach emits a for-range loop over a slice field, or — the other
 // array-literal lever besides `.indexOf`/`.includes`/`.contains` — over a
 // whole-bracket-wrapped array literal collection (`each x in ["a", "b"]` /
-// `each x in [1, 2, 3]`), delegated to genEachArrayLiteral. Only the
-// single-variable form (`each x in <field>`) with no index variable and no
-// `each`/`else` empty-collection body is supported in this increment. In
-// type-aware mode, the loop item variable is scoped to the collection
-// field's element type (dereferencing pointers on the collection and/or its
-// element), so a dot-path rooted at the item variable inside the loop body
-// resolves correctly too.
+// `each x in [1, 2, 3]`), delegated to genEachArrayLiteral. The
+// single-variable form (`each x in <field>`) and the two-variable
+// INDEX-variable form (`each x, i in <field>`) are both supported for a
+// slice/array field; an each-index over an array-literal collection is not
+// (see genEachArrayLiteral's dispatch below). An `each`/`else` empty-
+// collection body is not supported in this increment, with or without an
+// index variable. In type-aware mode, the loop item variable is scoped to
+// the collection field's element type (dereferencing pointers on the
+// collection and/or its element), so a dot-path rooted at the item
+// variable inside the loop body resolves correctly too.
+//
+// The index variable is modeled as a STRING scope var holding
+// `strconv.Itoa(<rawIntLocal>)`, mirroring Runtime.renderEach's own
+// `scope[IndexVar] = strconv.Itoa(i)` (runtime.go) exactly — NOT as a raw
+// Go int. This is load-bearing, not a style choice: it's what makes every
+// downstream use of the index variable agree with the interpreter by
+// construction — `#{i}`/a template literal stringifies to the same decimal
+// text the interpreter stored, `if i` truthiness routes through
+// gopug.Truthy (whose falsy set includes exactly "0", so the FIRST loop
+// iteration's index is falsy, matching the interpreter precisely), and a
+// numeric-literal comparison (`i == 0`, `i > 1`) is handled by a dedicated
+// genComparison case keyed off scopeVar.indexRawGoName that compiles
+// against the underlying raw int local instead of the string — see that
+// case's own comment for why that's still exactly equivalent to
+// compareValues' numeric-string coercion, not a shortcut around it.
 func (g *generator) genEach(n *EachNode) error {
 	if n.ItemVar == "" {
 		return fmt.Errorf("unsupported each without an item variable in codegen")
-	}
-	if n.IndexVar != "" {
-		return fmt.Errorf("unsupported each index variable %q in codegen", n.IndexVar)
 	}
 	if len(n.EmptyBody) > 0 {
 		return fmt.Errorf("unsupported each/else in codegen")
@@ -3590,6 +3625,9 @@ func (g *generator) genEach(n *EachNode) error {
 
 	collTrim := strings.TrimSpace(n.CollectionExpr)
 	if strings.HasPrefix(collTrim, "[") && findMatchingCloseBracket(collTrim) == len(collTrim)-1 {
+		if n.IndexVar != "" {
+			return fmt.Errorf("unsupported each index variable %q over an array-literal collection in codegen", n.IndexVar)
+		}
 		return g.genEachArrayLiteral(n, collTrim)
 	}
 
@@ -3607,9 +3645,38 @@ func (g *generator) genEach(n *EachNode) error {
 		elemTyp = derefType(ct.Elem())
 	}
 
-	g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
+	if n.IndexVar == "" {
+		g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
+		mark := g.scopeMark()
+		g.pushScope(n.ItemVar, n.ItemVar, elemTyp, false)
+		for _, child := range n.Body {
+			if err := g.genNode(child); err != nil {
+				g.scopeRestore(mark)
+				return err
+			}
+		}
+		g.scopeRestore(mark)
+		g.flushStatic()
+		g.body.WriteString("}\n")
+		return nil
+	}
+
+	idxTmp := fmt.Sprintf("__idx%d", g.nextTmp())
+	g.writeRaw(fmt.Sprintf("for %s, %s := range %s {\n", idxTmp, n.ItemVar, collExpr))
+	g.needsStrconv = true
+	g.body.WriteString(fmt.Sprintf("%s := strconv.Itoa(%s)\n", n.IndexVar, idxTmp))
+	// The body may reference neither, either, or both of the loop's two Go
+	// range variables (the interpreter imposes no such restriction — it
+	// just binds both into a plain scope map regardless of whether the
+	// body reads them), so both are unconditionally blank-used right after
+	// declaration — the same `_ = goName` pattern genUnbufferedAssign uses
+	// to keep a possibly-unread `- var` local from tripping Go's
+	// declared-and-not-used check.
+	g.body.WriteString(fmt.Sprintf("_ = %s\n", n.IndexVar))
+	g.body.WriteString(fmt.Sprintf("_ = %s\n", n.ItemVar))
 	mark := g.scopeMark()
 	g.pushScope(n.ItemVar, n.ItemVar, elemTyp, false)
+	g.pushIndexScope(n.IndexVar, n.IndexVar, idxTmp)
 	for _, child := range n.Body {
 		if err := g.genNode(child); err != nil {
 			g.scopeRestore(mark)
@@ -3893,12 +3960,17 @@ const (
 // truth checkLiteralAgainstFieldKind range-checks against — and whether a
 // string literal's text itself looks numeric (parseNumber), since the
 // interpreter's compareValues numeric-compares a numeric-looking string
-// operand rather than string-comparing it.
+// operand rather than string-comparing it. indexRawGoExpr is set only when
+// this operand is a bare reference to an each-loop INDEX variable (see
+// scopeVar.indexRawGoName): it carries the underlying raw `int` range-index
+// Go expression, letting genComparison compile a numeric-literal comparison
+// against the index directly against that int rather than the string.
 type operandKind struct {
 	shape          operandShape
 	numType        reflect.Type
 	numLiteralVal  float64
 	numericLiteral bool
+	indexRawGoExpr string
 }
 
 func (k operandKind) isNumeric() bool {
@@ -3978,7 +4050,11 @@ func (g *generator) genOperand(expr string) (string, operandKind, error) {
 	case reflect.Bool:
 		return convertExpr(goExpr, typ, reflectTypeBool, "bool"), operandKind{shape: shapeOperandBool}, nil
 	case reflect.String:
-		return convertExpr(goExpr, typ, reflectTypeString, "string"), operandKind{shape: shapeOperandStringField}, nil
+		kind := operandKind{shape: shapeOperandStringField}
+		if sv, ok := g.lookupScope(expr); ok {
+			kind.indexRawGoExpr = sv.indexRawGoName
+		}
+		return convertExpr(goExpr, typ, reflectTypeString, "string"), kind, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float64:
@@ -4037,12 +4113,22 @@ func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind
 //     numeric-looking string literal would numeric-compare in compareValues
 //     (both operands would parse as numbers), not string-compare, so
 //     emitting a Go string `==` there would diverge.
+//   - an each-loop INDEX variable (genOperand sets operandKind.indexRawGoExpr
+//     for one — see scopeVar.indexRawGoName) compared, with ANY of the
+//     eight operators, to a numeric literal: the index is always a decimal
+//     string of a non-negative int (strconv.Itoa), so compareValues always
+//     takes its numeric branch for it (parseNumber never fails on that
+//     shape), and the comparison is compiled directly against the
+//     underlying raw int local instead of the string — checked against
+//     checkLiteralAgainstFieldKind(reflectTypeInt) exactly like a genuine
+//     int-kind field, so the same safe-integer/representability guarantees
+//     apply.
 //
 // Every other combination — an ordering compare (`< > <= >=`) between
 // strings, two string literals, two string fields, a string operand against
-// a numeric operand, or any operand genOperand itself rejected — returns an
-// error instead of emitting a comparison that might not agree with the
-// interpreter.
+// a numeric operand (other than the index-variable case above), or any
+// operand genOperand itself rejected — returns an error instead of emitting
+// a comparison that might not agree with the interpreter.
 func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) {
 	leftRaw = strings.TrimSpace(leftRaw)
 	rightRaw = strings.TrimSpace(rightRaw)
@@ -4065,6 +4151,18 @@ func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) 
 	}
 
 	switch {
+	case leftKind.indexRawGoExpr != "" && rightKind.shape == shapeOperandNumericLiteral:
+		if err := checkLiteralAgainstFieldKind(rightKind.numLiteralVal, reflectTypeInt); err != nil {
+			return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition: %w", leftRaw, op, rightRaw, err)
+		}
+		return leftKind.indexRawGoExpr + " " + goOp + " " + formatCanonicalLiteral(rightKind.numLiteralVal), nil
+
+	case rightKind.indexRawGoExpr != "" && leftKind.shape == shapeOperandNumericLiteral:
+		if err := checkLiteralAgainstFieldKind(leftKind.numLiteralVal, reflectTypeInt); err != nil {
+			return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition: %w", leftRaw, op, rightRaw, err)
+		}
+		return formatCanonicalLiteral(leftKind.numLiteralVal) + " " + goOp + " " + rightKind.indexRawGoExpr, nil
+
 	case leftKind.isNumeric() && rightKind.isNumeric():
 		if err := checkNumericComparable(leftKind, rightKind); err != nil {
 			return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition: %w", leftRaw, op, rightRaw, err)

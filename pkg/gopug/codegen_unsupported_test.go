@@ -10,7 +10,11 @@ import "testing"
 // supported (see codegen_comment_elseif_test.go), so the case below instead
 // covers an else-if chain whose OWN condition is still outside genCondition's
 // grammar, proving that error still propagates (fail-closed) through the
-// else-if recursion.
+// else-if recursion. An each-loop index variable over a slice/array FIELD
+// collection is likewise no longer in this list — it is now supported (see
+// codegen_each_index_test.go) — so the "each with index variable" case below
+// was changed to an each-index over an ARRAY-LITERAL collection, which
+// remains unsupported (see TestCodegenEachIndexArrayLiteralDeferred).
 func TestCodegenUnsupported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -33,8 +37,8 @@ func TestCodegenUnsupported(t *testing.T) {
 			src:  "if A\n  p one\nelse if B + 1\n  p two\n",
 		},
 		{
-			name: "each with index variable",
-			src:  "each item, i in Items\n  p #{item.Label}\n",
+			name: "each with index variable over an array-literal collection",
+			src:  "each item, i in [1, 2, 3]\n  p=item\n",
 		},
 		{
 			name: "each with an empty-collection else",
