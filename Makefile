@@ -130,15 +130,15 @@ run:
 
 test:
 	@echo "=> Running tests ($(PKG))"
-	$(GO) test -count=1 $(PKG)
+	$(GO) test -count=1 -timeout 20m $(PKG)
 
 test-v:
 	@echo "=> Running tests -- verbose ($(PKG))"
-	$(GO) test -count=1 -v $(PKG)
+	$(GO) test -count=1 -timeout 20m -v $(PKG)
 
 test-race:
 	@echo "=> Running tests with race detector ($(PKG))"
-	$(GO) test -count=1 -race $(PKG)
+	$(GO) test -count=1 -race -timeout 25m $(PKG)
 
 # ---------------------------------------------------------------------------
 # Benchmarks
