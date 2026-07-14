@@ -4185,6 +4185,76 @@ func TestAndAttributesInMixin(t *testing.T) {
 	assertContains(t, out, "foo")
 }
 
+// TestAndAttributesSpreadValueEmbeddedQuote pins a fix: a &attributes spread
+// value containing a literal `"` must be preserved and HTML-escaped, not
+// silently lost. renderTag used to compute a spread attribute's value by
+// re-wrapping the runtime string in quotes and re-parsing it through
+// evaluateExpr as if it were Pug source; evaluateExpr's quoted-string scanner
+// stops at the FIRST embedded quote, so a value like `x" onmouseover="y`
+// used to render as an empty attribute — silently dropping the rest of the
+// value. Since the source is a runtime map value (not fixed template text),
+// this was a data-loss / attribute-injection risk, not just a cosmetic bug.
+func TestAndAttributesSpreadValueEmbeddedQuote(t *testing.T) {
+	out := renderTest(t, `div&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"title": `a"b`},
+	})
+	assertContains(t, out, `title="a&quot;b"`)
+}
+
+// TestAndAttributesSpreadValueQuoteInjectionStyle pins the same fix against
+// a value shaped like an attribute-injection attempt: the embedded quote and
+// the rest of the value must both be preserved, fully HTML-escaped, inside
+// the single "title" attribute — never allowed to break out into what would
+// look like a second attribute.
+func TestAndAttributesSpreadValueQuoteInjectionStyle(t *testing.T) {
+	out := renderTest(t, `div&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"title": `x" onmouseover="y`},
+	})
+	assertContains(t, out, `title="x&quot; onmouseover=&quot;y"`)
+	if strings.Contains(out, `onmouseover="y"`) {
+		t.Errorf("spread value broke out of its attribute instead of being escaped, got: %q", out)
+	}
+}
+
+// TestAndAttributesSpreadClassEmptyValueLeavesBaseUnchanged pins a fix: an
+// ordinary EMPTY spread class value must contribute nothing to a merge with
+// an existing base class (matching pug.js's own array-based class merge,
+// which skips a falsy element rather than joining in an empty string) —
+// renderTag used to route the merged class value back through
+// resolveClassTokenList's quoted-literal branch, which happened to collapse
+// this particular shape correctly but for the wrong reason (Fields-based
+// whitespace collapsing), and got the next two cases below wrong.
+func TestAndAttributesSpreadClassEmptyValueLeavesBaseUnchanged(t *testing.T) {
+	out := renderTest(t, `div.base&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"class": ""},
+	})
+	assertContains(t, out, `class="base"`)
+}
+
+// TestAndAttributesSpreadClassPreservesInternalWhitespace pins a fix: a
+// spread class value's OWN internal whitespace (here, a double space) must
+// be preserved verbatim when merged with a base class, matching pug.js's
+// own class merge (which treats a spread class value as one opaque,
+// never-re-tokenized token) — renderTag used to Fields-collapse it via
+// resolveClassTokenList, which is correct for an ordinary static/dynamic
+// class attribute but not for a spread's own value.
+func TestAndAttributesSpreadClassPreservesInternalWhitespace(t *testing.T) {
+	out := renderTest(t, `div.base&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"class": "a  b"},
+	})
+	assertContains(t, out, `class="base a  b"`)
+}
+
+// TestAndAttributesSpreadClassPreservesLeadingTrailingWhitespace pins a fix:
+// a spread class value's own leading/trailing whitespace must be preserved
+// verbatim (not trimmed) when there is no base class to merge with.
+func TestAndAttributesSpreadClassPreservesLeadingTrailingWhitespace(t *testing.T) {
+	out := renderTest(t, `div&attributes(extra)`, map[string]interface{}{
+		"extra": map[string]interface{}{"class": " x "},
+	})
+	assertContains(t, out, `class=" x "`)
+}
+
 // ── Plain text ────────────────────────────────────────────────────────────────
 
 // TestDotBlockText verifies the script. / style. dot-block plain text syntax.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"html"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -505,6 +506,34 @@ func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
 	return evaluated
 }
 
+// mergeSpreadClass computes the "class" merge rule a `&attributes(<expr>)`
+// spread uses: an EMPTY spread class value contributes nothing at all (the
+// existing/base class, if any, is left completely untouched, matching real
+// pug.js's own array-based class merge, which skips a falsy element rather
+// than joining in an empty string); otherwise the spread value is appended
+// to any existing class with exactly one separating space. Neither side's
+// internal whitespace is touched or collapsed — a spread class value is
+// treated as one opaque token, never re-tokenized — which is why this
+// function does NOT reuse resolveClassTokenList (the general, non-spread
+// dynamic-class evaluator): resolveClassTokenList's quoted-literal branch
+// Fields-splits and rejoins its input, collapsing runs of internal
+// whitespace and trimming the ends, which is the correct behavior for an
+// ordinary static/dynamic class attribute (unrelated to this function) but
+// is NOT what a spread's own class value should undergo — real pug.js
+// preserves a spread class value's internal whitespace verbatim. Both
+// Runtime.renderTag's own spread-merge switch and the codegen support
+// function WriteSpreadAttrs call this one helper, so the two
+// implementations of the identical merge rule cannot drift apart.
+func mergeSpreadClass(existing, spreadVal string) string {
+	if spreadVal == "" {
+		return existing
+	}
+	if existing == "" {
+		return spreadVal
+	}
+	return existing + " " + spreadVal
+}
+
 func (r *Runtime) renderTag(tag *TagNode) error {
 	if r.pretty() && !prettyInline(tag) {
 		r.prettyNewline()
@@ -526,6 +555,32 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 			merged[k] = v
 		}
 	}
+
+	// spreadFinal holds the FULLY COMPUTED, not-yet-escaped value for every
+	// non-bare, non-deleted attribute a &attributes spread touched (keyed by
+	// attribute name). merged[name].Value still carries the legacy
+	// quote-wrapped placeholder text below (so every other structural check
+	// in the render loop — "does this attribute have a value at all",
+	// isBooleanAttribute's quoted-literal check, and so on — keeps working
+	// completely unchanged), but for a name present in spreadFinal the render
+	// loop below uses spreadFinal's value DIRECTLY instead of re-parsing
+	// merged[name].Value through evaluateExpr/resolveClassTokenList. This
+	// matters for two reasons a merely-quote-wrapped-and-reparsed value gets
+	// wrong: (1) resolveClassTokenList's quoted-literal branch Fields-splits
+	// and rejoins its input, collapsing internal whitespace runs and
+	// trimming the ends — correct for an ordinary static/dynamic class
+	// attribute, but not for a spread's own class value, which pug.js's own
+	// runtime preserves verbatim (see mergeSpreadClass); (2) re-quoting an
+	// arbitrary runtime string and feeding it back through evaluateExpr as
+	// if it were Pug source breaks the moment that string itself contains an
+	// unescaped `"` — evaluateExpr's quoted-string scanner stops at the
+	// FIRST embedded quote, silently truncating or losing the rest of the
+	// value instead of escaping it, which is a data-loss/attribute-injection
+	// risk when the spread source is a runtime map value, not fixed template
+	// text. spreadFinal is empty for every tag with no &attributes spread,
+	// so this changes nothing about ordinary (non-spread) attribute
+	// rendering.
+	spreadFinal := map[string]string{}
 
 	for k, v := range tag.Attributes {
 		if k != "&attributes" {
@@ -555,20 +610,24 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 			switch attrKey {
 			case "class":
+				existingVal := ""
 				if existing, ok := merged["class"]; ok {
-					existingVal := strings.Trim(existing.Value, `"`)
-					merged["class"] = &AttributeValue{Value: `"` + existingVal + " " + valStr + `"`}
-				} else {
-					merged["class"] = &AttributeValue{Value: `"` + valStr + `"`}
+					existingVal = strings.Trim(existing.Value, `"`)
 				}
+				finalVal := mergeSpreadClass(existingVal, valStr)
+				merged["class"] = &AttributeValue{Value: `"` + finalVal + `"`}
+				spreadFinal["class"] = finalVal
 			default:
 				switch valStr {
 				case "true":
 					merged[attrKey] = &AttributeValue{IsBare: true}
+					delete(spreadFinal, attrKey)
 				case "false":
 					delete(merged, attrKey)
+					delete(spreadFinal, attrKey)
 				default:
 					merged[attrKey] = &AttributeValue{Value: `"` + valStr + `"`}
+					spreadFinal[attrKey] = valStr
 				}
 			}
 		}
@@ -580,7 +639,9 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		val := merged[name]
 
 		evaluated := ""
-		if val.Value != "" {
+		if finalVal, isSpreadFinal := spreadFinal[name]; isSpreadFinal {
+			evaluated = finalVal
+		} else if val.Value != "" {
 			rawValExpr := strings.TrimSpace(val.Value)
 
 			if name == "style" && len(rawValExpr) >= 2 && rawValExpr[0] == '{' && rawValExpr[len(rawValExpr)-1] == '}' {
@@ -894,6 +955,93 @@ func JoinClasses(classes ...string) string {
 		}
 	}
 	return strings.Join(kept, " ")
+}
+
+// WriteSpreadAttrs renders a tag's attribute list for a `&attributes(<expr>)`
+// spread whose source is only known at RUNTIME — a map[string]string value
+// (a struct field or scope variable) whose keys the codegen backend cannot
+// see at generate time. Unlike a fully static &attributes forward (computed
+// entirely at generate time, see the codegen backend's own
+// mergeForwardedAttributes), this merge, its sortAttrNames ordering, and its
+// escaping all have to happen here, at render time.
+//
+// base holds the tag's own attributes exactly as they appeared on the tag,
+// excluding the &attributes entry itself: a bare boolean attribute (IsBare)
+// or a plain value with no surrounding quotes (Value holds the RAW,
+// already-unescaped attribute text — this function is the only place that
+// value is ever escaped, so Value must never itself be pre-escaped or
+// pre-quoted). spread is the runtime map[string]string value the
+// &attributes(...) expression resolved to.
+//
+// The merge reproduces Runtime.renderTag's own spread-merge switch exactly:
+// a spread "class" key is merged with base's own "class" value through the
+// SAME shared mergeSpreadClass helper Runtime.renderTag itself calls — an
+// empty spread class value contributes nothing (base is left untouched),
+// otherwise it is space-appended to base with neither side's internal
+// whitespace normalized (matching pug.js's own array-based class merge,
+// which treats a spread class value as one opaque, never-re-tokenized
+// token) — or set outright if base has none. For every other name, the
+// spread value "true" makes the merged attribute bare, "false" deletes it
+// entirely (even for a name that isn't an HTML boolean attribute — the
+// interpreter's own spread-merge switch applies this rule to every attribute
+// name, not just the ones isBooleanAttribute recognizes), and any other
+// value becomes that attribute's new value, completely overwriting base's
+// own — matching `case "true": IsBare = true` / `case "false": delete` /
+// `default: quoted` at runtime.go's renderTag exactly. Because a Go map's
+// iteration order is unspecified, the merge loop below ranges over spread in
+// whatever order Go gives it; this is safe because "class" is the only key
+// whose outcome depends on order relative to itself (there is only ever one
+// "class" entry in a map, so its own append is order-independent), and every
+// other key's outcome (bare / delete / overwrite) is idempotent regardless
+// of which other keys are processed first or last.
+//
+// Once merged, sortAttrNames orders the result (id, then class, then every
+// other name alphabetically — the same helper Runtime.renderTag and the
+// codegen backend's own static genAttributes both call), and each attribute
+// is written to w exactly as Runtime.renderTag's own render loop would: a
+// bare attribute as " name", anything else as ` name="` + EscapeAttr(value)
+// + `"`. It is exported so codegen-generated code can call it directly for
+// a &attributes(<mapField>) spread whose base attributes are all simple
+// (static string or bare boolean).
+func WriteSpreadAttrs(w io.Writer, base map[string]*AttributeValue, spread map[string]string) error {
+	merged := make(map[string]*AttributeValue, len(base)+len(spread))
+	for k, v := range base {
+		merged[k] = v
+	}
+
+	for attrKey, valStr := range spread {
+		switch attrKey {
+		case "class":
+			existingVal := ""
+			if existing, ok := merged["class"]; ok {
+				existingVal = existing.Value
+			}
+			merged["class"] = &AttributeValue{Value: mergeSpreadClass(existingVal, valStr)}
+		default:
+			switch valStr {
+			case "true":
+				merged[attrKey] = &AttributeValue{IsBare: true}
+			case "false":
+				delete(merged, attrKey)
+			default:
+				merged[attrKey] = &AttributeValue{Value: valStr}
+			}
+		}
+	}
+
+	for _, name := range sortAttrNames(merged) {
+		val := merged[name]
+		if val.IsBare {
+			if _, err := io.WriteString(w, " "+name); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := io.WriteString(w, " "+name+`="`+EscapeAttr(val.Value)+`"`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Add reproduces Runtime.evaluateExpr's `+` operator on two already-

@@ -883,26 +883,38 @@ func (g *generator) genNode(n Node) error {
 // result is an ordinary map[string]*AttributeValue containing only bare and
 // quoted-literal-string entries, so it is handed to genAttributes completely
 // unchanged, through the exact same static rendering path (sortAttrNames +
-// htmlEscapeAttr) every other static tag in this file already uses. A
-// `&attributes` tag reached ANY other way (outside genMixinCallAttrForward's
-// own body generation — a plain document tag, or a mixin body that isn't
-// itself flagged as attribute-forwarding) falls through unchanged to
-// genAttributes's own pre-existing check, which still defers it exactly as
-// it always has.
+// htmlEscapeAttr) every other static tag in this file already uses.
+//
+// A `&attributes` tag reached OUTSIDE that inlined-forwarding body — a plain
+// document tag, or a mixin body that isn't itself flagged as attribute-
+// forwarding — is handed to genSpreadAttrs instead, which supports the
+// narrower case of a spread source resolving to a RUNTIME map[string]string
+// value (its keys aren't known at generate time, so genAttributes's static
+// path can't render it): if genSpreadAttrs can't prove the spread source and
+// the tag's own base attributes fit that shape, it returns its own clean
+// deferral error rather than falling through to genAttributes's blanket
+// "&attributes" defer, so each unsupported shape gets a distinct message.
 func (g *generator) genTag(tag *TagNode) error {
 	g.writeStatic("<" + tag.Name)
 
-	attrs := tag.Attributes
-	if spread, ok := tag.Attributes["&attributes"]; ok && g.inAttrForwardBody {
+	spread, hasSpread := tag.Attributes["&attributes"]
+	switch {
+	case hasSpread && g.inAttrForwardBody:
 		merged, err := g.mergeForwardedAttributes(tag.Attributes, spread)
 		if err != nil {
 			return fmt.Errorf("tag %q: %w", tag.Name, err)
 		}
-		attrs = merged
-	}
-
-	if err := g.genAttributes(attrs); err != nil {
-		return fmt.Errorf("tag %q: %w", tag.Name, err)
+		if err := g.genAttributes(merged); err != nil {
+			return fmt.Errorf("tag %q: %w", tag.Name, err)
+		}
+	case hasSpread:
+		if err := g.genSpreadAttrs(tag, spread); err != nil {
+			return fmt.Errorf("tag %q: %w", tag.Name, err)
+		}
+	default:
+		if err := g.genAttributes(tag.Attributes); err != nil {
+			return fmt.Errorf("tag %q: %w", tag.Name, err)
+		}
 	}
 
 	if tag.SelfClose {
@@ -1122,6 +1134,141 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 	}
 
 	return merged, nil
+}
+
+// genSpreadAttrs handles a `&attributes(<expr>)` tag reached OUTSIDE an
+// inlined attribute-forwarding mixin body (genTag's other &attributes
+// branch, mergeForwardedAttributes, covers that case): here <expr> can be
+// ANY expression, most commonly a struct field, whose keys are not known
+// until the template actually renders — unlike the forwarding case, there is
+// no way to compute the merged attribute map at generate time, so the merge
+// itself (and its sortAttrNames ordering and escaping) has to happen at
+// RUNTIME, via the exported gopug.WriteSpreadAttrs helper.
+//
+// This increment supports only the narrowest shape it can prove byte-
+// identical to Runtime.renderTag: <expr> must resolve, through
+// resolveFieldExpr, to a map[string]string-typed value (a struct field or a
+// mixin-scope variable of that exact type — reflect.Map with both a string
+// key and a string element kind), and every OTHER attribute already on the
+// tag (the merge's "base") must be simple: a bare boolean or a static
+// quoted-string literal, exactly the same base-attribute shape
+// mergeForwardedAttributes itself requires. Anything else — an inline object
+// literal (`&attributes({...})`), a non-map or a map with a non-string key
+// or element kind (map[string]any, map[string]int, map[int]string, ...), a
+// dynamic base attribute (a field reference, an operator expression, a style
+// or class object), an unescaped base attribute, a base "class" literal with
+// leading/trailing or repeated internal whitespace (whether the interpreter
+// collapses it depends on whether the RUNTIME spread map happens to supply
+// its own "class" key — not knowable at generate time, so it is refused
+// rather than guessed), or a nil Config.DataReflectType (there is no type to
+// resolve <expr> or classify a base attribute's value against at all) — is
+// refused with its own distinct, clean error rather than guessing at output
+// that might not match the interpreter.
+//
+// base's AttributeValue.Value entries hold the RAW, already-unescaped
+// attribute text with no surrounding quotes (e.g. Value: "red", not
+// Value: `"red"`) — WriteSpreadAttrs's own contract, distinct from the
+// quoted-source-string convention AttributeValue.Value otherwise carries
+// elsewhere in this file (parseAttributes's parsed AST, and
+// mergeForwardedAttributes's static merge result, both feed genAttributes's
+// unwrapQuotedLiteral step instead) — because WriteSpreadAttrs is a brand
+// new runtime code path with no static unwrap/escape step of its own to
+// reuse; it escapes every non-bare value exactly once, itself, via
+// EscapeAttr.
+func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
+	expr := strings.TrimSpace(spread.Value)
+
+	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: an inline object literal spread is not supported yet", expr)
+	}
+
+	if g.rootType == nil {
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: a nil Config.DataReflectType (type-blind mode) cannot resolve a runtime spread source's type", expr)
+	}
+
+	goExpr, typ, err := g.resolveFieldExpr(expr)
+	if err != nil {
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: %w", expr, err)
+	}
+	if typ == nil || typ.Kind() != reflect.Map || typ.Key().Kind() != reflect.String || typ.Elem().Kind() != reflect.String {
+		gotKind := "untyped"
+		if typ != nil {
+			gotKind = typ.String()
+		}
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed spread source is supported this increment (got %s)", expr, gotKind)
+	}
+
+	base := make(map[string]*AttributeValue, len(tag.Attributes))
+	for name, val := range tag.Attributes {
+		if name == "&attributes" {
+			continue
+		}
+		if val.Unescaped {
+			return fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is unescaped, which is not supported for a runtime spread", expr, name)
+		}
+		if val.IsBare {
+			base[name] = &AttributeValue{IsBare: true}
+			continue
+		}
+		lit, ok := unwrapQuotedLiteral(strings.TrimSpace(val.Value))
+		if !ok {
+			return fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is dynamic, which is not supported for a runtime spread (only a static quoted-string or bare boolean base attribute is supported)", expr, name)
+		}
+		if name == "class" && lit != strings.Join(strings.Fields(lit), " ") {
+			// A base class literal with leading/trailing or 2+ internal
+			// spaces is only byte-identical to the interpreter when the
+			// spread ITSELF touches "class" (both sides then go through the
+			// shared mergeSpreadClass, which leaves whitespace untouched).
+			// When the spread has no "class" key at all, the interpreter's
+			// base class instead falls through to its ordinary (non-spread)
+			// render path, resolveClassTokenList, which Fields-collapses
+			// runs of whitespace and trims the ends — a transformation this
+			// generator has no way to know at generate time whether the
+			// RUNTIME spread map will or won't supply a "class" key, so it
+			// cannot decide which of the two behaviors to reproduce. Rather
+			// than guess (and risk emitting the raw, uncollapsed literal
+			// when the interpreter would have collapsed it), defer this
+			// shape entirely; a base class with no irregular whitespace is
+			// unaffected either way and stays supported.
+			return fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute \"class\" has leading/trailing or repeated internal whitespace, which is not supported for a runtime spread (its rendering depends on whether the runtime spread map supplies a \"class\" key, which is not knowable at generate time)", expr)
+		}
+		base[name] = &AttributeValue{Value: lit}
+	}
+
+	g.needsGopug = true
+	g.writeRaw("if err := gopug.WriteSpreadAttrs(w, " + genSpreadBaseLiteral(base) + ", " + goExpr + "); err != nil {\nreturn err\n}\n")
+	return nil
+}
+
+// genSpreadBaseLiteral renders base — a &attributes tag's own simple
+// (bare/static-literal) attributes, built by genSpreadAttrs — as a Go
+// composite literal of type map[string]*gopug.AttributeValue, in a
+// deterministic (sorted) key order so GenerateGo's output is reproducible
+// across runs.
+func genSpreadBaseLiteral(base map[string]*AttributeValue) string {
+	names := make([]string, 0, len(base))
+	for name := range base {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	var b strings.Builder
+	b.WriteString("map[string]*gopug.AttributeValue{")
+	for i, name := range names {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		val := base[name]
+		b.WriteString(strconv.Quote(name))
+		b.WriteString(": ")
+		if val.IsBare {
+			b.WriteString("{IsBare: true}")
+		} else {
+			b.WriteString("{Value: " + strconv.Quote(val.Value) + "}")
+		}
+	}
+	b.WriteString("}")
+	return b.String()
 }
 
 // staticCallAttrValue reduces a mixin call's own attribute value
