@@ -1153,9 +1153,14 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 // concrete SCALAR (bool, any signed/unsigned integer kind, float32, or
 // float64) — a struct field or a mixin-scope variable — reflect.Map with a
 // string key and a string, empty-interface, or scalar element kind — and
-// every OTHER attribute already on the tag (the merge's "base") must be
-// simple: a bare boolean or a static quoted-string literal, exactly the same
-// base-attribute shape mergeForwardedAttributes itself requires. For a
+// every OTHER attribute already on the tag (the merge's "base", built by
+// genSpreadBase) must be simple: a bare boolean, a static quoted-string
+// literal (the same base-attribute shape mergeForwardedAttributes itself
+// requires), or a dynamic PLAIN-SCALAR value-expr genSpreadBase can prove
+// reduces to the same evaluate-then-escape-once render Runtime.renderTag's
+// own non-spread branch already produces for a base attribute the runtime
+// spread does not touch (see genSpreadBase's own doc comment for exactly
+// which dynamic base shapes qualify, and which stay deferred). For a
 // map[string]any source, each value is stringified with fmt.Sprintf("%v", v)
 // — the EXACT call Runtime.renderTag's own spread path uses (valStr :=
 // fmt.Sprintf("%v", attrVal)) — before the merge, via gopug.WriteSpreadAttrsAny.
@@ -1174,16 +1179,18 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 // non-map, a map with a non-string key, or a map whose element kind is
 // neither string, the empty interface, nor a concrete scalar
 // (map[string][]string, map[string]map[...]..., map[string]struct{...},
-// map[string]*T, map[int]string, ...), a dynamic base attribute (a field
-// reference, an operator expression, a style or class object), an unescaped
-// base attribute, a base "class" literal with leading/trailing or repeated
-// internal whitespace (whether the interpreter collapses it depends on
-// whether the RUNTIME spread map happens to supply its own "class" key — not
-// knowable at generate time, so it is refused rather than guessed), or a nil
-// Config.DataReflectType (there is no type to resolve <expr> or classify a
-// base attribute's value against at all) — is refused with its own distinct,
-// clean error rather than guessing at output that might not match the
-// interpreter.
+// map[string]*T, map[int]string, ...), a base attribute genSpreadBase can't
+// prove reduces to that same evaluate-then-escape-once render (a dynamic
+// "class" or HTML-boolean-attribute-named base, a fallible base expression,
+// a style/class object, or any shape genValueExpr itself doesn't support), an
+// unescaped base attribute, a base "class" literal with leading/trailing or
+// repeated internal whitespace (whether the interpreter collapses it depends
+// on whether the RUNTIME spread map happens to supply its own "class" key —
+// not knowable at generate time, so it is refused rather than guessed), or a
+// nil Config.DataReflectType (there is no type to resolve <expr> or classify
+// a base attribute's value against at all) — is refused with its own
+// distinct, clean error rather than guessing at output that might not match
+// the interpreter.
 //
 // base's AttributeValue.Value entries hold the RAW, already-unescaped
 // attribute text with no surrounding quotes (e.g. Value: "red", not
@@ -1298,17 +1305,90 @@ func genScalarSpreadBoxLiteral(srcExpr string) string {
 	return "func() map[string]any { m := make(map[string]any, len(" + srcExpr + ")); for k, v := range " + srcExpr + " { m[k] = v }; return m }()"
 }
 
+// spreadBaseAttr is one base attribute of a &attributes spread tag, as
+// classified by genSpreadBase. Exactly one of the three fields applies: a
+// bare boolean (IsBare), a static (generate-time-known) literal value
+// (Static), or — since the dynamic-base-value relaxation — a Go expression
+// string (DynExpr) that genValueExpr already proved evaluates, at RUNTIME, to
+// the same unescaped text Runtime.renderTag's own non-spread render branch
+// would compute for that attribute. genSpreadBaseLiteral renders Static as a
+// quoted Go string literal and DynExpr as a raw, UNQUOTED Go expression —
+// spliced directly into the generated map[string]*gopug.AttributeValue
+// composite literal, so it is evaluated exactly once, at the point that
+// literal is constructed, just like any other dynamic attribute value this
+// generator emits.
+type spreadBaseAttr struct {
+	IsBare  bool
+	Static  string
+	DynExpr string
+}
+
 // genSpreadBase builds base — a &attributes tag's own attributes excluding
-// the &attributes entry itself, checked for the narrow shape both
-// genSpreadAttrs's field/variable path and genSpreadAttrsInlineObject's
-// inline-object path require: a bare boolean, or a static quoted-string
-// literal whose "class" value (if any) has no leading/trailing or repeated
-// internal whitespace. Shared by both so the base-attribute rules — and the
-// irregular-whitespace "class" deferral's rationale (see genSpreadAttrs's
-// own doc comment above) — cannot drift between the two spread-source
+// the &attributes entry itself, checked for the shapes genSpreadAttrs's
+// field/variable path and genSpreadAttrsInlineObject's inline-object path
+// both require: a bare boolean, a static quoted-string literal (whose
+// "class" value, if any, has no leading/trailing or repeated internal
+// whitespace), or — for any name other than "class" and any name
+// isBooleanAttribute does not recognize — a DYNAMIC value-expr that
+// genValueExpr can build and proves NON-FALLIBLE. Shared by both callers so
+// the base-attribute rules cannot drift between the two spread-source
 // shapes.
-func (g *generator) genSpreadBase(tag *TagNode, expr string) (map[string]*AttributeValue, error) {
-	base := make(map[string]*AttributeValue, len(tag.Attributes))
+//
+// The dynamic case relies on a fact confirmed by direct probe against
+// Runtime.renderTag: a base attribute NOT touched by the runtime spread is
+// rendered through renderTag's own general (non-spread) branch — for any
+// name other than "class"/"style", that is exactly `evaluated,
+// _ = r.evaluateExpr(val.Value)` followed by `htmlEscapeAttr(evaluated)` —
+// the SAME evaluate-then-escape-once pipeline genAttributes's own dynamic
+// non-"class" case already reproduces via genValueExpr + EscapeAttr for an
+// ordinary tag. So folding genValueExpr(expr)'s result into base[name].Value
+// (raw, unescaped) and letting gopug.WriteSpreadAttrs's shared core
+// EscapeAttr it once, exactly as it already does for a static base literal,
+// produces byte-identical output whether or not the runtime spread later
+// overwrites that key: if it doesn't, both sides render the SAME evaluated
+// value; if it does, both sides discard the base entirely and render the
+// spread's own value instead (Runtime.renderTag never evaluates an
+// overwritten base at all — see spreadFinal — and WriteSpreadAttrs's own
+// merge unconditionally overwrites a non-"class" key the spread supplies).
+//
+// Three shapes are excluded from the dynamic case and DEFERRED instead, each
+// confirmed unsafe by direct probe rather than assumed:
+//
+//   - "class" — Runtime.renderTag's spread-merge reads a base "class" as the
+//     RAW, UNEVALUATED source text of merged["class"].Value (see the
+//     spreadFinal-building loop), not its evaluated value, whenever the
+//     runtime spread itself supplies a "class" key; a probe confirms this
+//     produces genuinely different (and, for a dynamic base, nonsensical —
+//     the literal identifier text, not the field's value) output than the
+//     non-touched branch's own evaluated render. Since whether the runtime
+//     spread supplies "class" is not knowable at generate time, a dynamic
+//     class base can never be proven safe either way and stays deferred
+//     unconditionally (unchanged from before this relaxation).
+//   - a name isBooleanAttribute recognizes ("disabled", "checked", …) — the
+//     non-spread branch additionally omits the attribute ENTIRELY whenever
+//     its evaluated value stringifies to exactly "false" (Runtime.renderTag,
+//     just below the render loop's evaluation step) — a rule that applies to
+//     ANY dynamic value on such a name, not only a bool-typed field (probed
+//     directly: a plain STRING field holding "false" is omitted the same
+//     way). gopug.WriteSpreadAttrs's shared core has no such omission rule at
+//     all for a base entry, so a dynamic value on one of these names is never
+//     provably byte-identical and stays deferred.
+//   - a FALLIBLE expression (genValueExpr's own fallible flag — a top-level
+//     `/` or `%`) — this generator still has to CALL genValueExpr to build
+//     the base map even when the runtime spread will end up overwriting that
+//     very key, but Runtime.renderTag's non-touched branch never evaluates an
+//     overwritten base at all (spreadFinal short-circuits it). A pure
+//     (non-fallible) expression is harmless to evaluate and discard either
+//     way — same value, or an unused value — but a fallible one is NOT: a
+//     probe confirms the interpreter, when a fallible base IS overwritten,
+//     renders the spread's value with NO error, having never touched the
+//     fallible base at all, while codegen — unable to know at generate time
+//     whether a given render call's runtime spread will overwrite the key —
+//     would either need to guess or would eagerly evaluate (and error on) an
+//     expression the interpreter never runs. Deferred unconditionally rather
+//     than risk that divergence.
+func (g *generator) genSpreadBase(tag *TagNode, expr string) (map[string]*spreadBaseAttr, error) {
+	base := make(map[string]*spreadBaseAttr, len(tag.Attributes))
 	for name, val := range tag.Attributes {
 		if name == "&attributes" {
 			continue
@@ -1317,32 +1397,51 @@ func (g *generator) genSpreadBase(tag *TagNode, expr string) (map[string]*Attrib
 			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is unescaped, which is not supported for a runtime spread", expr, name)
 		}
 		if val.IsBare {
-			base[name] = &AttributeValue{IsBare: true}
+			base[name] = &spreadBaseAttr{IsBare: true}
 			continue
 		}
-		lit, ok := unwrapQuotedLiteral(strings.TrimSpace(val.Value))
-		if !ok {
-			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is dynamic, which is not supported for a runtime spread (only a static quoted-string or bare boolean base attribute is supported)", expr, name)
+
+		trimmed := strings.TrimSpace(val.Value)
+		if lit, ok := unwrapQuotedLiteral(trimmed); ok {
+			if name == "class" && lit != strings.Join(strings.Fields(lit), " ") {
+				// A base class literal with leading/trailing or 2+ internal
+				// spaces is only byte-identical to the interpreter when the
+				// spread ITSELF touches "class" (both sides then go through the
+				// shared mergeSpreadClass, which leaves whitespace untouched).
+				// When the spread has no "class" key at all, the interpreter's
+				// base class instead falls through to its ordinary (non-spread)
+				// render path, resolveClassTokenList, which Fields-collapses
+				// runs of whitespace and trims the ends — a transformation this
+				// generator has no way to know at generate time whether the
+				// RUNTIME spread map will or won't supply a "class" key, so it
+				// cannot decide which of the two behaviors to reproduce. Rather
+				// than guess (and risk emitting the raw, uncollapsed literal
+				// when the interpreter would have collapsed it), defer this
+				// shape entirely; a base class with no irregular whitespace is
+				// unaffected either way and stays supported.
+				return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute \"class\" has leading/trailing or repeated internal whitespace, which is not supported for a runtime spread (its rendering depends on whether the runtime spread map supplies a \"class\" key, which is not knowable at generate time)", expr)
+			}
+			base[name] = &spreadBaseAttr{Static: lit}
+			continue
 		}
-		if name == "class" && lit != strings.Join(strings.Fields(lit), " ") {
-			// A base class literal with leading/trailing or 2+ internal
-			// spaces is only byte-identical to the interpreter when the
-			// spread ITSELF touches "class" (both sides then go through the
-			// shared mergeSpreadClass, which leaves whitespace untouched).
-			// When the spread has no "class" key at all, the interpreter's
-			// base class instead falls through to its ordinary (non-spread)
-			// render path, resolveClassTokenList, which Fields-collapses
-			// runs of whitespace and trims the ends — a transformation this
-			// generator has no way to know at generate time whether the
-			// RUNTIME spread map will or won't supply a "class" key, so it
-			// cannot decide which of the two behaviors to reproduce. Rather
-			// than guess (and risk emitting the raw, uncollapsed literal
-			// when the interpreter would have collapsed it), defer this
-			// shape entirely; a base class with no irregular whitespace is
-			// unaffected either way and stays supported.
-			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute \"class\" has leading/trailing or repeated internal whitespace, which is not supported for a runtime spread (its rendering depends on whether the runtime spread map supplies a \"class\" key, which is not knowable at generate time)", expr)
+
+		dynamicUnsupportedErr := fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is dynamic, which is not supported for a runtime spread (only a static quoted-string or bare boolean base attribute is supported)", expr, name)
+
+		if name == "class" {
+			return nil, dynamicUnsupportedErr
 		}
-		base[name] = &AttributeValue{Value: lit}
+		if isBooleanAttribute(name) {
+			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is an HTML boolean attribute name with a dynamic value, which is not supported for a runtime spread (the interpreter's omit-on-\"false\" rule for these names is not reproduced by a runtime spread's base rendering)", expr, name)
+		}
+
+		goExpr, fallible, verr := g.genValueExpr(trimmed)
+		if verr != nil {
+			return nil, dynamicUnsupportedErr
+		}
+		if fallible {
+			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is a fallible expression (a division or modulo operator), which is not supported for a runtime spread (a fallible base can only be safely evaluated at generate time when the runtime spread never overwrites it, which is not knowable at generate time)", expr, name)
+		}
+		base[name] = &spreadBaseAttr{DynExpr: goExpr}
 	}
 	return base, nil
 }
@@ -1405,12 +1504,15 @@ func genInlineObjectLiteral(obj map[string]string) string {
 	return b.String()
 }
 
-// genSpreadBaseLiteral renders base — a &attributes tag's own simple
-// (bare/static-literal) attributes, built by genSpreadAttrs — as a Go
-// composite literal of type map[string]*gopug.AttributeValue, in a
+// genSpreadBaseLiteral renders base — a &attributes tag's own bare/
+// static-literal/dynamic-value-expr attributes, built by genSpreadAttrs — as
+// a Go composite literal of type map[string]*gopug.AttributeValue, in a
 // deterministic (sorted) key order so GenerateGo's output is reproducible
-// across runs.
-func genSpreadBaseLiteral(base map[string]*AttributeValue) string {
+// across runs. A Static entry is emitted as a quoted Go string literal; a
+// DynExpr entry is spliced in as a raw, UNQUOTED Go expression — it IS the Go
+// source computing the value at runtime, so quoting it would turn working
+// code into a literal string of source text.
+func genSpreadBaseLiteral(base map[string]*spreadBaseAttr) string {
 	names := make([]string, 0, len(base))
 	for name := range base {
 		names = append(names, name)
@@ -1426,10 +1528,13 @@ func genSpreadBaseLiteral(base map[string]*AttributeValue) string {
 		val := base[name]
 		b.WriteString(strconv.Quote(name))
 		b.WriteString(": ")
-		if val.IsBare {
+		switch {
+		case val.IsBare:
 			b.WriteString("{IsBare: true}")
-		} else {
-			b.WriteString("{Value: " + strconv.Quote(val.Value) + "}")
+		case val.DynExpr != "":
+			b.WriteString("{Value: " + val.DynExpr + "}")
+		default:
+			b.WriteString("{Value: " + strconv.Quote(val.Static) + "}")
 		}
 	}
 	b.WriteString("}")
