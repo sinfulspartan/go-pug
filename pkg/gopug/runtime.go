@@ -1003,7 +1003,45 @@ func JoinClasses(classes ...string) string {
 // + `"`. It is exported so codegen-generated code can call it directly for
 // a &attributes(<mapField>) spread whose base attributes are all simple
 // (static string or bare boolean).
+//
+// This is a thin wrapper over writeSpreadAttrsCore, which does the actual
+// merge/sort/escape work; spread's values are already strings here, so
+// nothing is stringified before the core runs. See WriteSpreadAttrsAny for
+// the sibling entry point that accepts a map[string]any spread source
+// instead — the two share this identical core so neither can drift from the
+// other, and this function's own behavior is completely unchanged by that
+// sibling's existence.
 func WriteSpreadAttrs(w io.Writer, base map[string]*AttributeValue, spread map[string]string) error {
+	return writeSpreadAttrsCore(w, base, spread)
+}
+
+// WriteSpreadAttrsAny is WriteSpreadAttrs's sibling entry point for a
+// `&attributes(<expr>)` spread source whose runtime type is map[string]any
+// (map[string]interface{}) rather than map[string]string — the common shape
+// for a real heterogeneous data map. Runtime.renderTag's own spread-merge
+// path always stringifies each spread value with fmt.Sprintf("%v", value)
+// before applying the class-merge / true-bare / false-delete / overwrite
+// rule (see the spreadMap loop in Runtime.renderTag); this function performs
+// the IDENTICAL fmt.Sprintf("%v", v) conversion, per value, before handing
+// the now-all-string spread map to the same writeSpreadAttrsCore the
+// map[string]string entry point uses — so a map[string]any spread and a
+// map[string]string spread carrying the already-stringified equivalent
+// values render byte-identically, and both match the interpreter's own
+// output for the same reason: identical stringification feeding an
+// identical merge/sort/escape core.
+func WriteSpreadAttrsAny(w io.Writer, base map[string]*AttributeValue, spread map[string]any) error {
+	stringified := make(map[string]string, len(spread))
+	for k, v := range spread {
+		stringified[k] = fmt.Sprintf("%v", v)
+	}
+	return writeSpreadAttrsCore(w, base, stringified)
+}
+
+// writeSpreadAttrsCore is the shared merge/sort/escape implementation both
+// WriteSpreadAttrs and WriteSpreadAttrsAny delegate to once their spread
+// values are already plain strings; see WriteSpreadAttrs's own doc comment
+// for the merge rule this reproduces.
+func writeSpreadAttrsCore(w io.Writer, base map[string]*AttributeValue, spread map[string]string) error {
 	merged := make(map[string]*AttributeValue, len(base)+len(spread))
 	for k, v := range base {
 		merged[k] = v

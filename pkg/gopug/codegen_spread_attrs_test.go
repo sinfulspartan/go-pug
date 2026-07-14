@@ -11,12 +11,14 @@ import (
 // map[string]string field this increment supports — its keys are unknown at
 // generate time, so the merge, sortAttrNames ordering, and escaping all have
 // to run at RUNTIME via gopug.WriteSpreadAttrs, unlike the fully static
-// mixin-forwarding case codegen_mixin_attributes_test.go covers. AttrsAny
-// and AttrsInt are map fields whose value kind ISN'T string, used to prove
-// this increment's "only map[string]string" scope cut defers cleanly rather
-// than guessing at output built from a boxed/differently-stringified value.
-// Name is a plain string field, used to prove a dynamic (non-static) base
-// attribute on a &attributes tag defers.
+// mixin-forwarding case codegen_mixin_attributes_test.go covers. AttrsAny is
+// a map[string]any field, supported via gopug.WriteSpreadAttrsAny — its own
+// differential coverage lives in codegen_spread_attrs_any_test.go. AttrsInt
+// is a map field whose value kind is neither string nor any, used to prove
+// this scope cut still defers cleanly rather than guessing at output built
+// from a differently-stringified value. Name is a plain string field, used
+// to prove a dynamic (non-static) base attribute on a &attributes tag
+// defers.
 type spreadAttrsData struct {
 	Attrs    map[string]string
 	AttrsAny map[string]any
@@ -329,11 +331,6 @@ func TestCodegenSpreadAttrsDeferrals(t *testing.T) {
 		noType  bool
 		wantSub string
 	}{
-		{
-			name:    "map[string]any source",
-			src:     "div&attributes(AttrsAny)\n",
-			wantSub: "map[string]string-typed",
-		},
 		{
 			name:    "map[string]int source",
 			src:     "div&attributes(AttrsInt)\n",

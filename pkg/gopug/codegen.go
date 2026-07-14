@@ -1143,37 +1143,45 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 // until the template actually renders — unlike the forwarding case, there is
 // no way to compute the merged attribute map at generate time, so the merge
 // itself (and its sortAttrNames ordering and escaping) has to happen at
-// RUNTIME, via the exported gopug.WriteSpreadAttrs helper.
+// RUNTIME, via the exported gopug.WriteSpreadAttrs / gopug.WriteSpreadAttrsAny
+// helpers.
 //
-// This increment supports only the narrowest shape it can prove byte-
-// identical to Runtime.renderTag: <expr> must resolve, through
-// resolveFieldExpr, to a map[string]string-typed value (a struct field or a
-// mixin-scope variable of that exact type — reflect.Map with both a string
-// key and a string element kind), and every OTHER attribute already on the
-// tag (the merge's "base") must be simple: a bare boolean or a static
-// quoted-string literal, exactly the same base-attribute shape
-// mergeForwardedAttributes itself requires. Anything else — an inline object
-// literal (`&attributes({...})`), a non-map or a map with a non-string key
-// or element kind (map[string]any, map[string]int, map[int]string, ...), a
-// dynamic base attribute (a field reference, an operator expression, a style
-// or class object), an unescaped base attribute, a base "class" literal with
-// leading/trailing or repeated internal whitespace (whether the interpreter
-// collapses it depends on whether the RUNTIME spread map happens to supply
-// its own "class" key — not knowable at generate time, so it is refused
-// rather than guessed), or a nil Config.DataReflectType (there is no type to
-// resolve <expr> or classify a base attribute's value against at all) — is
-// refused with its own distinct, clean error rather than guessing at output
-// that might not match the interpreter.
+// This increment supports two narrow shapes it can prove byte-identical to
+// Runtime.renderTag: <expr> must resolve, through resolveFieldExpr, to
+// either a map[string]string-typed value or a map[string]any
+// (map[string]interface{})-typed value (a struct field or a mixin-scope
+// variable — reflect.Map with a string key and either a string or an empty-
+// interface element kind), and every OTHER attribute already on the tag (the
+// merge's "base") must be simple: a bare boolean or a static quoted-string
+// literal, exactly the same base-attribute shape mergeForwardedAttributes
+// itself requires. For a map[string]any source, each value is stringified
+// with fmt.Sprintf("%v", v) — the EXACT call Runtime.renderTag's own spread
+// path uses (valStr := fmt.Sprintf("%v", attrVal)) — before the merge, via
+// gopug.WriteSpreadAttrsAny; a map[string]string source needs no
+// stringification and goes through gopug.WriteSpreadAttrs unchanged, exactly
+// as before this increment. Anything else — an inline object literal
+// (`&attributes({...})`), a non-map, a map with a non-string key, or a map
+// whose element kind is neither string nor the empty interface
+// (map[string]int, map[string]bool, map[string]float64, map[int]string,
+// ...), a dynamic base attribute (a field reference, an operator expression,
+// a style or class object), an unescaped base attribute, a base "class"
+// literal with leading/trailing or repeated internal whitespace (whether the
+// interpreter collapses it depends on whether the RUNTIME spread map happens
+// to supply its own "class" key — not knowable at generate time, so it is
+// refused rather than guessed), or a nil Config.DataReflectType (there is no
+// type to resolve <expr> or classify a base attribute's value against at
+// all) — is refused with its own distinct, clean error rather than guessing
+// at output that might not match the interpreter.
 //
 // base's AttributeValue.Value entries hold the RAW, already-unescaped
 // attribute text with no surrounding quotes (e.g. Value: "red", not
-// Value: `"red"`) — WriteSpreadAttrs's own contract, distinct from the
-// quoted-source-string convention AttributeValue.Value otherwise carries
-// elsewhere in this file (parseAttributes's parsed AST, and
-// mergeForwardedAttributes's static merge result, both feed genAttributes's
-// unwrapQuotedLiteral step instead) — because WriteSpreadAttrs is a brand
-// new runtime code path with no static unwrap/escape step of its own to
-// reuse; it escapes every non-bare value exactly once, itself, via
+// Value: `"red"`) — WriteSpreadAttrs's/WriteSpreadAttrsAny's own contract,
+// distinct from the quoted-source-string convention AttributeValue.Value
+// otherwise carries elsewhere in this file (parseAttributes's parsed AST,
+// and mergeForwardedAttributes's static merge result, both feed
+// genAttributes's unwrapQuotedLiteral step instead) — because these are
+// runtime code paths with no static unwrap/escape step of their own to
+// reuse; each escapes every non-bare value exactly once, itself, via
 // EscapeAttr.
 func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 	expr := strings.TrimSpace(spread.Value)
@@ -1190,12 +1198,19 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 	if err != nil {
 		return fmt.Errorf("unsupported &attributes(%s) in codegen: %w", expr, err)
 	}
-	if typ == nil || typ.Kind() != reflect.Map || typ.Key().Kind() != reflect.String || typ.Elem().Kind() != reflect.String {
+	if typ == nil || typ.Kind() != reflect.Map {
 		gotKind := "untyped"
 		if typ != nil {
 			gotKind = typ.String()
 		}
-		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed spread source is supported this increment (got %s)", expr, gotKind)
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed or map[string]any-typed spread source is supported this increment (got %s)", expr, gotKind)
+	}
+	if typ.Key().Kind() != reflect.String {
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a string-keyed map spread source is supported this increment (got %s, whose key type is %s)", expr, typ.String(), typ.Key().String())
+	}
+	isAnySpread := typ.Elem().Kind() == reflect.Interface && typ.Elem().NumMethod() == 0
+	if typ.Elem().Kind() != reflect.String && !isAnySpread {
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed or map[string]any-typed spread source is supported this increment (got %s)", expr, typ.String())
 	}
 
 	base := make(map[string]*AttributeValue, len(tag.Attributes))
@@ -1235,8 +1250,13 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 		base[name] = &AttributeValue{Value: lit}
 	}
 
+	helperFunc := "gopug.WriteSpreadAttrs"
+	if isAnySpread {
+		helperFunc = "gopug.WriteSpreadAttrsAny"
+	}
+
 	g.needsGopug = true
-	g.writeRaw("if err := gopug.WriteSpreadAttrs(w, " + genSpreadBaseLiteral(base) + ", " + goExpr + "); err != nil {\nreturn err\n}\n")
+	g.writeRaw("if err := " + helperFunc + "(w, " + genSpreadBaseLiteral(base) + ", " + goExpr + "); err != nil {\nreturn err\n}\n")
 	return nil
 }
 
