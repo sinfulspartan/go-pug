@@ -3919,10 +3919,13 @@ func nodeUsesAttributesForward(n Node) bool {
 // Runtime.renderMixinCall's own full isolation (a mixin body sees only its
 // parameters) as a compile-time, fail-closed GenerateGo error rather than a
 // silent "" the way the interpreter's own lookup miss would render it. A
-// default parameter value and a rest parameter are unconditionally
-// unsupported this increment (checked up front, before any body
-// generation) since neither the interpreter's default-value fallback nor
-// its variadic rest-argument collection has a codegen counterpart yet.
+// rest parameter is unconditionally unsupported this increment (checked up
+// front, before any body generation) since the interpreter's variadic
+// rest-argument collection has no codegen counterpart yet. A default
+// parameter value needs no special handling here at all: a default is
+// resolved entirely at the CALL SITE (see genMixinParamValue), so this
+// function's own signature and body generation are identical whether or
+// not any parameter has one.
 //
 // g.body/g.static are reset (never swapped by value — a strings.Builder must
 // not be copied after first use) before returning; this is safe because
@@ -3936,9 +3939,6 @@ func nodeUsesAttributesForward(n Node) bool {
 // genMixinFunc never does, since GenerateGo only ever calls it for a
 // top-level mixin declaration).
 func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, error) {
-	if len(decl.ParamDefaults) > 0 {
-		return "", fmt.Errorf("mixin %q: a default parameter value is not supported in codegen yet", decl.Name)
-	}
 	if decl.RestParamName != "" {
 		return "", fmt.Errorf("mixin %q: a rest parameter (...%s) is not supported in codegen yet", decl.Name, decl.RestParamName)
 	}
@@ -4003,19 +4003,89 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 	return sig.String(), nil
 }
 
+// genMixinParamValue computes the Go value expression a call binds to
+// decl.Parameters[i] — the one piece of "value for this parameter, or a
+// fallback" logic every per-parameter binding site shares (genMixinCall's
+// own inline/`__margN`-hoisted argument list below, and
+// genMixinCallAttrForward's `__margN` hoist), so a defaulted parameter
+// resolves identically in the helper call, in `&attributes` forwarding, and
+// (since genMixinBlockClosure is always handed the SAME margNames
+// genMixinCall computed here) in dynamic block content read from that same
+// local.
+//
+// A present call argument (i < len(call.Arguments)) is genValueExpr'd in
+// the CALLER's own scope exactly as before, fallible-extracted through
+// genFallibleExtraction like every other fallible write site — unchanged
+// from prior increments.
+//
+// A MISSING argument whose parameter has a default (decl.ParamDefaults) is
+// treated as an IMPLICIT caller-side argument: genValueExpr(defaultExpr),
+// the exact same code path and the exact same CALLER scope a present
+// argument uses. This mirrors Runtime.renderMixinCall's own binding loop
+// precisely (runtime.go's param-binding loop): the mixin's own scope frame
+// is not pushed onto r.scopeStack until AFTER every parameter is bound, so
+// r.evaluateExpr(defaultExpr) sees exactly the same data/locals a real
+// argument would — including a SIBLING parameter's name, which resolves
+// against the CALLER's own scope (almost always a lookup miss, since the
+// caller has no such variable), never against another parameter of this
+// same mixin; this is why `mixin g(a, b = a)` called as `+g("A")` binds `b`
+// to `""`, not `"A"` — verified against the interpreter and pinned by a
+// differential test.
+//
+// A default expression genValueExpr flags FALLIBLE is refused with a
+// clean, distinct error rather than generated: Runtime.renderMixinCall
+// falls back to the raw default-expression STRING when r.evaluateExpr
+// errors (e.g. a division by zero), a fallback codegen cannot reproduce
+// from a Go expression that would itself return a runtime error instead of
+// a string — so this defers the whole mixin rather than risk silently
+// diverging on exactly that error path. A default expression genValueExpr
+// cannot compile at all (an unsupported shape) surfaces genValueExpr's own
+// error unchanged.
+//
+// A missing argument whose parameter has NO default becomes the literal
+// `""`, matching the interpreter's own missing-arg, no-default binding.
+func (g *generator) genMixinParamValue(call *MixinCallNode, decl *MixinDeclNode, i int) (string, error) {
+	if i < len(call.Arguments) {
+		v, fallible, err := g.genValueExpr(call.Arguments[i])
+		if err != nil {
+			return "", fmt.Errorf("mixin %q argument %d: %w", call.Name, i+1, err)
+		}
+		if fallible {
+			v = g.genFallibleExtraction(v)
+		}
+		return v, nil
+	}
+
+	param := decl.Parameters[i]
+	if decl.ParamDefaults != nil {
+		if defaultExpr, ok := decl.ParamDefaults[param]; ok {
+			v, fallible, err := g.genValueExpr(defaultExpr)
+			if err != nil {
+				return "", fmt.Errorf("mixin %q: default value %q for parameter %q: %w", call.Name, defaultExpr, param, err)
+			}
+			if fallible {
+				return "", fmt.Errorf("mixin %q: default value %q for parameter %q is a fallible expression and is not supported in codegen: Runtime.renderMixinCall falls back to the raw default-expression string when evaluation errors, a fallback codegen cannot reproduce", call.Name, defaultExpr, param)
+			}
+			return v, nil
+		}
+	}
+	return `""`, nil
+}
+
 // genMixinCall emits a call to call.Name's already-generated helper function
 // (see genMixinFunc), reproducing Runtime.renderMixinCall's own argument
 // binding exactly: an argument is built by genValueExpr in the CALLER's own
 // scope (data-visible, unlike the callee's own isolated body) for each of
 // the first len(decl.Parameters) call arguments — a missing trailing
-// argument (fewer call arguments than parameters) becomes the literal ""
-// instead, matching the interpreter's own missing-arg default — and any
-// call argument beyond the parameter count is simply ignored (no
-// rest-parameter support yet). A fallible argument expression (e.g. a
-// division) is extracted, in argument order, through the same
-// genFallibleExtraction every other fallible write site uses, so the
-// generated function returns that error immediately rather than call the
-// mixin helper with a value that was never actually computed.
+// argument (fewer call arguments than parameters) becomes the default
+// value's own genValueExpr result when the parameter has one, or the
+// literal "" otherwise (see genMixinParamValue) — and any call argument
+// beyond the parameter count is simply ignored (no rest-parameter support
+// yet). A fallible argument expression (e.g. a division) is extracted, in
+// argument order, through the same genFallibleExtraction every other
+// fallible write site uses, so the generated function returns that error
+// immediately rather than call the mixin helper with a value that was
+// never actually computed.
 //
 // A nested mixin call (encountered while g.insideMixinBody or
 // g.insideBlockClosure is set — i.e. one mixin's own body, or a call site's
@@ -4086,18 +4156,9 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 		callID = g.nextTmp()
 	}
 	for i := range decl.Parameters {
-		var valExpr string
-		if i >= len(call.Arguments) {
-			valExpr = `""`
-		} else {
-			v, fallible, err := g.genValueExpr(call.Arguments[i])
-			if err != nil {
-				return fmt.Errorf("mixin %q argument %d: %w", call.Name, i+1, err)
-			}
-			if fallible {
-				v = g.genFallibleExtraction(v)
-			}
-			valExpr = v
+		valExpr, err := g.genMixinParamValue(call, decl, i)
+		if err != nil {
+			return err
 		}
 		if dynamicBlock {
 			margName := fmt.Sprintf("__marg%d_%d", callID, i)
@@ -4138,15 +4199,21 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 // will render for THIS call, before genTag/mergeForwardedAttributes ever
 // need to consult g.attrForwardCallAttrs.
 //
-// A default parameter value, a rest parameter, and a `block` slot are all
-// unsupported for a &attributes-forwarding mixin this slice (the last is a
-// deliberate, explicit scope cut: `&attributes` combined with block-content
+// A rest parameter and a `block` slot are both unsupported for a
+// &attributes-forwarding mixin this slice (the latter is a deliberate,
+// explicit scope cut: `&attributes` combined with block-content
 // interactions is a distinct, untested claim this increment does not make,
 // even though the two mechanisms don't obviously conflict) — checked up
 // front, before any body generation, exactly like genMixinFunc's own
-// equivalent checks. A non-static call attribute (an expression-valued
-// attribute or anything staticCallAttrValue refuses) is also refused up
-// front, with a clean, distinct error identifying the offending attribute.
+// equivalent check. A default parameter value needs no such check: a
+// missing argument whose parameter has a default is hoisted into its
+// `__margN` local via genMixinParamValue exactly like a real argument
+// would be, the same mechanism genMixinCall's own dynamicBlock path uses —
+// see genMixinParamValue's own doc comment for why this is byte-identical
+// to Runtime.renderMixinCall's own caller-side default evaluation. A
+// non-static call attribute (an expression-valued attribute or anything
+// staticCallAttrValue refuses) is also refused up front, with a clean,
+// distinct error identifying the offending attribute.
 //
 // decl.Body is generated in the SAME param-only, insideMixinBody-set scope
 // genMixinFunc's own body generation uses (see its own doc comment for why:
@@ -4158,9 +4225,6 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 // directly in whatever g.body already holds, exactly like genConditional or
 // genEach's own nested content generation.
 func (g *generator) genMixinCallAttrForward(call *MixinCallNode, decl *MixinDeclNode) error {
-	if len(decl.ParamDefaults) > 0 {
-		return fmt.Errorf("mixin %q: a default parameter value is not supported in codegen yet", decl.Name)
-	}
 	if decl.RestParamName != "" {
 		return fmt.Errorf("mixin %q: a rest parameter (...%s) is not supported in codegen yet", decl.Name, decl.RestParamName)
 	}
@@ -4180,18 +4244,9 @@ func (g *generator) genMixinCallAttrForward(call *MixinCallNode, decl *MixinDecl
 	callID := g.nextTmp()
 	margNames := make([]string, len(decl.Parameters))
 	for i := range decl.Parameters {
-		var valExpr string
-		if i >= len(call.Arguments) {
-			valExpr = `""`
-		} else {
-			v, fallible, err := g.genValueExpr(call.Arguments[i])
-			if err != nil {
-				return fmt.Errorf("mixin %q argument %d: %w", call.Name, i+1, err)
-			}
-			if fallible {
-				v = g.genFallibleExtraction(v)
-			}
-			valExpr = v
+		valExpr, err := g.genMixinParamValue(call, decl, i)
+		if err != nil {
+			return err
 		}
 		margName := fmt.Sprintf("__marg%d_%d", callID, i)
 		g.writeRaw(fmt.Sprintf("%s := %s\n", margName, valExpr))

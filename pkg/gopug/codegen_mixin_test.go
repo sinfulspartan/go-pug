@@ -237,11 +237,6 @@ func TestCodegenMixinDeferrals(t *testing.T) {
 			wantSub: "attributes",
 		},
 		{
-			name:    "default parameter value",
-			src:     "mixin foo(a = \"x\")\n  p= a\n+foo()\n",
-			wantSub: "default parameter",
-		},
-		{
 			name:    "rest parameter",
 			src:     "mixin foo(...items)\n  p hi\n+foo(\"a\", \"b\")\n",
 			wantSub: "rest parameter",
