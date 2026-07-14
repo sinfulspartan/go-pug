@@ -1146,32 +1146,44 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 // RUNTIME, via the exported gopug.WriteSpreadAttrs / gopug.WriteSpreadAttrsAny
 // helpers.
 //
-// This increment supports two narrow shapes it can prove byte-identical to
-// Runtime.renderTag: <expr> must resolve, through resolveFieldExpr, to
-// either a map[string]string-typed value or a map[string]any
-// (map[string]interface{})-typed value (a struct field or a mixin-scope
-// variable — reflect.Map with a string key and either a string or an empty-
-// interface element kind), and every OTHER attribute already on the tag (the
-// merge's "base") must be simple: a bare boolean or a static quoted-string
-// literal, exactly the same base-attribute shape mergeForwardedAttributes
-// itself requires. For a map[string]any source, each value is stringified
-// with fmt.Sprintf("%v", v) — the EXACT call Runtime.renderTag's own spread
-// path uses (valStr := fmt.Sprintf("%v", attrVal)) — before the merge, via
-// gopug.WriteSpreadAttrsAny; a map[string]string source needs no
-// stringification and goes through gopug.WriteSpreadAttrs unchanged, exactly
-// as before this increment. Anything else — an inline object literal
-// (`&attributes({...})`), a non-map, a map with a non-string key, or a map
-// whose element kind is neither string nor the empty interface
-// (map[string]int, map[string]bool, map[string]float64, map[int]string,
-// ...), a dynamic base attribute (a field reference, an operator expression,
-// a style or class object), an unescaped base attribute, a base "class"
-// literal with leading/trailing or repeated internal whitespace (whether the
-// interpreter collapses it depends on whether the RUNTIME spread map happens
-// to supply its own "class" key — not knowable at generate time, so it is
-// refused rather than guessed), or a nil Config.DataReflectType (there is no
-// type to resolve <expr> or classify a base attribute's value against at
-// all) — is refused with its own distinct, clean error rather than guessing
-// at output that might not match the interpreter.
+// This increment supports three narrow shapes it can prove byte-identical to
+// Runtime.renderTag: <expr> must resolve, through resolveFieldExpr, to a
+// map[string]string-typed value, a map[string]any (map[string]interface{})-
+// typed value, or a map[string]<T>-typed value whose element kind T is a
+// concrete SCALAR (bool, any signed/unsigned integer kind, float32, or
+// float64) — a struct field or a mixin-scope variable — reflect.Map with a
+// string key and a string, empty-interface, or scalar element kind — and
+// every OTHER attribute already on the tag (the merge's "base") must be
+// simple: a bare boolean or a static quoted-string literal, exactly the same
+// base-attribute shape mergeForwardedAttributes itself requires. For a
+// map[string]any source, each value is stringified with fmt.Sprintf("%v", v)
+// — the EXACT call Runtime.renderTag's own spread path uses (valStr :=
+// fmt.Sprintf("%v", attrVal)) — before the merge, via gopug.WriteSpreadAttrsAny.
+// A concrete-scalar source (map[string]int, map[string]bool,
+// map[string]float64, ...) is first converted, AT THE CALL SITE, into a
+// map[string]any by boxing each typed value (see genSpreadScalarMapLiteral),
+// then handed to that SAME gopug.WriteSpreadAttrsAny entry point — boxing a
+// concrete scalar into `any` and then `%v`-ing it produces the identical text
+// Runtime.renderTag's own reflect.Value.MapIndex(...).Interface() boxing
+// followed by the identical fmt.Sprintf("%v", ...) call produces, because
+// both sides box the exact same concrete type before the exact same %v call
+// runs on it; no new runtime helper or render logic is needed for this shape.
+// A map[string]string source needs no stringification and goes through
+// gopug.WriteSpreadAttrs unchanged, exactly as before this increment.
+// Anything else — an inline object literal (`&attributes({...})`), a
+// non-map, a map with a non-string key, or a map whose element kind is
+// neither string, the empty interface, nor a concrete scalar
+// (map[string][]string, map[string]map[...]..., map[string]struct{...},
+// map[string]*T, map[int]string, ...), a dynamic base attribute (a field
+// reference, an operator expression, a style or class object), an unescaped
+// base attribute, a base "class" literal with leading/trailing or repeated
+// internal whitespace (whether the interpreter collapses it depends on
+// whether the RUNTIME spread map happens to supply its own "class" key — not
+// knowable at generate time, so it is refused rather than guessed), or a nil
+// Config.DataReflectType (there is no type to resolve <expr> or classify a
+// base attribute's value against at all) — is refused with its own distinct,
+// clean error rather than guessing at output that might not match the
+// interpreter.
 //
 // base's AttributeValue.Value entries hold the RAW, already-unescaped
 // attribute text with no surrounding quotes (e.g. Value: "red", not
@@ -1223,8 +1235,9 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a string-keyed map spread source is supported this increment (got %s, whose key type is %s)", expr, typ.String(), typ.Key().String())
 	}
 	isAnySpread := typ.Elem().Kind() == reflect.Interface && typ.Elem().NumMethod() == 0
-	if typ.Elem().Kind() != reflect.String && !isAnySpread {
-		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed or map[string]any-typed spread source is supported this increment (got %s)", expr, typ.String())
+	isScalarSpread := isScalarMapElemKind(typ.Elem().Kind())
+	if typ.Elem().Kind() != reflect.String && !isAnySpread && !isScalarSpread {
+		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed, map[string]any-typed, or scalar-valued (map[string]<bool/int/uint/float kind>) spread source is supported this increment (got %s)", expr, typ.String())
 	}
 
 	base, err := g.genSpreadBase(tag, expr)
@@ -1233,13 +1246,56 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 	}
 
 	helperFunc := "gopug.WriteSpreadAttrs"
+	spreadExpr := goExpr
 	if isAnySpread {
 		helperFunc = "gopug.WriteSpreadAttrsAny"
+	} else if isScalarSpread {
+		helperFunc = "gopug.WriteSpreadAttrsAny"
+		spreadExpr = genScalarSpreadBoxLiteral(goExpr)
 	}
 
 	g.needsGopug = true
-	g.writeRaw("if err := " + helperFunc + "(w, " + genSpreadBaseLiteral(base) + ", " + goExpr + "); err != nil {\nreturn err\n}\n")
+	g.writeRaw("if err := " + helperFunc + "(w, " + genSpreadBaseLiteral(base) + ", " + spreadExpr + "); err != nil {\nreturn err\n}\n")
 	return nil
+}
+
+// isScalarMapElemKind reports whether k is a concrete scalar reflect.Kind —
+// bool, any signed/unsigned integer kind, or either float kind — the set of
+// map[string]<T> element kinds genSpreadAttrs's scalar-spread path accepts
+// in addition to its pre-existing string and empty-interface element kinds.
+// Every other kind (slice, array, map, struct, pointer, complex, chan, func,
+// string, interface) is deliberately excluded: a non-scalar concrete value
+// is out of this increment's scope even though its fmt.Sprintf("%v", ...)
+// text would likely also match the interpreter, and string/interface are
+// each already handled by genSpreadAttrs's own pre-existing branches.
+func isScalarMapElemKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+// genScalarSpreadBoxLiteral wraps srcExpr — a Go expression resolving to a
+// map[string]<T> with a concrete scalar element type T (see
+// isScalarMapElemKind) — in an immediately-invoked function literal that
+// copies it into a plain map[string]any, boxing each typed value with a bare
+// `m[k] = v` assignment. Boxing a concrete scalar into `any` this way and
+// then letting gopug.WriteSpreadAttrsAny's own fmt.Sprintf("%v", v) stringify
+// it produces text byte-identical to Runtime.renderTag's own
+// reflect.Value.MapIndex(...).Interface() boxing followed by the identical
+// fmt.Sprintf("%v", ...) call, because both sides box the exact same
+// concrete type before the exact same %v call runs on it — no new runtime
+// helper is needed; this conversion is the entire scalar-spread feature.
+// srcExpr is referenced twice (once by len, once by the range) but is always
+// a side-effect-free field or scope-variable reference (resolveFieldExpr's
+// own contract), so evaluating it twice is safe.
+func genScalarSpreadBoxLiteral(srcExpr string) string {
+	return "func() map[string]any { m := make(map[string]any, len(" + srcExpr + ")); for k, v := range " + srcExpr + " { m[k] = v }; return m }()"
 }
 
 // genSpreadBase builds base — a &attributes tag's own attributes excluding

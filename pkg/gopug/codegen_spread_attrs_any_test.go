@@ -216,8 +216,8 @@ func TestCodegenSpreadAttrsAnyBaseClassWhitespaceStillDefers(t *testing.T) {
 // TestCodegenSpreadAttrsAnyDeferrals collects every distinct clean error this
 // increment's own scope cut refuses, rather than guessing at.
 func TestCodegenSpreadAttrsAnyDeferrals(t *testing.T) {
-	t.Run("map[string]int source", func(t *testing.T) {
-		src := "div&attributes(AttrsInt)\n"
+	t.Run("map[string][]string source (non-scalar value)", func(t *testing.T) {
+		src := "div&attributes(AttrsSlice)\n"
 		err := genSpreadErr(t, src, false)
 		if err == nil {
 			t.Fatalf("GenerateGo(%q): expected a deferral error, got nil", src)

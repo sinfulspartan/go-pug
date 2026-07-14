@@ -14,16 +14,21 @@ import (
 // mixin-forwarding case codegen_mixin_attributes_test.go covers. AttrsAny is
 // a map[string]any field, supported via gopug.WriteSpreadAttrsAny — its own
 // differential coverage lives in codegen_spread_attrs_any_test.go. AttrsInt
-// is a map field whose value kind is neither string nor any, used to prove
-// this scope cut still defers cleanly rather than guessing at output built
-// from a differently-stringified value. Name is a plain string field, used
-// to prove a dynamic (non-static) base attribute on a &attributes tag
-// defers.
+// is a map[string]int field: a concrete-scalar element kind, supported via
+// the box-to-map[string]any conversion this file's sibling
+// codegen_spread_attrs_scalar_test.go covers (it is no longer a deferral
+// case — a map[string]int spread source is fully supported). AttrsSlice is a
+// map field whose value kind is neither string, any, nor a concrete scalar,
+// used to prove this scope cut still defers cleanly rather than guessing at
+// output built from a differently-stringified value. Name is a plain string
+// field, used to prove a dynamic (non-static) base attribute on a
+// &attributes tag defers.
 type spreadAttrsData struct {
-	Attrs    map[string]string
-	AttrsAny map[string]any
-	AttrsInt map[string]int
-	Name     string
+	Attrs      map[string]string
+	AttrsAny   map[string]any
+	AttrsInt   map[string]int
+	AttrsSlice map[string][]string
+	Name       string
 }
 
 var spreadAttrsReflectType = reflect.TypeOf(spreadAttrsData{})
@@ -32,10 +37,11 @@ var spreadAttrsReflectType = reflect.TypeOf(spreadAttrsData{})
 // verbatim into the throwaway module runComposedGo assembles around a
 // GenerateGo result — it must match spreadAttrsData above field for field.
 const spreadAttrsDataStructSrc = `type spreadAttrsData struct {
-	Attrs    map[string]string
-	AttrsAny map[string]any
-	AttrsInt map[string]int
-	Name     string
+	Attrs      map[string]string
+	AttrsAny   map[string]any
+	AttrsInt   map[string]int
+	AttrsSlice map[string][]string
+	Name       string
 }
 `
 
@@ -332,8 +338,8 @@ func TestCodegenSpreadAttrsDeferrals(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name:    "map[string]int source",
-			src:     "div&attributes(AttrsInt)\n",
+			name:    "map[string][]string source (non-scalar value)",
+			src:     "div&attributes(AttrsSlice)\n",
 			wantSub: "map[string]string-typed",
 		},
 		{
