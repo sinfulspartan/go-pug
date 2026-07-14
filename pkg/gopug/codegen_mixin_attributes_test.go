@@ -137,7 +137,11 @@ func TestCodegenMixinAttrForwardSortOrder(t *testing.T) {
 }
 
 // TestCodegenMixinAttrForwardDeferrals collects every distinct clean error
-// this increment's scope cut refuses, rather than guessing at.
+// this increment's scope cut refuses, rather than guessing at. A dynamic
+// (non-literal, non-fallible) call attribute — the one case this suite used
+// to defer here — is now a supported shape (built as a runtime attribute
+// map and spread via gopug.WriteSpreadAttrs); its own differential and
+// deferral coverage lives in the dynamic-call-attribute test suite instead.
 func TestCodegenMixinAttrForwardDeferrals(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -145,11 +149,6 @@ func TestCodegenMixinAttrForwardDeferrals(t *testing.T) {
 		noType  bool
 		wantSub string
 	}{
-		{
-			name:    "dynamic (non-literal) call attribute",
-			src:     "mixin box()\n  a&attributes(attributes)\n+box()(title=Name)\n",
-			wantSub: "dynamic (non-literal) value",
-		},
 		{
 			name:    "non-attributes forwarding arg (data-map field)",
 			src:     "mixin box()\n  a&attributes(extra)\n+box()\n",

@@ -776,6 +776,18 @@ var (
 // consumes it unchanged.
 var reflectTypeStringSlice = reflect.TypeOf([]string(nil))
 
+// reflectTypeStringMap is the reflect.Type a &attributes-forwarding mixin
+// call's runtime call-attribute map (see genMixinCallAttrsMap) is pushed
+// onto the generator's scope with, under the mixin's own special
+// "attributes" name — a Go map[string]string, matching the value type
+// Runtime.renderMixinCall's own attrMap always holds (every entry is a
+// string, via evaluateExpr or the bare "true" literal). Pushing it with
+// this type lets the mixin body's own `&attributes(attributes)` tag resolve
+// "attributes" through resolveFieldExpr into genSpreadAttrs's pre-existing
+// map[string]string spread-source path, exactly like any other
+// map[string]string field or scope variable.
+var reflectTypeStringMap = reflect.TypeOf(map[string]string(nil))
+
 // convertExpr returns goExpr unchanged when typ is exactly builtin (no
 // conversion needed to satisfy a function parameter of that builtin type),
 // or wraps it in an explicit conversion (goTypeName + "(" + goExpr + ")")
@@ -4685,14 +4697,37 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 // genMixinCallAttrForward generates decl's ENTIRE body inline, directly into
 // the caller's own g.body/g.static — no shared helper function is ever
 // created for a &attributes-forwarding mixin (see mixinAttrForward's own doc
-// comment) — for call, ONE specific call site. Since call.Attributes are
-// required to be fully static (see staticCallAttrValue), and decl's own
-// parameters are handled exactly as any other mixin's (bound to hoisted
-// `__margN` locals, one evaluation feeding every reference, exactly like
-// genMixinCall's own dynamicBlock path), this fully resolves — at GENERATE
-// TIME — every attribute a `&attributes`-spread tag reached from decl.Body
-// will render for THIS call, before genTag/mergeForwardedAttributes ever
-// need to consult g.attrForwardCallAttrs.
+// comment) — for call, ONE specific call site. decl's own parameters are
+// handled exactly as any other mixin's (bound to hoisted `__margN` locals,
+// one evaluation feeding every reference, exactly like genMixinCall's own
+// dynamicBlock path).
+//
+// call.Attributes fall into one of two shapes, decided up front by
+// staticCallAttrValue:
+//
+//   - ALL static (a bare attribute, an unquoted true/false keyword, or a
+//     plain quoted-string literal — including the vacuous case of no call
+//     attributes at all): the original GENERATE-TIME merge path, unchanged.
+//     Every attribute a `&attributes`-spread tag reached from decl.Body will
+//     render for THIS call is fully resolved at generate time, before
+//     genTag/mergeForwardedAttributes ever need to consult
+//     g.attrForwardCallAttrs (g.inAttrForwardBody is set so genTag routes
+//     the body's own `&attributes(attributes)` tag there).
+//   - ANY dynamic (an expression-valued attribute staticCallAttrValue
+//     refuses): a RUNTIME path. genMixinCallAttrsMap builds a
+//     map[string]string local, in the CALLER's own scope, holding every call
+//     attribute's evaluated value under its own name — the exact value
+//     Runtime.renderMixinCall's own attrMap would hold for it. That local is
+//     then bound into decl's own param scope under the mixin's special
+//     "attributes" name (reflectTypeStringMap), and g.inAttrForwardBody is
+//     left FALSE, so the body's own `&attributes(attributes)` tag falls
+//     through genTag's ordinary path to genSpreadAttrs instead of
+//     mergeForwardedAttributes — genSpreadAttrs's pre-existing
+//     map[string]string field/scope-variable path (backed by
+//     gopug.WriteSpreadAttrs) and genSpreadBase's pre-existing dynamic-base
+//     handling (including a base attribute referencing one of decl's own
+//     `__margN` parameters) render it, with no new render logic introduced
+//     by this function at all.
 //
 // A rest parameter and a `block` slot are both unsupported for a
 // &attributes-forwarding mixin this slice (the latter is a deliberate,
@@ -4700,15 +4735,13 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 // interactions is a distinct, untested claim this increment does not make,
 // even though the two mechanisms don't obviously conflict) — checked up
 // front, before any body generation, exactly like genMixinFunc's own
-// equivalent check. A default parameter value needs no such check: a
-// missing argument whose parameter has a default is hoisted into its
-// `__margN` local via genMixinParamValue exactly like a real argument
-// would be, the same mechanism genMixinCall's own dynamicBlock path uses —
-// see genMixinParamValue's own doc comment for why this is byte-identical
-// to Runtime.renderMixinCall's own caller-side default evaluation. A
-// non-static call attribute (an expression-valued attribute or anything
-// staticCallAttrValue refuses) is also refused up front, with a clean,
-// distinct error identifying the offending attribute.
+// equivalent check, and before either call-attribute path runs. A default
+// parameter value needs no such check: a missing argument whose parameter
+// has a default is hoisted into its `__margN` local via genMixinParamValue
+// exactly like a real argument would be, the same mechanism genMixinCall's
+// own dynamicBlock path uses — see genMixinParamValue's own doc comment for
+// why this is byte-identical to Runtime.renderMixinCall's own caller-side
+// default evaluation.
 //
 // decl.Body is generated in the SAME param-only, insideMixinBody-set scope
 // genMixinFunc's own body generation uses (see its own doc comment for why:
@@ -4727,13 +4760,12 @@ func (g *generator) genMixinCallAttrForward(call *MixinCallNode, decl *MixinDecl
 		return fmt.Errorf("mixin %q: &attributes combined with a block slot (`block`) is not supported in codegen yet", call.Name)
 	}
 
-	callStatic := make(map[string]string, len(call.Attributes))
-	for name, v := range call.Attributes {
-		valStr, ok := staticCallAttrValue(v)
-		if !ok {
-			return fmt.Errorf("mixin %q: call attribute %q: a dynamic (non-literal) value is not supported in codegen", call.Name, name)
+	allStatic := true
+	for _, v := range call.Attributes {
+		if _, ok := staticCallAttrValue(v); !ok {
+			allStatic = false
+			break
 		}
-		callStatic[name] = valStr
 	}
 
 	callID := g.nextTmp()
@@ -4747,14 +4779,31 @@ func (g *generator) genMixinCallAttrForward(call *MixinCallNode, decl *MixinDecl
 		g.writeRaw(fmt.Sprintf("%s := %s\n", margName, valExpr))
 		// A merged &attributes tag can completely overwrite a base attribute
 		// that referenced this very parameter (the "overwrite" rule — see
-		// mergeForwardedAttributes), in which case the parameter is never
-		// read anywhere in the generated body at all. Unlike genMixinFunc's
-		// own argN, which are Go FUNCTION PARAMETERS (never flagged unused),
-		// margName is a plain := local here, so it must be blank-used
-		// unconditionally to stay valid Go regardless of whether the body
-		// ends up referencing it.
+		// mergeForwardedAttributes), or the whole mixin body can spread a
+		// runtime attribute map instead, in which case the parameter is
+		// never read anywhere in the generated body at all. Unlike
+		// genMixinFunc's own argN, which are Go FUNCTION PARAMETERS (never
+		// flagged unused), margName is a plain := local here, so it must be
+		// blank-used unconditionally to stay valid Go regardless of whether
+		// the body ends up referencing it.
 		g.writeRaw(fmt.Sprintf("_ = %s\n", margName))
 		margNames[i] = margName
+	}
+
+	var callStatic map[string]string
+	var attrsMapGoName string
+	if allStatic {
+		callStatic = make(map[string]string, len(call.Attributes))
+		for name, v := range call.Attributes {
+			valStr, _ := staticCallAttrValue(v)
+			callStatic[name] = valStr
+		}
+	} else {
+		var err error
+		attrsMapGoName, err = g.genMixinCallAttrsMap(call, callID)
+		if err != nil {
+			return err
+		}
 	}
 
 	savedScope := g.scope
@@ -4768,11 +4817,20 @@ func (g *generator) genMixinCallAttrForward(call *MixinCallNode, decl *MixinDecl
 	for i, p := range decl.Parameters {
 		g.pushScope(p, margNames[i], reflectTypeString, false)
 	}
-	g.paramOnlyScope = true
-	g.insideMixinBody = true
-	g.blockParamName = ""
-	g.inAttrForwardBody = true
-	g.attrForwardCallAttrs = callStatic
+	if allStatic {
+		g.paramOnlyScope = true
+		g.insideMixinBody = true
+		g.blockParamName = ""
+		g.inAttrForwardBody = true
+		g.attrForwardCallAttrs = callStatic
+	} else {
+		g.pushScope("attributes", attrsMapGoName, reflectTypeStringMap, false)
+		g.paramOnlyScope = true
+		g.insideMixinBody = true
+		g.blockParamName = ""
+		g.inAttrForwardBody = false
+		g.attrForwardCallAttrs = nil
+	}
 
 	var bodyErr error
 	for _, child := range decl.Body {
@@ -4790,6 +4848,56 @@ func (g *generator) genMixinCallAttrForward(call *MixinCallNode, decl *MixinDecl
 	g.attrForwardCallAttrs = savedAttrForwardCallAttrs
 
 	return bodyErr
+}
+
+// genMixinCallAttrsMap builds, at the CALL SITE and in the CALLER's own
+// ambient scope (reached before decl's own parameter scope is pushed, so it
+// sees exactly what Runtime.renderMixinCall's own attrMap-building loop
+// does), a map[string]string local named "__mixinAttrs<callID>" holding
+// every one of call's own attributes under its own name: a bare attribute
+// or any other value staticCallAttrValue classifies as static becomes that
+// same literal string; anything else is built with genValueExpr(v.Value) —
+// matching Runtime.renderMixinCall's own `v.IsBare ? "true" :
+// evaluateExpr(v.Value)` build exactly, entry for entry. Returns the local's
+// Go name, so genMixinCallAttrForward can bind it into decl's own parameter
+// scope under the mixin's special "attributes" name.
+//
+// A FALLIBLE call attribute value (genValueExpr's own fallible flag — a
+// top-level `/` or `%`) is refused with a clean, distinct error rather than
+// generated: confirmed by direct probe against Runtime.renderMixinCall, a
+// call attribute whose evaluateExpr call ERRORS (e.g. a division by zero)
+// falls back to the RAW, UNEVALUATED expression STRING with NO render error
+// at all — a fallback a Go expression that would itself return a runtime
+// error instead of a string cannot reproduce. A call attribute value
+// genValueExpr cannot compile at all (an unsupported shape) surfaces
+// genValueExpr's own error unchanged.
+func (g *generator) genMixinCallAttrsMap(call *MixinCallNode, callID int) (string, error) {
+	names := make([]string, 0, len(call.Attributes))
+	for name := range call.Attributes {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	entries := make([]string, 0, len(names))
+	for _, name := range names {
+		v := call.Attributes[name]
+		if valStr, ok := staticCallAttrValue(v); ok {
+			entries = append(entries, strconv.Quote(name)+": "+strconv.Quote(valStr))
+			continue
+		}
+		goExpr, fallible, err := g.genValueExpr(v.Value)
+		if err != nil {
+			return "", fmt.Errorf("mixin %q: call attribute %q: %w", call.Name, name, err)
+		}
+		if fallible {
+			return "", fmt.Errorf("mixin %q: call attribute %q is a fallible expression (a division or modulo operator) and is not supported in codegen: Runtime.renderMixinCall falls back to the raw, unevaluated expression string when its own evaluation errors at render time, with no render error at all — a fallback a runtime-erroring Go expression cannot reproduce", call.Name, name)
+		}
+		entries = append(entries, strconv.Quote(name)+": "+goExpr)
+	}
+
+	goName := fmt.Sprintf("__mixinAttrs%d", callID)
+	g.writeRaw(goName + " := map[string]string{" + strings.Join(entries, ", ") + "}\n")
+	return goName, nil
 }
 
 // genMixinBlockClosure generates content — the block content a call site

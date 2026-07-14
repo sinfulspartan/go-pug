@@ -8,12 +8,15 @@ import (
 
 // mixinDataStruct is the declared struct the mixin differential tests
 // resolve a data-derived call argument against: Title feeds a `+card(Title)`
-// call, and both fields double as the "isolation" tests' invisible-field
+// call, both string fields double as the "isolation" tests' invisible-field
 // probes (a mixin body accidentally referencing Title or Name instead of its
-// own declared parameter).
+// own declared parameter), and Count is the one numeric field the dynamic
+// call-attribute tests use to prove a numeric-valued spread entry stringifies
+// exactly like the interpreter's own attribute map does.
 type mixinDataStruct struct {
 	Title string
 	Name  string
+	Count int
 }
 
 var mixinDataReflectType = reflect.TypeOf(mixinDataStruct{})
@@ -25,6 +28,7 @@ var mixinDataReflectType = reflect.TypeOf(mixinDataStruct{})
 const mixinDataStructSrc = `type mixinDataStruct struct {
 	Title string
 	Name  string
+	Count int
 }
 `
 
