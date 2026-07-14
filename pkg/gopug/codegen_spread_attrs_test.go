@@ -337,11 +337,6 @@ func TestCodegenSpreadAttrsDeferrals(t *testing.T) {
 			wantSub: "map[string]string-typed",
 		},
 		{
-			name:    "inline object &attributes({...})",
-			src:     `div&attributes({x: "1"})` + "\n",
-			wantSub: "inline object literal",
-		},
-		{
 			name:    "dynamic class= base attribute on a spread tag",
 			src:     "div(class=Name)&attributes(Attrs)\n",
 			wantSub: "is dynamic",

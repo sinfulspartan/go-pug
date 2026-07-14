@@ -1183,15 +1183,29 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 // runtime code paths with no static unwrap/escape step of their own to
 // reuse; each escapes every non-bare value exactly once, itself, via
 // EscapeAttr.
+//
+// An inline object literal source (`&attributes({key: "val", ...})`) is
+// handled separately by genSpreadAttrsInlineObject: unlike a field/variable
+// spread source, an inline object's keys AND values are fully determined by
+// the template source text alone (parseInlineObject never evaluates a
+// value — it only strips surrounding quotes), so the whole spread map is
+// knowable at generate time and can be emitted as a static Go map literal
+// instead of a runtime expression. The nil-Config.DataReflectType (type-
+// blind) gate below still applies to that path too, purely for consistency
+// with every other &attributes shape this function supports — an inline
+// object needs no type resolution at all, so it could in principle be
+// supported type-blind as a small follow-up, but this increment keeps the
+// scope of "type-blind mode" simple (either everything dynamic defers, or
+// nothing does) rather than carving out a single exception.
 func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 	expr := strings.TrimSpace(spread.Value)
 
-	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
-		return fmt.Errorf("unsupported &attributes(%s) in codegen: an inline object literal spread is not supported yet", expr)
-	}
-
 	if g.rootType == nil {
 		return fmt.Errorf("unsupported &attributes(%s) in codegen: a nil Config.DataReflectType (type-blind mode) cannot resolve a runtime spread source's type", expr)
+	}
+
+	if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
+		return g.genSpreadAttrsInlineObject(tag, expr)
 	}
 
 	goExpr, typ, err := g.resolveFieldExpr(expr)
@@ -1213,13 +1227,38 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 		return fmt.Errorf("unsupported &attributes(%s) in codegen: only a map[string]string-typed or map[string]any-typed spread source is supported this increment (got %s)", expr, typ.String())
 	}
 
+	base, err := g.genSpreadBase(tag, expr)
+	if err != nil {
+		return err
+	}
+
+	helperFunc := "gopug.WriteSpreadAttrs"
+	if isAnySpread {
+		helperFunc = "gopug.WriteSpreadAttrsAny"
+	}
+
+	g.needsGopug = true
+	g.writeRaw("if err := " + helperFunc + "(w, " + genSpreadBaseLiteral(base) + ", " + goExpr + "); err != nil {\nreturn err\n}\n")
+	return nil
+}
+
+// genSpreadBase builds base — a &attributes tag's own attributes excluding
+// the &attributes entry itself, checked for the narrow shape both
+// genSpreadAttrs's field/variable path and genSpreadAttrsInlineObject's
+// inline-object path require: a bare boolean, or a static quoted-string
+// literal whose "class" value (if any) has no leading/trailing or repeated
+// internal whitespace. Shared by both so the base-attribute rules — and the
+// irregular-whitespace "class" deferral's rationale (see genSpreadAttrs's
+// own doc comment above) — cannot drift between the two spread-source
+// shapes.
+func (g *generator) genSpreadBase(tag *TagNode, expr string) (map[string]*AttributeValue, error) {
 	base := make(map[string]*AttributeValue, len(tag.Attributes))
 	for name, val := range tag.Attributes {
 		if name == "&attributes" {
 			continue
 		}
 		if val.Unescaped {
-			return fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is unescaped, which is not supported for a runtime spread", expr, name)
+			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is unescaped, which is not supported for a runtime spread", expr, name)
 		}
 		if val.IsBare {
 			base[name] = &AttributeValue{IsBare: true}
@@ -1227,7 +1266,7 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 		}
 		lit, ok := unwrapQuotedLiteral(strings.TrimSpace(val.Value))
 		if !ok {
-			return fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is dynamic, which is not supported for a runtime spread (only a static quoted-string or bare boolean base attribute is supported)", expr, name)
+			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute %q is dynamic, which is not supported for a runtime spread (only a static quoted-string or bare boolean base attribute is supported)", expr, name)
 		}
 		if name == "class" && lit != strings.Join(strings.Fields(lit), " ") {
 			// A base class literal with leading/trailing or 2+ internal
@@ -1245,19 +1284,69 @@ func (g *generator) genSpreadAttrs(tag *TagNode, spread *AttributeValue) error {
 			// when the interpreter would have collapsed it), defer this
 			// shape entirely; a base class with no irregular whitespace is
 			// unaffected either way and stays supported.
-			return fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute \"class\" has leading/trailing or repeated internal whitespace, which is not supported for a runtime spread (its rendering depends on whether the runtime spread map supplies a \"class\" key, which is not knowable at generate time)", expr)
+			return nil, fmt.Errorf("unsupported &attributes(%s) in codegen: base attribute \"class\" has leading/trailing or repeated internal whitespace, which is not supported for a runtime spread (its rendering depends on whether the runtime spread map supplies a \"class\" key, which is not knowable at generate time)", expr)
 		}
 		base[name] = &AttributeValue{Value: lit}
 	}
+	return base, nil
+}
 
-	helperFunc := "gopug.WriteSpreadAttrs"
-	if isAnySpread {
-		helperFunc = "gopug.WriteSpreadAttrsAny"
+// genSpreadAttrsInlineObject handles a `&attributes({...})` tag whose spread
+// source is an inline object literal, reached from genSpreadAttrs once it
+// has confirmed expr looks like `{...}` (the same detection Runtime.
+// renderTag itself uses at its own inline-object branch). Because
+// parseInlineObject never evaluates a value — it only trims whitespace and
+// strips a matching pair of surrounding quotes from the key and the value —
+// the object's ENTIRE contents are fixed template source text, so calling
+// parseInlineObject(expr) here, at GENERATE time, yields the exact same
+// map[string]string Runtime.renderTag's own runtime call to parseInlineObject
+// would build for the identical expr at RENDER time: there is no template
+// data involved in the parse at all, so gen time and render time can never
+// disagree. That static map is emitted as a Go map[string]string composite
+// literal (genInlineObjectLiteral, sorted for reproducible codegen output)
+// and handed to the exact same gopug.WriteSpreadAttrs entry point
+// genSpreadAttrs's own field/variable map[string]string path already calls —
+// no new render logic is introduced, so the merge/sort/escape behavior is
+// byte-identical to the interpreter by construction, for the same reason the
+// field/variable path already is.
+func (g *generator) genSpreadAttrsInlineObject(tag *TagNode, expr string) error {
+	base, err := g.genSpreadBase(tag, expr)
+	if err != nil {
+		return err
 	}
 
+	obj := parseInlineObject(expr)
+
 	g.needsGopug = true
-	g.writeRaw("if err := " + helperFunc + "(w, " + genSpreadBaseLiteral(base) + ", " + goExpr + "); err != nil {\nreturn err\n}\n")
+	g.writeRaw("if err := gopug.WriteSpreadAttrs(w, " + genSpreadBaseLiteral(base) + ", " + genInlineObjectLiteral(obj) + "); err != nil {\nreturn err\n}\n")
 	return nil
+}
+
+// genInlineObjectLiteral renders obj — the map[string]string
+// genSpreadAttrsInlineObject parsed from an inline object literal's source
+// text at generate time — as a Go map[string]string composite literal, in a
+// deterministic (sorted) key order so GenerateGo's output is reproducible
+// across runs; runtime iteration order has no effect on the rendered result
+// since gopug.WriteSpreadAttrs sorts the merged attribute set itself.
+func genInlineObjectLiteral(obj map[string]string) string {
+	names := make([]string, 0, len(obj))
+	for name := range obj {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	var b strings.Builder
+	b.WriteString("map[string]string{")
+	for i, name := range names {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(strconv.Quote(name))
+		b.WriteString(": ")
+		b.WriteString(strconv.Quote(obj[name]))
+	}
+	b.WriteString("}")
+	return b.String()
 }
 
 // genSpreadBaseLiteral renders base — a &attributes tag's own simple

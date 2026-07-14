@@ -238,17 +238,6 @@ func TestCodegenSpreadAttrsAnyDeferrals(t *testing.T) {
 		}
 	})
 
-	t.Run("inline object &attributes({...})", func(t *testing.T) {
-		src := `div&attributes({x: "1"})` + "\n"
-		err := genSpreadErr(t, src, false)
-		if err == nil {
-			t.Fatalf("GenerateGo(%q): expected a deferral error, got nil", src)
-		}
-		if !strings.Contains(err.Error(), "inline object literal") {
-			t.Errorf("GenerateGo error %q does not mention the inline object literal deferral", err.Error())
-		}
-	})
-
 	t.Run("nil DataReflectType", func(t *testing.T) {
 		src := "div&attributes(AttrsAny)\n"
 		err := genSpreadErr(t, src, true)
