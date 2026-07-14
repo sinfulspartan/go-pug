@@ -31,11 +31,7 @@ func TestCodegenUnbufferedAssignNumericIntField(t *testing.T) {
 			dataLiteral: "opsData{Offer: opsOffer{ID: 0}}",
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignNumericUintField proves a bare uint-kind field
@@ -71,11 +67,7 @@ func TestCodegenUnbufferedAssignNumericFloat64Field(t *testing.T) {
 		{name: "zero", src: src, data: map[string]any{"Price": 0.0}, dataLiteral: "opsData{Price: 0.0}"},
 		{name: "negative", src: src, data: map[string]any{"Price": -2.5}, dataLiteral: "opsData{Price: -2.5}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignNumericNamedTypeField proves a named type
@@ -104,16 +96,16 @@ func TestCodegenUnbufferedAssignNumericLiteral(t *testing.T) {
 		{name: "hex", rhs: "0x10"},
 		{name: "scientific notation", rhs: "1e3"},
 	}
+	var diffCases []codegenUnbufferedCase
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			src := "- var n = " + tc.rhs + "\np=n\n"
-			runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-				src:         src,
-				data:        map[string]any{},
-				dataLiteral: "opsData{}",
-			})
+		diffCases = append(diffCases, codegenUnbufferedCase{
+			name:        tc.name,
+			src:         "- var n = " + tc.rhs + "\np=n\n",
+			data:        map[string]any{},
+			dataLiteral: "opsData{}",
 		})
 	}
+	runCodegenUnbufferedDifferentialBatch(t, diffCases)
 }
 
 // TestCodegenUnbufferedAssignNumericLiteralCanonicalFormat is the interpreter
@@ -184,11 +176,7 @@ func TestCodegenUnbufferedAssignNumericTernaryValue(t *testing.T) {
 			dataLiteral: "opsData{Flag: false, Offer: opsOffer{ID: 42}, Zero: 0}",
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignNumericArithmeticValueContextWorksFree proves
@@ -410,11 +398,7 @@ func TestCodegenUnbufferedAssignNumericBoundaryBoolFieldStaysSlice2(t *testing.T
 		{name: "true", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
 		{name: "false", src: src, data: map[string]any{"Flag": false}, dataLiteral: "opsData{Flag: false}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // --- Deferrals ---

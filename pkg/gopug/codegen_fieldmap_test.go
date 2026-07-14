@@ -1,9 +1,6 @@
 package gopug
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,51 +59,6 @@ type fieldMapData struct {
 	ID          int
 }
 `
-
-// runFieldMapGo builds and runs generated (a GenerateGo result whose
-// Config.PackageName is "main" and Config.FuncName is "RenderFieldMap") in a
-// throwaway module, alongside a copy of the fieldMapData struct declaration
-// and an appended main() that constructs dataLiteral (a fieldMapData
-// composite literal) and writes RenderFieldMap's output to stdout, then
-// returns that output. Mirrors codegen_ops_test.go's runGeneratedGo, but
-// against fieldMapDataStructSrc instead of opsDataStructSrc, since this
-// file's struct shape (a `pug`-tagged field) doesn't belong in opsData.
-func runFieldMapGo(t *testing.T, generated []byte, dataLiteral string) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	goMod := "module fieldmapbuild\n\ngo 1.26\n" + repoModuleReplaceDirectives(t)
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
-		t.Fatalf("writing go.mod: %v", err)
-	}
-
-	genStr := string(generated)
-	funcIdx := strings.Index(genStr, "\nfunc ")
-	if funcIdx < 0 {
-		t.Fatalf("generated source has no \"func \" to splice the struct declaration before:\n%s", genStr)
-	}
-
-	var src strings.Builder
-	src.WriteString(genStr[:funcIdx])
-	src.WriteString("\n\nimport \"os\"\n\n")
-	src.WriteString(fieldMapDataStructSrc)
-	src.WriteString(genStr[funcIdx:])
-	src.WriteString("\nfunc main() {\n\td := ")
-	src.WriteString(dataLiteral)
-	src.WriteString("\n\tif err := RenderFieldMap(os.Stdout, d); err != nil {\n\t\tpanic(err)\n\t}\n}\n")
-
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src.String()), 0o644); err != nil {
-		t.Fatalf("writing main.go: %v", err)
-	}
-
-	cmd := exec.Command("go", "run", ".")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go run on generated code failed:\n%s\n--- source ---\n%s", out, src.String())
-	}
-	return string(out)
-}
 
 // TestCodegenFieldMapUnexportedFieldNeverResolves asserts that a Pug
 // identifier whose only matching Go field is unexported is rejected by
@@ -224,7 +176,14 @@ func TestCodegenFieldMapDifferentialMatchesInterpreter(t *testing.T) {
 	}
 
 	dataLiteral := `fieldMapData{TaskPreview: fieldMapTaskPreview{AdjusterName: "Jane Doe"}, FirmID: "F-100", ID: 42}`
-	got := runFieldMapGo(t, generated, dataLiteral)
+	results := runDifferentialBatch(t, fieldMapDataStructSrc, "RenderFieldMap", []diffCase{
+		{name: "field map differential", generated: generated, dataLiteral: dataLiteral},
+	})
+	result := results[0]
+	if result.Err != "" {
+		t.Fatalf("generated RenderFieldMap: unexpected error %q", result.Err)
+	}
+	got := result.Out
 
 	if got != want {
 		t.Errorf("codegen output %q does not match interpreter output %q for template %q", got, want, src)

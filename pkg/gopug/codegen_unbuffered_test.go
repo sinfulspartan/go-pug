@@ -50,6 +50,70 @@ func runCodegenUnbufferedDifferential(t *testing.T, tc codegenUnbufferedCase) {
 	}
 }
 
+// runCodegenUnbufferedDifferentialBatch is runCodegenUnbufferedDifferential
+// generalized to a whole slice of cases: every case's GenerateGo output and
+// interpreter oracle (Compile().Render) are prepared up front, then
+// submitted to a SINGLE runDifferentialBatch call instead of one `go run`
+// per case. Each case's own pass/fail is still reported through its own
+// t.Run(tc.name, ...), matched to its batch result by index.
+func runCodegenUnbufferedDifferentialBatch(t *testing.T, cases []codegenUnbufferedCase) {
+	t.Helper()
+
+	if len(cases) == 0 {
+		return
+	}
+
+	type prepared struct {
+		tc   codegenUnbufferedCase
+		want string
+	}
+
+	var diffCases []diffCase
+	var prep []prepared
+
+	for _, tc := range cases {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		want, err := tmpl.Render(tc.data)
+		if err != nil {
+			t.Fatalf("interpreter Render: %v", err)
+		}
+
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: tc.dataLiteral})
+		prep = append(prep, prepared{tc: tc, want: want})
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	for i, p := range prep {
+		t.Run(p.tc.name, func(t *testing.T) {
+			result := results[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps(%q): unexpected error %q", p.tc.src, result.Err)
+			}
+			if result.Out != p.want {
+				t.Errorf("codegen output %q does not match interpreter output %q for %q", result.Out, p.want, p.tc.src)
+			}
+		})
+	}
+}
+
 func genUnbufferedErr(t *testing.T, src string) error {
 	t.Helper()
 	ast, err := Parse(src, nil)
@@ -100,11 +164,7 @@ func TestCodegenUnbufferedAssignTernaryStringLiteral(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignStringField proves a bare dot-path RHS
@@ -174,11 +234,7 @@ func TestCodegenUnbufferedAssignOrDefault(t *testing.T) {
 			dataLiteral: `opsData{Name: ""}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignAndCombinator proves the `&&` value-context
@@ -199,11 +255,7 @@ func TestCodegenUnbufferedAssignAndCombinator(t *testing.T) {
 			dataLiteral: `opsData{Name: "", Str1: "x"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignVisibleBeforeEach proves a `- var` set before an

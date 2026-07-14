@@ -1,7 +1,6 @@
 package gopug
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -13,23 +12,11 @@ import (
 // over the same condition.
 func TestCodegenUnlessTruthySkipFalsyRender(t *testing.T) {
 	src := "unless Flag\n  p yes\n"
-	cases := []struct {
-		name string
-		flag bool
-	}{
-		{name: "truthy condition: body skipped", flag: true},
-		{name: "falsy condition: body rendered", flag: false},
+	cases := []codegenArithCase{
+		{name: "truthy condition: body skipped", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
+		{name: "falsy condition: body rendered", src: src, data: map[string]any{"Flag": false}, dataLiteral: "opsData{Flag: false}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        tc.name,
-				src:         src,
-				data:        map[string]any{"Flag": tc.flag},
-				dataLiteral: fmt.Sprintf("opsData{Flag: %v}", tc.flag),
-			})
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnlessElse proves an `unless` with an `else` renders Alternate on
@@ -41,23 +28,11 @@ func TestCodegenUnlessTruthySkipFalsyRender(t *testing.T) {
 // branch selection flipped.
 func TestCodegenUnlessElse(t *testing.T) {
 	src := "unless Flag\n  p yes\nelse\n  p no\n"
-	cases := []struct {
-		name string
-		flag bool
-	}{
-		{name: "truthy condition: else branch renders", flag: true},
-		{name: "falsy condition: consequent branch renders", flag: false},
+	cases := []codegenArithCase{
+		{name: "truthy condition: else branch renders", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
+		{name: "falsy condition: consequent branch renders", src: src, data: map[string]any{"Flag": false}, dataLiteral: "opsData{Flag: false}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        tc.name,
-				src:         src,
-				data:        map[string]any{"Flag": tc.flag},
-				dataLiteral: fmt.Sprintf("opsData{Flag: %v}", tc.flag),
-			})
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnlessComparisonCondition proves an `unless` whose condition is
@@ -66,23 +41,11 @@ func TestCodegenUnlessElse(t *testing.T) {
 // negation-agnostic to which of its supported shapes produced it.
 func TestCodegenUnlessComparisonCondition(t *testing.T) {
 	src := "unless Count == 5\n  p yes\n"
-	cases := []struct {
-		name  string
-		count int
-	}{
-		{name: "condition true (Count == 5): body skipped", count: 5},
-		{name: "condition false (Count != 5): body rendered", count: 6},
+	cases := []codegenArithCase{
+		{name: "condition true (Count == 5): body skipped", src: src, data: map[string]any{"Count": 5}, dataLiteral: "opsData{Count: 5}"},
+		{name: "condition false (Count != 5): body rendered", src: src, data: map[string]any{"Count": 6}, dataLiteral: "opsData{Count: 6}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        tc.name,
-				src:         src,
-				data:        map[string]any{"Count": tc.count},
-				dataLiteral: fmt.Sprintf("opsData{Count: %d}", tc.count),
-			})
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnlessUncompilableConditionDeferred proves an `unless` whose

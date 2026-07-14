@@ -33,12 +33,10 @@ func TestCodegenArrayIndexOfBoolLocalManageShape(t *testing.T) {
 		{name: "not a member", data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 		{name: "substring of an element but not itself an element", data: map[string]any{"Slug": "firm"}, dataLiteral: `opsData{Slug: "firm"}`},
 	}
-	for _, tc := range cases {
-		tc.src = src
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
+	for i := range cases {
+		cases[i].src = src
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenArrayIndexOfBoolLocalNavShape is the second real corpus shape,
@@ -54,12 +52,10 @@ func TestCodegenArrayIndexOfBoolLocalNavShape(t *testing.T) {
 		{name: "last element", data: map[string]any{"Slug": "admin"}, dataLiteral: `opsData{Slug: "admin"}`},
 		{name: "not a member", data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 	}
-	for _, tc := range cases {
-		tc.src = src
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
+	for i := range cases {
+		cases[i].src = src
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenArrayIndexOfBoolLocalIndexZero specifically proves the index-0
@@ -94,12 +90,10 @@ func TestCodegenArrayIncludesBoolLocal(t *testing.T) {
 		{name: "member", data: map[string]any{"Slug": "tax-rates"}, dataLiteral: `opsData{Slug: "tax-rates"}`},
 		{name: "not a member", data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 	}
-	for _, tc := range cases {
-		tc.src = src
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
+	for i := range cases {
+		cases[i].src = src
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenArrayContainsBoolLocal proves the `.contains` alias (this
@@ -109,15 +103,9 @@ func TestCodegenArrayContainsBoolLocal(t *testing.T) {
 	src := "- var isMember = [\"a\", \"b\", \"c\"].contains(Slug)\n" +
 		"if isMember\n  p yes\nelse\n  p no\n" +
 		"p=isMember\n"
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		src:         src,
-		data:        map[string]any{"Slug": "b"},
-		dataLiteral: `opsData{Slug: "b"}`,
-	})
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		src:         src,
-		data:        map[string]any{"Slug": "z"},
-		dataLiteral: `opsData{Slug: "z"}`,
+	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
+		{name: "member", src: src, data: map[string]any{"Slug": "b"}, dataLiteral: `opsData{Slug: "b"}`},
+		{name: "not a member", src: src, data: map[string]any{"Slug": "z"}, dataLiteral: `opsData{Slug: "z"}`},
 	})
 }
 
@@ -134,12 +122,10 @@ func TestCodegenArrayIndexOfBoolLocalNegated(t *testing.T) {
 		{name: "member (=== -1 is false)", data: map[string]any{"Slug": "users"}, dataLiteral: `opsData{Slug: "users"}`},
 		{name: "not a member (=== -1 is true)", data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 	}
-	for _, tc := range cases {
-		tc.src = src
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
+	for i := range cases {
+		cases[i].src = src
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // --- The real-world composite idiom: a chained `||` reading a prior bool local ---
@@ -159,12 +145,10 @@ func TestCodegenArrayIndexOfBoolLocalOrCombinator(t *testing.T) {
 		{name: "dashboard (not in nav group, but matches the OR's right operand)", data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 		{name: "neither", data: map[string]any{"Slug": "users"}, dataLiteral: `opsData{Slug: "users"}`},
 	}
-	for _, tc := range cases {
-		tc.src = src
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
+	for i := range cases {
+		cases[i].src = src
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // --- Value context beyond the bool local: works "for free" via genMethodCall ---
@@ -181,12 +165,10 @@ func TestCodegenArrayIndexOfNumericContextInterpolationWorks(t *testing.T) {
 		{name: "found at a later index", data: map[string]any{"Slug": "audit-log"}, dataLiteral: `opsData{Slug: "audit-log"}`},
 		{name: "not found", data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 	}
-	for _, tc := range cases {
-		tc.src = src
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
+	for i := range cases {
+		cases[i].src = src
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenArrayIndexOfNumericContextRawInterpolationWorks is the same
@@ -197,15 +179,9 @@ func TestCodegenArrayIndexOfNumericContextInterpolationWorks(t *testing.T) {
 // explicitly, not just its buffered-code equivalent.
 func TestCodegenArrayIndexOfNumericContextRawInterpolationWorks(t *testing.T) {
 	src := "p #{" + manageGroupArrayLiteral + ".indexOf(Slug)}\n"
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		src:         src,
-		data:        map[string]any{"Slug": "coverage-map"},
-		dataLiteral: `opsData{Slug: "coverage-map"}`,
-	})
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		src:         src,
-		data:        map[string]any{"Slug": "dashboard"},
-		dataLiteral: `opsData{Slug: "dashboard"}`,
+	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
+		{name: "found", src: src, data: map[string]any{"Slug": "coverage-map"}, dataLiteral: `opsData{Slug: "coverage-map"}`},
+		{name: "not found", src: src, data: map[string]any{"Slug": "dashboard"}, dataLiteral: `opsData{Slug: "dashboard"}`},
 	})
 }
 

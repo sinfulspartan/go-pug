@@ -3,7 +3,6 @@ package gopug
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -31,51 +30,24 @@ const compositionDataStructSrc = `type compositionData struct {
 }
 `
 
-// runComposedGo writes generated (a GenerateGo result whose Config.FuncName
-// is funcName) into a throwaway module alongside structSrc's type
-// declaration (empty for a type-blind "map[string]any" test) and a main()
-// that builds dataLiteral, calls funcName(os.Stdout, d), builds the module,
-// and runs the resulting program, returning its captured stdout. This is
-// codegen_ops_test.go's runGeneratedGo generalized to an arbitrary
-// struct/data-literal/func-name so the composition tests below aren't tied
-// to opsData. repoModuleReplaceDirectives (defined in codegen_ops_test.go,
-// same package) supplies the replace directive that lets the throwaway
-// module resolve this repository's own gopug package.
+// runComposedGo runs generated (a GenerateGo result whose Config.FuncName is
+// funcName) through the shared runDifferentialBatch mechanism as a
+// single-case batch, alongside structSrc's type declaration (empty for a
+// type-blind "map[string]any" test) and dataLiteral, returning its rendered
+// output. This is codegen_ops_test.go's runGeneratedGo generalized to an
+// arbitrary struct/data-literal/func-name so the composition tests below
+// aren't tied to opsData.
 func runComposedGo(t *testing.T, generated []byte, structSrc, dataLiteral, funcName string) string {
 	t.Helper()
 
-	dir := t.TempDir()
-	goMod := "module compbuild\n\ngo 1.26\n" + repoModuleReplaceDirectives(t)
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
-		t.Fatalf("writing go.mod: %v", err)
+	results := runDifferentialBatch(t, structSrc, funcName, []diffCase{
+		{name: "composed", generated: generated, dataLiteral: dataLiteral},
+	})
+	result := results[0]
+	if result.Err != "" {
+		t.Fatalf("generated %s: unexpected error %q", funcName, result.Err)
 	}
-
-	genStr := string(generated)
-	funcIdx := strings.Index(genStr, "\nfunc ")
-	if funcIdx < 0 {
-		t.Fatalf("generated source has no \"func \" to splice the struct declaration before:\n%s", genStr)
-	}
-
-	var src strings.Builder
-	src.WriteString(genStr[:funcIdx])
-	src.WriteString("\n\nimport \"os\"\n\n")
-	src.WriteString(structSrc)
-	src.WriteString(genStr[funcIdx:])
-	src.WriteString("\nfunc main() {\n\td := ")
-	src.WriteString(dataLiteral)
-	src.WriteString("\n\tif err := " + funcName + "(os.Stdout, d); err != nil {\n\t\tpanic(err)\n\t}\n}\n")
-
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src.String()), 0o644); err != nil {
-		t.Fatalf("writing main.go: %v", err)
-	}
-
-	cmd := exec.Command("go", "run", ".")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go run on generated code failed:\n%s\n--- source ---\n%s", out, src.String())
-	}
-	return string(out)
+	return result.Out
 }
 
 // mustWriteFile writes content to filepath.Join(dir, name), failing the test

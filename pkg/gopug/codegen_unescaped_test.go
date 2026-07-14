@@ -5,45 +5,6 @@ import (
 	"testing"
 )
 
-// genUnescapedDifferential builds src through GenerateGo, runs it via
-// runGeneratedGo, and compares its output against the interpreter's own
-// Compile().Render output for the same data — the interpreter's Render
-// output is always the oracle, never a hand-computed expectation. It is used
-// for every non-error case in this file (both `!{expr}` and `!= expr`, and
-// their escaped `#{expr}`/`= expr` counterparts).
-func genUnescapedDifferential(t *testing.T, src string, data map[string]any, dataLiteral string) string {
-	t.Helper()
-
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-	generated, err := GenerateGo(ast, Config{
-		PackageName:     "main",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err != nil {
-		t.Fatalf("GenerateGo(%q): %v", src, err)
-	}
-
-	tmpl, err := Compile(src, nil)
-	if err != nil {
-		t.Fatalf("Compile(%q): %v", src, err)
-	}
-	want, err := tmpl.Render(data)
-	if err != nil {
-		t.Fatalf("interpreter Render(%q): %v", src, err)
-	}
-
-	got := runGeneratedGo(t, generated, dataLiteral)
-	if got != want {
-		t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, src)
-	}
-	return got
-}
-
 // TestCodegenUnescapedDiscriminatingHTMLSpecials is the headline proof: a
 // string field holding HTML-special characters (`<`, `>`, `&`, `"`) renders
 // RAW through both unescaped forms (`!{expr}` and `!= expr`), while the
@@ -67,11 +28,48 @@ func TestCodegenUnescapedDiscriminatingHTMLSpecials(t *testing.T) {
 		{name: "escaped buffered code (regression)", src: "p= Name\n", want: "<p>&lt;b&gt;&amp;&#34;x&#34;</p>"},
 	}
 
+	var diffCases []diffCase
+	var interpWants []string
 	for _, tc := range cases {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		interpWant, err := tmpl.Render(data)
+		if err != nil {
+			t.Fatalf("interpreter Render(%q): %v", tc.src, err)
+		}
+
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: dataLiteral})
+		interpWants = append(interpWants, interpWant)
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := genUnescapedDifferential(t, tc.src, data, dataLiteral)
-			if got != tc.want {
-				t.Errorf("codegen output %q does not match expected %q for %q", got, tc.want, tc.src)
+			result := results[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps(%q): unexpected error %q", tc.src, result.Err)
+			}
+			if result.Out != interpWants[i] {
+				t.Errorf("codegen output %q does not match interpreter output %q for %q", result.Out, interpWants[i], tc.src)
+			}
+			if result.Out != tc.want {
+				t.Errorf("codegen output %q does not match expected %q for %q", result.Out, tc.want, tc.src)
 			}
 		})
 	}
@@ -117,11 +115,11 @@ func TestCodegenUnescapedNoSpecials(t *testing.T) {
 	data := map[string]any{"Name": "hello"}
 	dataLiteral := `opsData{Name: "hello"}`
 
+	var cases []codegenArithCase
 	for _, src := range []string{"p !{Name}\n", "p!= Name\n", "p #{Name}\n", "p= Name\n"} {
-		t.Run(src, func(t *testing.T) {
-			genUnescapedDifferential(t, src, data, dataLiteral)
-		})
+		cases = append(cases, codegenArithCase{name: src, src: src, data: data, dataLiteral: dataLiteral})
 	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnescapedNumericAndBool proves a numeric and a bool field
@@ -129,23 +127,13 @@ func TestCodegenUnescapedNoSpecials(t *testing.T) {
 // neither can produce an HTML-special character, so escaping was always a
 // no-op for these, but the codegen path must still build and match.
 func TestCodegenUnescapedNumericAndBool(t *testing.T) {
-	cases := []struct {
-		name        string
-		src         string
-		data        map[string]any
-		dataLiteral string
-	}{
+	cases := []codegenArithCase{
 		{name: "numeric interpolation", src: "p !{Count}\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
 		{name: "numeric buffered code", src: "p!= Count\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
 		{name: "bool interpolation", src: "p !{Flag}\n", data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
 		{name: "bool buffered code", src: "p!= Flag\n", data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			genUnescapedDifferential(t, tc.src, tc.data, tc.dataLiteral)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnescapedExpression proves a `+`-concatenation expression
@@ -166,11 +154,48 @@ func TestCodegenUnescapedExpression(t *testing.T) {
 		{name: "unescaped buffered code expression", src: "p!= Str1 + Str2\n", want: "<p><a><b></p>"},
 	}
 
+	var diffCases []diffCase
+	var interpWants []string
 	for _, tc := range cases {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		interpWant, err := tmpl.Render(data)
+		if err != nil {
+			t.Fatalf("interpreter Render(%q): %v", tc.src, err)
+		}
+
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: dataLiteral})
+		interpWants = append(interpWants, interpWant)
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := genUnescapedDifferential(t, tc.src, data, dataLiteral)
-			if got != tc.want {
-				t.Errorf("codegen output %q does not match expected %q for %q", got, tc.want, tc.src)
+			result := results[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps(%q): unexpected error %q", tc.src, result.Err)
+			}
+			if result.Out != interpWants[i] {
+				t.Errorf("codegen output %q does not match interpreter output %q for %q", result.Out, interpWants[i], tc.src)
+			}
+			if result.Out != tc.want {
+				t.Errorf("codegen output %q does not match expected %q for %q", result.Out, tc.want, tc.src)
 			}
 		})
 	}
@@ -184,11 +209,11 @@ func TestCodegenUnescapedFallibleSuccess(t *testing.T) {
 	data := map[string]any{"Count": 10}
 	dataLiteral := "opsData{Count: 10}"
 
+	var cases []codegenArithCase
 	for _, src := range []string{"p !{Count / 2}\n", "p!= Count / 2\n"} {
-		t.Run(src, func(t *testing.T) {
-			genUnescapedDifferential(t, src, data, dataLiteral)
-		})
+		cases = append(cases, codegenArithCase{name: src, src: src, data: data, dataLiteral: dataLiteral})
 	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnescapedFallibleError proves error parity for the unescaped

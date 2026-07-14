@@ -49,6 +49,73 @@ func runCodegenArithDifferential(t *testing.T, tc codegenArithCase) {
 	}
 }
 
+// runCodegenArithDifferentialBatch is runCodegenArithDifferential generalized
+// to a whole slice of cases: every case's GenerateGo output and interpreter
+// oracle (Compile().Render) are prepared up front, then submitted to a
+// SINGLE runDifferentialBatch call instead of one `go run` per case, cutting
+// the dominant per-case cost (a fresh module build) down to one for the
+// entire slice. Each case's own pass/fail is still reported through its own
+// t.Run(tc.name, ...), matched to its batch result by index (prepared and
+// cases share the same order), so a failure stays exactly as attributable as
+// it was when run individually.
+func runCodegenArithDifferentialBatch(t *testing.T, cases []codegenArithCase) {
+	t.Helper()
+
+	if len(cases) == 0 {
+		return
+	}
+
+	type prepared struct {
+		tc   codegenArithCase
+		want string
+	}
+
+	var diffCases []diffCase
+	var prep []prepared
+
+	for _, tc := range cases {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		want, err := tmpl.Render(tc.data)
+		if err != nil {
+			t.Fatalf("interpreter Render: %v", err)
+		}
+
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: tc.dataLiteral})
+		prep = append(prep, prepared{tc: tc, want: want})
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	for i, p := range prep {
+		t.Run(p.tc.name, func(t *testing.T) {
+			result := results[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps(%q): unexpected error %q", p.tc.src, result.Err)
+			}
+			if result.Out != p.want {
+				t.Errorf("codegen output %q does not match interpreter output %q for %q", result.Out, p.want, p.tc.src)
+			}
+		})
+	}
+}
+
 // TestCodegenValueExprSubtraction proves gopug.Sub is wired into genValueExpr
 // for a numeric field minus a literal, matching evaluateExpr's own `-`
 // branch exactly.
@@ -80,11 +147,7 @@ func TestCodegenValueExprMultiplication(t *testing.T) {
 			dataLiteral: "opsData{Count: 4, Price: 2.5}",
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenValueExprArithmeticNonNumeric proves the Sub/Mul contract that
@@ -107,11 +170,7 @@ func TestCodegenValueExprArithmeticNonNumeric(t *testing.T) {
 			dataLiteral: `opsData{Str1: "a", Str2: "b"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenValueExprArithmeticNumericStrings proves the toFloat path: two
@@ -133,11 +192,7 @@ func TestCodegenValueExprArithmeticNumericStrings(t *testing.T) {
 			dataLiteral: `opsData{Str1: "5", Str2: "3"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenValueExprArithmeticPrecedence proves genValueExpr splits a
@@ -155,11 +210,7 @@ func TestCodegenValueExprArithmeticPrecedence(t *testing.T) {
 		{name: "addition before trailing subtraction", src: "p= Count + Age - BigInt\n", data: data, dataLiteral: dataLiteral},
 		{name: "subtraction before multiplication", src: "p= Count - Age * BigInt\n", data: data, dataLiteral: dataLiteral},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenValueExprArithmeticFloatFormatting proves a float64 field

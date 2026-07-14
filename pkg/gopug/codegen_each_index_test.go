@@ -24,15 +24,19 @@ func TestCodegenEachIndexBasic(t *testing.T) {
 // identically to the interpreter both through plain-text `#{i}`
 // interpolation and through a backtick template-literal `${i}`.
 func TestCodegenEachIndexInterpolation(t *testing.T) {
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		src:         "ul\n  each v, i in Items\n    li #{i}: #{v}\n",
-		data:        map[string]any{"Items": []any{"a", "b", "c"}},
-		dataLiteral: `opsData{Items: []string{"a", "b", "c"}}`,
-	})
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		src:         "ul\n  each v, i in Items\n    li= `${i}: ${v}`\n",
-		data:        map[string]any{"Items": []any{"a", "b", "c"}},
-		dataLiteral: `opsData{Items: []string{"a", "b", "c"}}`,
+	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
+		{
+			name:        "plain-text interpolation",
+			src:         "ul\n  each v, i in Items\n    li #{i}: #{v}\n",
+			data:        map[string]any{"Items": []any{"a", "b", "c"}},
+			dataLiteral: `opsData{Items: []string{"a", "b", "c"}}`,
+		},
+		{
+			name:        "backtick template literal",
+			src:         "ul\n  each v, i in Items\n    li= `${i}: ${v}`\n",
+			data:        map[string]any{"Items": []any{"a", "b", "c"}},
+			dataLiteral: `opsData{Items: []string{"a", "b", "c"}}`,
+		},
 	})
 }
 

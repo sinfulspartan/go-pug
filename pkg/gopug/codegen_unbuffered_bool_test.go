@@ -30,11 +30,7 @@ func TestCodegenUnbufferedAssignBoolComparison(t *testing.T) {
 			dataLiteral: `opsData{Name: "overdue"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignBoolBothOperandsOr is the second corpus
@@ -55,15 +51,15 @@ func TestCodegenUnbufferedAssignBoolBothOperandsOr(t *testing.T) {
 		{false, "dashboard"},
 		{false, "other"},
 	}
+	var cases []codegenUnbufferedCase
 	for _, c := range combos {
-		t.Run("", func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-				src:         src,
-				data:        map[string]any{"Flag": c.flag, "Name": c.name},
-				dataLiteral: quoteBoolOpsData(c.flag, c.name),
-			})
+		cases = append(cases, codegenUnbufferedCase{
+			src:         src,
+			data:        map[string]any{"Flag": c.flag, "Name": c.name},
+			dataLiteral: quoteBoolOpsData(c.flag, c.name),
 		})
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // quoteBoolOpsData builds an opsData composite literal for the Flag/Name
@@ -86,11 +82,7 @@ func TestCodegenUnbufferedAssignBoolNegation(t *testing.T) {
 		{name: "Flag true", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
 		{name: "Flag false", src: src, data: map[string]any{"Flag": false}, dataLiteral: "opsData{Flag: false}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignBoolComparisonOps proves each of the eight
@@ -117,17 +109,19 @@ func TestCodegenUnbufferedAssignBoolComparisonOps(t *testing.T) {
 			src := "- var cond = Count " + tc.op + " 5\n" +
 				"if cond\n  p yes\nelse\n  p no\n" +
 				"p=cond\n"
-			runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-				name:        "true branch",
-				src:         src,
-				data:        map[string]any{"Count": tc.trueLit},
-				dataLiteral: "opsData{Count: " + strconv.Itoa(tc.trueLit) + "}",
-			})
-			runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-				name:        "false branch",
-				src:         src,
-				data:        map[string]any{"Count": tc.falseLt},
-				dataLiteral: "opsData{Count: " + strconv.Itoa(tc.falseLt) + "}",
+			runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
+				{
+					name:        "true branch",
+					src:         src,
+					data:        map[string]any{"Count": tc.trueLit},
+					dataLiteral: "opsData{Count: " + strconv.Itoa(tc.trueLit) + "}",
+				},
+				{
+					name:        "false branch",
+					src:         src,
+					data:        map[string]any{"Count": tc.falseLt},
+					dataLiteral: "opsData{Count: " + strconv.Itoa(tc.falseLt) + "}",
+				},
 			})
 		})
 	}
@@ -144,11 +138,7 @@ func TestCodegenUnbufferedAssignBoolFieldBare(t *testing.T) {
 		{name: "true", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
 		{name: "false", src: src, data: map[string]any{"Flag": false}, dataLiteral: "opsData{Flag: false}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestCodegenUnbufferedAssignBoolLocalReferencedByLaterLocal proves a bool
@@ -168,23 +158,23 @@ func TestCodegenUnbufferedAssignBoolLocalReferencedByLaterLocal(t *testing.T) {
 		{false, true},
 		{false, false},
 	}
+	var cases []codegenUnbufferedCase
 	for _, c := range combos {
-		t.Run("", func(t *testing.T) {
-			flagLit := "false"
-			if c.flag {
-				flagLit = "true"
-			}
-			flagBLit := "false"
-			if c.flagB {
-				flagBLit = "true"
-			}
-			runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-				src:         src,
-				data:        map[string]any{"Flag": c.flag, "FlagB": c.flagB},
-				dataLiteral: "opsData{Flag: " + flagLit + ", FlagB: " + flagBLit + "}",
-			})
+		flagLit := "false"
+		if c.flag {
+			flagLit = "true"
+		}
+		flagBLit := "false"
+		if c.flagB {
+			flagBLit = "true"
+		}
+		cases = append(cases, codegenUnbufferedCase{
+			src:         src,
+			data:        map[string]any{"Flag": c.flag, "FlagB": c.flagB},
+			dataLiteral: "opsData{Flag: " + flagLit + ", FlagB: " + flagBLit + "}",
 		})
 	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // --- The ||/&& bool-operand-only boundary ---
@@ -205,11 +195,7 @@ func TestCodegenUnbufferedAssignBoolBoundaryNonBoolOrStaysString(t *testing.T) {
 		{name: "left operand truthy", src: src, data: map[string]any{"Name": "Ada"}, dataLiteral: `opsData{Name: "Ada"}`},
 		{name: "left operand falsy (empty string), default used", src: src, data: map[string]any{"Name": ""}, dataLiteral: `opsData{Name: ""}`},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenUnbufferedDifferential(t, tc)
-		})
-	}
+	runCodegenUnbufferedDifferentialBatch(t, cases)
 }
 
 // TestGenBoolExprBoundary is a white-box proof of the exact classification
@@ -282,17 +268,19 @@ func TestCodegenUnbufferedNumericBoolRHSDeferred(t *testing.T) {
 // shape (both real corpus arrays, `.includes`, `=== -1`, and every deferral).
 func TestCodegenUnbufferedArrayIndexOfBoolRHSSupported(t *testing.T) {
 	src := "- var x = [\"a\", \"b\"].indexOf(Name) !== -1\nif x\n  p yes\nelse\n  p no\np=x\n"
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		name:        "found",
-		src:         src,
-		data:        map[string]any{"Name": "a"},
-		dataLiteral: `opsData{Name: "a"}`,
-	})
-	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
-		name:        "not found",
-		src:         src,
-		data:        map[string]any{"Name": "c"},
-		dataLiteral: `opsData{Name: "c"}`,
+	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
+		{
+			name:        "found",
+			src:         src,
+			data:        map[string]any{"Name": "a"},
+			dataLiteral: `opsData{Name: "a"}`,
+		},
+		{
+			name:        "not found",
+			src:         src,
+			data:        map[string]any{"Name": "c"},
+			dataLiteral: `opsData{Name: "c"}`,
+		},
 	})
 }
 

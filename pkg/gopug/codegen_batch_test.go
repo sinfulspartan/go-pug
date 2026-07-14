@@ -80,7 +80,7 @@ func runDifferentialBatch(t *testing.T, structSrc string, funcName string, cases
 		if err := os.MkdirAll(caseDir, 0o755); err != nil {
 			t.Fatalf("creating case directory for %q: %v", c.name, err)
 		}
-		src := renderDifferentialCaseSource(t, i, structSrc, funcName, c.generated, c.dataLiteral)
+		src := renderDifferentialCaseSource(t, fmt.Sprintf("case%d", i), structSrc, funcName, c.generated, c.dataLiteral)
 		if err := os.WriteFile(filepath.Join(caseDir, "gen.go"), []byte(src), 0o644); err != nil {
 			t.Fatalf("writing gen.go for %q: %v", c.name, err)
 		}
@@ -96,7 +96,7 @@ func runDifferentialBatch(t *testing.T, structSrc string, funcName string, cases
 	if err != nil {
 		var broken []string
 		for i, c := range cases {
-			if buildErr := buildDifferentialCaseSource(t, structSrc, c.generated); buildErr != nil {
+			if buildErr := buildDifferentialCaseSource(t, structSrc, funcName, c.generated, c.dataLiteral); buildErr != nil {
 				broken = append(broken, fmt.Sprintf("case %d (%s): %v", i, c.name, buildErr))
 			}
 		}
@@ -116,14 +116,59 @@ func runDifferentialBatch(t *testing.T, structSrc string, funcName string, cases
 	return results
 }
 
-// renderDifferentialCaseSource builds one case<i> sub-package's source: it
-// rewrites generated's leading "package X" clause to "package case<i>",
-// splices structSrc (and, if generated does not already import them, "fmt"
-// and "strings") in right before the first "\nfunc " the same way
-// buildGeneratedGo/runGeneratedGo splice opsDataStructSrc, and appends an
-// exported Run() wrapper that recovers a panic into its error return and
-// otherwise renders funcName's output into a strings.Builder.
-func renderDifferentialCaseSource(t *testing.T, index int, structSrc, funcName string, generated []byte, dataLiteral string) string {
+// TestRunDifferentialBatchRecoversPanic is the first real exercise of Run()'s
+// recover()->Err path: every genuine fallible construct GenerateGo currently
+// supports (division/modulo by zero) surfaces as a returned error, not a Go
+// panic, so no differential case anywhere in the suite reaches the recover()
+// branch by accident. This test submits a hand-built "generated" function
+// that panics outright, proving three things end to end before any sweep
+// converts a real test onto this mechanism: the panic is actually caught
+// (the batch's own `go run .` still exits 0 and produces valid JSON, rather
+// than crashing the whole batch), the recovered value round-trips through
+// the batch's JSON encoding into a non-empty Err, and Out stays empty for
+// that case.
+func TestRunDifferentialBatchRecoversPanic(t *testing.T) {
+	generated := []byte(`package main
+
+import "io"
+
+func RenderPanic(w io.Writer, d any) error {
+	panic("deliberate test panic")
+}
+`)
+
+	results := runDifferentialBatch(t, "", "RenderPanic", []diffCase{
+		{name: "deliberate panic", generated: generated, dataLiteral: "nil"},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("runDifferentialBatch: got %d result(s), want 1", len(results))
+	}
+	got := results[0]
+	if got.Err == "" {
+		t.Fatalf("panicking case: Err is empty; the panic did not reach Run()'s recover()")
+	}
+	if !strings.Contains(got.Err, "deliberate test panic") {
+		t.Errorf("panicking case: Err %q does not contain the recovered panic value", got.Err)
+	}
+	if got.Out != "" {
+		t.Errorf("panicking case: Out = %q, want empty (Run() must not report partial output for a panicking case)", got.Out)
+	}
+}
+
+// renderDifferentialCaseSource builds one case sub-package's source, named
+// packageName: it rewrites generated's leading "package X" clause to
+// "package <packageName>", splices structSrc (and, if generated does not
+// already import them, "fmt" and "strings") in right before the first
+// "\nfunc " the same way buildGeneratedGo/runGeneratedGo splice
+// opsDataStructSrc, and appends an exported Run() wrapper that recovers a
+// panic into its error return and otherwise renders funcName's output into a
+// strings.Builder. Both runDifferentialBatch (packageName "case<i>") and
+// buildDifferentialCaseSource's per-case attribution fallback (packageName
+// "diffcase") build the identical wrapper shape from this one function, so a
+// case that only breaks because of its own dataLiteral fails the same way in
+// both places.
+func renderDifferentialCaseSource(t *testing.T, packageName, structSrc, funcName string, generated []byte, dataLiteral string) string {
 	t.Helper()
 
 	genStr := string(generated)
@@ -131,7 +176,7 @@ func renderDifferentialCaseSource(t *testing.T, index int, structSrc, funcName s
 	if nl < 0 || !strings.HasPrefix(genStr, "package ") {
 		t.Fatalf("generated source does not start with a \"package \" clause:\n%s", genStr)
 	}
-	genStr = fmt.Sprintf("package case%d\n", index) + genStr[nl+1:]
+	genStr = fmt.Sprintf("package %s\n", packageName) + genStr[nl+1:]
 
 	funcIdx := strings.Index(genStr, "\nfunc ")
 	if funcIdx < 0 {
@@ -200,17 +245,21 @@ func renderDifferentialBatchMain(n int) string {
 }
 
 // buildDifferentialCaseSource is runDifferentialBatch's per-case attribution
-// fallback: it builds ONE case's generated code alone (structSrc spliced in
-// exactly like buildGeneratedGo does), returning a non-nil error describing
-// the `go build` failure instead of failing the test itself, so the caller
-// can report which case(s), by name, broke the batch. The leading "package X"
-// clause is rewritten to "package diffcase" first: a RUN case's generated
-// code declares "package main" (matching how runDifferentialBatch's own
-// case<i> sub-packages are used), and building a real "package main" alone
-// with no main() would fail to LINK regardless of whether the generated code
-// itself is valid, which would misattribute a compile failure to a
-// perfectly-fine case.
-func buildDifferentialCaseSource(t *testing.T, structSrc string, generated []byte) error {
+// fallback: it builds ONE case's generated code alone, returning a non-nil
+// error describing the `go build` failure instead of failing the test
+// itself, so the caller can report which case(s), by name, broke the batch.
+//
+// It builds the case's FULL sub-package source — structSrc, funcName, and
+// dataLiteral all spliced in via the exact same renderDifferentialCaseSource
+// call the batch itself used for that case (package "diffcase" instead of
+// "case<i>", everything else identical) — rather than only the raw generated
+// code. Building the raw generated code alone would miss a case whose
+// dataLiteral itself is malformed (e.g. a typo'd field name in the composite
+// literal): that broken dataLiteral only appears in the Run() wrapper this
+// function now includes, so building it here is what lets the fallback
+// pin the fault on the actual offending case instead of leaving it to
+// surface only as an unattributable batch failure.
+func buildDifferentialCaseSource(t *testing.T, structSrc, funcName string, generated []byte, dataLiteral string) error {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -219,25 +268,9 @@ func buildDifferentialCaseSource(t *testing.T, structSrc string, generated []byt
 		t.Fatalf("writing go.mod: %v", err)
 	}
 
-	genStr := string(generated)
-	nl := strings.IndexByte(genStr, '\n')
-	if nl < 0 || !strings.HasPrefix(genStr, "package ") {
-		return fmt.Errorf("generated source does not start with a \"package \" clause:\n%s", genStr)
-	}
-	genStr = "package diffcase\n" + genStr[nl+1:]
+	src := renderDifferentialCaseSource(t, "diffcase", structSrc, funcName, generated, dataLiteral)
 
-	funcIdx := strings.Index(genStr, "\nfunc ")
-	if funcIdx < 0 {
-		return fmt.Errorf("generated source has no \"func \" to splice the struct declaration before:\n%s", genStr)
-	}
-
-	var src strings.Builder
-	src.WriteString(genStr[:funcIdx])
-	src.WriteString("\n\n")
-	src.WriteString(structSrc)
-	src.WriteString(genStr[funcIdx:])
-
-	if err := os.WriteFile(filepath.Join(dir, "render.go"), []byte(src.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "render.go"), []byte(src), 0o644); err != nil {
 		t.Fatalf("writing render.go: %v", err)
 	}
 

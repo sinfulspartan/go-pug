@@ -6,45 +6,105 @@ import (
 	"testing"
 )
 
-// runConditionDifferential builds "if <cond>\n  p yes\nelse\n  p no\n",
-// renders it through both the interpreter (Compile/Template.Render, against
-// data) and the codegen backend (GenerateGo/runGeneratedGo, against
-// dataLiteral — an opsData composite literal describing the same data), and
-// asserts the two outputs are byte-identical. It is the shared machinery
-// every truth-table/precedence/string-truthiness case in this file drives.
-func runConditionDifferential(t *testing.T, cond string, data map[string]any, dataLiteral string) string {
+// conditionDiffCase is one runConditionDifferentialBatch case: cond builds
+// "if <cond>\n  p yes\nelse\n  p no\n", compared through both the
+// interpreter (Compile/Template.Render, against data) and the codegen
+// backend (GenerateGo/runDifferentialBatch, against dataLiteral — an opsData
+// composite literal describing the same data). name is used both for batch
+// attribution and per-case t.Run naming.
+type conditionDiffCase struct {
+	name        string
+	cond        string
+	data        map[string]any
+	dataLiteral string
+}
+
+// conditionDiffResult is one conditionDiffCase's outcome: out is the
+// generated code's rendered output, want is the interpreter's own oracle
+// output for the same (cond, data), and err is any error the generated
+// code's Run() reported (empty on success).
+type conditionDiffResult struct {
+	out  string
+	want string
+	err  string
+}
+
+// runConditionDifferentialBatch is runConditionDifferential generalized to a
+// whole slice of cases: every case's GenerateGo output and interpreter
+// oracle (Compile().Render) are prepared up front, then submitted to a
+// SINGLE runDifferentialBatch call instead of one `go run` per case. It does
+// NOT assert anything itself (unlike runConditionDifferential, which does) —
+// it returns each case's (out, want, err) triple, index-matched to cases, so
+// each caller can run its own additional oracle-derived assertions (e.g.
+// boolBranch(tc.want)) inside its own per-case t.Run exactly as before.
+func runConditionDifferentialBatch(t *testing.T, cases []conditionDiffCase) []conditionDiffResult {
 	t.Helper()
 
-	src := "if " + cond + "\n  p yes\nelse\n  p no\n"
-
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-	generated, err := GenerateGo(ast, Config{
-		PackageName:     "main",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err != nil {
-		t.Fatalf("GenerateGo(%q): expected no error, got: %v", src, err)
+	if len(cases) == 0 {
+		return nil
 	}
 
-	tmpl, err := Compile(src, nil)
-	if err != nil {
-		t.Fatalf("Compile(%q): %v", src, err)
-	}
-	want, err := tmpl.Render(data)
-	if err != nil {
-		t.Fatalf("interpreter Render(%q) with data %v: %v", src, data, err)
+	type prepared struct {
+		c    conditionDiffCase
+		want string
 	}
 
-	got := runGeneratedGo(t, generated, dataLiteral)
-	if got != want {
-		t.Errorf("codegen output %q does not match interpreter output %q for template %q with data literal %s", got, want, src, dataLiteral)
+	var diffCases []diffCase
+	var prep []prepared
+
+	for _, c := range cases {
+		src := "if " + c.cond + "\n  p yes\nelse\n  p no\n"
+
+		ast, err := Parse(src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): expected no error, got: %v", src, err)
+		}
+
+		tmpl, err := Compile(src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", src, err)
+		}
+		want, err := tmpl.Render(c.data)
+		if err != nil {
+			t.Fatalf("interpreter Render(%q) with data %v: %v", src, c.data, err)
+		}
+
+		diffCases = append(diffCases, diffCase{name: c.name, generated: generated, dataLiteral: c.dataLiteral})
+		prep = append(prep, prepared{c: c, want: want})
 	}
-	return got
+
+	batchResults := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	results := make([]conditionDiffResult, len(cases))
+	for i, p := range prep {
+		r := batchResults[i]
+		results[i] = conditionDiffResult{out: r.Out, want: p.want, err: r.Err}
+	}
+	return results
+}
+
+// assertConditionDiffResult applies runConditionDifferential's own
+// assertions (no error, codegen output matches the interpreter oracle) to
+// one batch result, for a caller that has no further oracle-derived
+// assertion of its own to add.
+func assertConditionDiffResult(t *testing.T, cond, dataLiteral string, r conditionDiffResult) string {
+	t.Helper()
+	if r.err != "" {
+		t.Fatalf("generated RenderOps: unexpected error %q for condition %q", r.err, cond)
+	}
+	if r.out != r.want {
+		t.Errorf("codegen output %q does not match interpreter output %q for condition %q with data literal %s", r.out, r.want, cond, dataLiteral)
+	}
+	return r.out
 }
 
 // TestCodegenConditionLogicTruthTable proves genCondition's `&&`/`||`
@@ -60,27 +120,43 @@ func TestCodegenConditionLogicTruthTable(t *testing.T) {
 		{false, false},
 	}
 
+	type tableCase struct {
+		name string
+		op   string
+		a, b bool
+	}
+	var cases []tableCase
 	for _, op := range []string{"&&", "||"} {
 		for _, c := range combos {
-			name := fmt.Sprintf("Flag=%v %s FlagB=%v", c.a, op, c.b)
-			t.Run(name, func(t *testing.T) {
-				cond := "Flag " + op + " FlagB"
-				data := map[string]any{"Flag": c.a, "FlagB": c.b}
-				dataLiteral := fmt.Sprintf("opsData{Flag: %v, FlagB: %v}", c.a, c.b)
-
-				var want string
-				if op == "&&" {
-					want = boolBranch(c.a && c.b)
-				} else {
-					want = boolBranch(c.a || c.b)
-				}
-
-				got := runConditionDifferential(t, cond, data, dataLiteral)
-				if got != want {
-					t.Errorf("condition %q with Flag=%v FlagB=%v: got %q, want %q", cond, c.a, c.b, got, want)
-				}
-			})
+			cases = append(cases, tableCase{name: fmt.Sprintf("Flag=%v %s FlagB=%v", c.a, op, c.b), op: op, a: c.a, b: c.b})
 		}
+	}
+
+	var diffCases []conditionDiffCase
+	for _, tc := range cases {
+		diffCases = append(diffCases, conditionDiffCase{
+			name:        tc.name,
+			cond:        "Flag " + tc.op + " FlagB",
+			data:        map[string]any{"Flag": tc.a, "FlagB": tc.b},
+			dataLiteral: fmt.Sprintf("opsData{Flag: %v, FlagB: %v}", tc.a, tc.b),
+		})
+	}
+	results := runConditionDifferentialBatch(t, diffCases)
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var want string
+			if tc.op == "&&" {
+				want = boolBranch(tc.a && tc.b)
+			} else {
+				want = boolBranch(tc.a || tc.b)
+			}
+
+			got := assertConditionDiffResult(t, diffCases[i].cond, diffCases[i].dataLiteral, results[i])
+			if got != want {
+				t.Errorf("condition %q with Flag=%v FlagB=%v: got %q, want %q", diffCases[i].cond, tc.a, tc.b, got, want)
+			}
+		})
 	}
 }
 
@@ -152,9 +228,15 @@ func TestCodegenConditionLogicMixedOperands(t *testing.T) {
 		},
 	}
 
+	var diffCases []conditionDiffCase
 	for _, tc := range cases {
+		diffCases = append(diffCases, conditionDiffCase{name: tc.name, cond: tc.cond, data: tc.data, dataLiteral: tc.dataLiteral})
+	}
+	results := runConditionDifferentialBatch(t, diffCases)
+
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runConditionDifferential(t, tc.cond, tc.data, tc.dataLiteral)
+			got := assertConditionDiffResult(t, tc.cond, tc.dataLiteral, results[i])
 			if want := boolBranch(tc.want); got != want {
 				t.Errorf("condition %q: got %q, want %q", tc.cond, got, want)
 			}
@@ -180,9 +262,15 @@ func TestCodegenConditionLogicNegation(t *testing.T) {
 		{name: "!(Count > 0), zero count", cond: "!(Count > 0)", data: map[string]any{"Count": 0}, dataLiteral: "opsData{Count: 0}", want: true},
 	}
 
+	var diffCases []conditionDiffCase
 	for _, tc := range cases {
+		diffCases = append(diffCases, conditionDiffCase{name: tc.name, cond: tc.cond, data: tc.data, dataLiteral: tc.dataLiteral})
+	}
+	results := runConditionDifferentialBatch(t, diffCases)
+
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runConditionDifferential(t, tc.cond, tc.data, tc.dataLiteral)
+			got := assertConditionDiffResult(t, tc.cond, tc.dataLiteral, results[i])
 			if want := boolBranch(tc.want); got != want {
 				t.Errorf("condition %q: got %q, want %q", tc.cond, got, want)
 			}
@@ -210,12 +298,20 @@ func TestCodegenConditionLogicStringTruthiness(t *testing.T) {
 		{name: "a numeric-looking non-zero string", value: "5", want: true},
 	}
 
+	var diffCases []conditionDiffCase
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			data := map[string]any{"Name": tc.value}
-			dataLiteral := fmt.Sprintf("opsData{Name: %q}", tc.value)
+		diffCases = append(diffCases, conditionDiffCase{
+			name:        tc.name,
+			cond:        "Name",
+			data:        map[string]any{"Name": tc.value},
+			dataLiteral: fmt.Sprintf("opsData{Name: %q}", tc.value),
+		})
+	}
+	results := runConditionDifferentialBatch(t, diffCases)
 
-			got := runConditionDifferential(t, "Name", data, dataLiteral)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := assertConditionDiffResult(t, diffCases[i].cond, diffCases[i].dataLiteral, results[i])
 			if want := boolBranch(tc.want); got != want {
 				t.Errorf("condition \"Name\" with Name=%q: got %q, want %q", tc.value, got, want)
 			}
@@ -241,12 +337,20 @@ func TestCodegenConditionLogicStringTruthinessCombinator(t *testing.T) {
 		{name: "falsy-string name \"0\", true flag", nameVal: "0", flag: true, want: false},
 	}
 
+	var diffCases []conditionDiffCase
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			data := map[string]any{"Name": tc.nameVal, "Flag": tc.flag}
-			dataLiteral := fmt.Sprintf("opsData{Name: %q, Flag: %v}", tc.nameVal, tc.flag)
+		diffCases = append(diffCases, conditionDiffCase{
+			name:        tc.name,
+			cond:        "Name && Flag",
+			data:        map[string]any{"Name": tc.nameVal, "Flag": tc.flag},
+			dataLiteral: fmt.Sprintf("opsData{Name: %q, Flag: %v}", tc.nameVal, tc.flag),
+		})
+	}
+	results := runConditionDifferentialBatch(t, diffCases)
 
-			got := runConditionDifferential(t, "Name && Flag", data, dataLiteral)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := assertConditionDiffResult(t, diffCases[i].cond, diffCases[i].dataLiteral, results[i])
 			if want := boolBranch(tc.want); got != want {
 				t.Errorf("condition \"Name && Flag\" with Name=%q Flag=%v: got %q, want %q", tc.nameVal, tc.flag, got, want)
 			}
@@ -274,11 +378,19 @@ func TestCodegenConditionLogicPrecedence(t *testing.T) {
 		{name: "A false, B&&C false (B only)", a: false, b: true, c: false, wantOrThenAndGroup: false},
 	}
 
+	var diffCases []conditionDiffCase
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			data := map[string]any{"Flag": tc.a, "FlagB": tc.b, "FlagC": tc.c}
-			dataLiteral := fmt.Sprintf("opsData{Flag: %v, FlagB: %v, FlagC: %v}", tc.a, tc.b, tc.c)
+		diffCases = append(diffCases, conditionDiffCase{
+			name:        tc.name,
+			cond:        "Flag || FlagB && FlagC",
+			data:        map[string]any{"Flag": tc.a, "FlagB": tc.b, "FlagC": tc.c},
+			dataLiteral: fmt.Sprintf("opsData{Flag: %v, FlagB: %v, FlagC: %v}", tc.a, tc.b, tc.c),
+		})
+	}
+	results := runConditionDifferentialBatch(t, diffCases)
 
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			// The correct ("A || (B && C)") grouping, computed independently
 			// of both the interpreter and codegen, as the test's own oracle.
 			wantCorrectGrouping := tc.a || (tc.b && tc.c)
@@ -286,7 +398,7 @@ func TestCodegenConditionLogicPrecedence(t *testing.T) {
 				t.Fatalf("test bug: table's wantOrThenAndGroup=%v does not match A || (B && C) = %v", tc.wantOrThenAndGroup, wantCorrectGrouping)
 			}
 
-			got := runConditionDifferential(t, "Flag || FlagB && FlagC", data, dataLiteral)
+			got := assertConditionDiffResult(t, diffCases[i].cond, diffCases[i].dataLiteral, results[i])
 			if want := boolBranch(wantCorrectGrouping); got != want {
 				t.Errorf("condition \"Flag || FlagB && FlagC\" with Flag=%v FlagB=%v FlagC=%v: got %q, want %q (A || (B && C) grouping)", tc.a, tc.b, tc.c, got, want)
 			}

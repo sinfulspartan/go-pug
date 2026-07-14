@@ -34,11 +34,7 @@ func TestCodegenMethodTrivialStringMethods(t *testing.T) {
 		{name: "toString", src: "p= Name.toString()\n", data: map[string]any{"Name": "Hello"}, dataLiteral: `opsData{Name: "Hello"}`},
 		{name: "String alias", src: "p= Name.String()\n", data: map[string]any{"Name": "Hello"}, dataLiteral: `opsData{Name: "Hello"}`},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodAliasesMatchPrimary proves each alias pair produces
@@ -71,8 +67,10 @@ func TestCodegenMethodAliasesMatchPrimary(t *testing.T) {
 			data := map[string]any{p.fieldName: p.fieldVal}
 			dataLiteral := `opsData{` + p.fieldName + `: "` + p.fieldVal + `"}`
 
-			runCodegenArithDifferential(t, codegenArithCase{name: "primary", src: primarySrc, data: data, dataLiteral: dataLiteral})
-			runCodegenArithDifferential(t, codegenArithCase{name: "alias", src: aliasSrc, data: data, dataLiteral: dataLiteral})
+			runCodegenArithDifferentialBatch(t, []codegenArithCase{
+				{name: "primary", src: primarySrc, data: data, dataLiteral: dataLiteral},
+				{name: "alias", src: aliasSrc, data: data, dataLiteral: dataLiteral},
+			})
 		})
 	}
 }
@@ -101,11 +99,7 @@ func TestCodegenMethodContexts(t *testing.T) {
 			dataLiteral: `opsData{Name: "WORLD"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodRepeatSplitReplace proves the repeat/split/replace
@@ -123,11 +117,7 @@ func TestCodegenMethodRepeatSplitReplace(t *testing.T) {
 		{name: "replace", src: "p= Name.replace('a', 'b')\n", data: map[string]any{"Name": "banana"}, dataLiteral: `opsData{Name: "banana"}`},
 		{name: "replace no args", src: "p= Name.replace()\n", data: map[string]any{"Name": "banana"}, dataLiteral: `opsData{Name: "banana"}`},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestMethodReplaceAliasedQuoteStripQuirk pins MethodReplace to the ORIGINAL
@@ -184,10 +174,37 @@ func TestCodegenMethodSplitQuoteStripBothQuoteStylesAgree(t *testing.T) {
 	data := map[string]any{"Name": "a,b,c"}
 	dataLiteral := `opsData{Name: "a,b,c"}`
 
-	singleQuoted := runCodegenMethodOutput(t, "p= Name.split(',')\n", dataLiteral)
-	doubleQuoted := runCodegenMethodOutput(t, `p= Name.split(",")`+"\n", dataLiteral)
-	if singleQuoted != doubleQuoted {
-		t.Errorf("split(',') generated %q but split(\",\") generated %q — expected the quote style to make no difference", singleQuoted, doubleQuoted)
+	var diffCases []diffCase
+	for _, tc := range []struct{ name, src string }{
+		{"single-quoted", "p= Name.split(',')\n"},
+		{"double-quoted", `p= Name.split(",")` + "\n"},
+	} {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: dataLiteral})
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+	singleQuoted, doubleQuoted := results[0], results[1]
+	if singleQuoted.Err != "" {
+		t.Fatalf("single-quoted split: unexpected error %q", singleQuoted.Err)
+	}
+	if doubleQuoted.Err != "" {
+		t.Fatalf("double-quoted split: unexpected error %q", doubleQuoted.Err)
+	}
+	if singleQuoted.Out != doubleQuoted.Out {
+		t.Errorf("split(',') generated %q but split(\",\") generated %q — expected the quote style to make no difference", singleQuoted.Out, doubleQuoted.Out)
 	}
 
 	tmpl, err := Compile("p= Name.split(',')\n", nil)
@@ -198,15 +215,15 @@ func TestCodegenMethodSplitQuoteStripBothQuoteStylesAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("interpreter Render: %v", err)
 	}
-	if singleQuoted != want {
-		t.Errorf("codegen output %q does not match interpreter output %q", singleQuoted, want)
+	if singleQuoted.Out != want {
+		t.Errorf("codegen output %q does not match interpreter output %q", singleQuoted.Out, want)
 	}
 }
 
-// runCodegenMethodOutput is a small helper for
-// TestCodegenMethodSplitQuoteStripBothQuoteStylesAgree that only needs the
-// generated code's own output, not a fresh differential comparison every
-// call.
+// runCodegenMethodOutput is a small helper, shared with
+// codegen_index_length_test.go and codegen_join_numfmt_test.go, that only
+// needs the generated code's own output, not a fresh differential comparison
+// every call.
 func runCodegenMethodOutput(t *testing.T, src, dataLiteral string) string {
 	t.Helper()
 	ast, err := Parse(src, nil)
@@ -258,11 +275,7 @@ func TestCodegenMethodSlice(t *testing.T) {
 		{name: "two-arg start after end returns empty", src: "p= Name.slice(4, 1)\n", data: data, dataLiteral: dataLiteral},
 		{name: "no args returns receiver unchanged", src: "p= Name.slice()\n", data: data, dataLiteral: dataLiteral},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodIndexOfIncludesStartsEndsWith proves the four boolean/
@@ -287,11 +300,7 @@ func TestCodegenMethodIndexOfIncludesStartsEndsWith(t *testing.T) {
 		{name: "endsWith false", src: "p= Name.endsWith('hello')\n", data: data, dataLiteral: dataLiteral},
 		{name: "endsWith no args", src: "p= Name.endsWith()\n", data: data, dataLiteral: dataLiteral},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodPad proves the rune-based padStart/padEnd helpers, both
@@ -309,11 +318,7 @@ func TestCodegenMethodPad(t *testing.T) {
 		{name: "padStart target not longer than receiver is a no-op", src: "p= Name.padStart(1)\n", data: data, dataLiteral: dataLiteral},
 		{name: "padStart no args is a no-op", src: "p= Name.padStart()\n", data: data, dataLiteral: dataLiteral},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodPadLengthArgWithWhitespace proves the target-length
@@ -346,11 +351,7 @@ func TestCodegenMethodPadLengthArgWithWhitespace(t *testing.T) {
 			dataLiteral: `opsData{Name: "ab", Str1: " 5"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodDotPathReceiver proves the receiver may itself be a
@@ -402,11 +403,7 @@ func TestCodegenMethodMultibyte(t *testing.T) {
 		{name: "negative slice by rune count", src: "p= Name.slice(-3)\n", data: data, dataLiteral: dataLiteral},
 		{name: "padStart with a multi-byte pad char", src: "p= Name.padStart(8, '語')\n", data: data, dataLiteral: dataLiteral},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenMethodDeferredAndUnknown proves the constructs still out of

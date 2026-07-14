@@ -18,35 +18,67 @@ type codegenTernaryCase struct {
 	dataLiteral string
 }
 
-func runCodegenTernaryDifferential(t *testing.T, tc codegenTernaryCase) {
+// runCodegenTernaryDifferentialBatch checks a slice of codegenTernaryCase
+// values against the interpreter: every case's GenerateGo output and
+// interpreter oracle (Compile().Render) are prepared up front, then
+// submitted to a SINGLE runDifferentialBatch call instead of one `go run`
+// per case. Each case's own pass/fail is still reported through its own
+// t.Run(tc.name, ...), matched to its batch result by index.
+func runCodegenTernaryDifferentialBatch(t *testing.T, cases []codegenTernaryCase) {
 	t.Helper()
 
-	ast, err := Parse(tc.src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", tc.src, err)
-	}
-	generated, err := GenerateGo(ast, Config{
-		PackageName:     "main",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err != nil {
-		t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+	if len(cases) == 0 {
+		return
 	}
 
-	tmpl, err := Compile(tc.src, nil)
-	if err != nil {
-		t.Fatalf("Compile(%q): %v", tc.src, err)
-	}
-	want, err := tmpl.Render(tc.data)
-	if err != nil {
-		t.Fatalf("interpreter Render: %v", err)
+	type prepared struct {
+		tc   codegenTernaryCase
+		want string
 	}
 
-	got := runGeneratedGo(t, generated, tc.dataLiteral)
-	if got != want {
-		t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, tc.src)
+	var diffCases []diffCase
+	var prep []prepared
+
+	for _, tc := range cases {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		want, err := tmpl.Render(tc.data)
+		if err != nil {
+			t.Fatalf("interpreter Render: %v", err)
+		}
+
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: tc.dataLiteral})
+		prep = append(prep, prepared{tc: tc, want: want})
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	for i, p := range prep {
+		t.Run(p.tc.name, func(t *testing.T) {
+			result := results[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps(%q): unexpected error %q", p.tc.src, result.Err)
+			}
+			if result.Out != p.want {
+				t.Errorf("codegen output %q does not match interpreter output %q for %q", result.Out, p.want, p.tc.src)
+			}
+		})
 	}
 }
 
@@ -83,11 +115,7 @@ func TestCodegenTernaryBoolCondition(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryComparisonCondition proves a comparison condition
@@ -110,11 +138,7 @@ func TestCodegenTernaryComparisonCondition(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryStringFieldCondition proves a bare string-field
@@ -138,11 +162,7 @@ func TestCodegenTernaryStringFieldCondition(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryLogicalCondition proves a `&&`-combinator condition
@@ -164,11 +184,7 @@ func TestCodegenTernaryLogicalCondition(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryArithmeticBranches proves each branch of a ternary is
@@ -190,11 +206,7 @@ func TestCodegenTernaryArithmeticBranches(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryNestedBranch proves a ternary nested inside another
@@ -222,11 +234,7 @@ func TestCodegenTernaryNestedBranch(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryCompositionTemplateLiteral proves a ternary embedded in a
@@ -249,11 +257,7 @@ func TestCodegenTernaryCompositionTemplateLiteral(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryCompositionInterpolation proves a ternary as a `#{...}`
@@ -276,11 +280,7 @@ func TestCodegenTernaryCompositionInterpolation(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenTernaryDifferential(t, tc)
-		})
-	}
+	runCodegenTernaryDifferentialBatch(t, cases)
 }
 
 // TestCodegenTernaryCompositionAttrHTMLSpecialChar proves a ternary attribute
@@ -345,37 +345,53 @@ func TestCodegenTernaryWhitespace(t *testing.T) {
 		},
 	}
 
-	var outputs []string
+	type prepared struct {
+		tc   codegenTernaryCase
+		want string
+	}
+	var diffCases []diffCase
+	var prep []prepared
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ast, err := Parse(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.src, err)
-			}
-			generated, err := GenerateGo(ast, Config{
-				PackageName:     "main",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err != nil {
-				t.Fatalf("GenerateGo(%q): %v", tc.src, err)
-			}
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
 
-			tmpl, err := Compile(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Compile(%q): %v", tc.src, err)
-			}
-			want, err := tmpl.Render(tc.data)
-			if err != nil {
-				t.Fatalf("interpreter Render: %v", err)
-			}
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		want, err := tmpl.Render(tc.data)
+		if err != nil {
+			t.Fatalf("interpreter Render: %v", err)
+		}
 
-			got := runGeneratedGo(t, generated, tc.dataLiteral)
-			if got != want {
-				t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, tc.src)
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: tc.dataLiteral})
+		prep = append(prep, prepared{tc: tc, want: want})
+	}
+
+	batchResults := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	var outputs []string
+	for i, p := range prep {
+		t.Run(p.tc.name, func(t *testing.T) {
+			result := batchResults[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps(%q): unexpected error %q", p.tc.src, result.Err)
 			}
-			outputs = append(outputs, got)
+			if result.Out != p.want {
+				t.Errorf("codegen output %q does not match interpreter output %q for %q", result.Out, p.want, p.tc.src)
+			}
+			outputs = append(outputs, result.Out)
 		})
 	}
 

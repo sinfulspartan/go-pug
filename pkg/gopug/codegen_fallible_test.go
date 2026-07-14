@@ -1,66 +1,12 @@
 package gopug
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// runGeneratedGoWantErr builds and runs generated (a GenerateGo result whose
-// Config.PackageName is "main" and Config.FuncName is "RenderOps") in a
-// throwaway module, exactly like runGeneratedGo, except the appended main()
-// does not panic when RenderOps returns an error: it prints "ERR:" followed
-// by the error's message and exits cleanly, or prints "OK" on success. This
-// lets a differential test observe and compare a fallible generated
-// function's returned error (division/modulo by zero) instead of only being
-// able to assert that it built and ran without crashing.
-func runGeneratedGoWantErr(t *testing.T, generated []byte, dataLiteral string) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	goMod := "module opsbuild\n\ngo 1.26\n" + repoModuleReplaceDirectives(t)
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
-		t.Fatalf("writing go.mod: %v", err)
-	}
-
-	genStr := string(generated)
-	funcIdx := strings.Index(genStr, "\nfunc ")
-	if funcIdx < 0 {
-		t.Fatalf("generated source has no \"func \" to splice the struct declaration before:\n%s", genStr)
-	}
-
-	// "io" is already imported by generated's own header (GenerateGo always
-	// imports it), so main() can use io.Discard without a second "io" import
-	// — only "fmt" needs adding here, in its own import declaration spliced
-	// in alongside the struct, before "func RenderOps", exactly the way
-	// runGeneratedGo splices in its own extra "os" import.
-	var src strings.Builder
-	src.WriteString(genStr[:funcIdx])
-	src.WriteString("\n\nimport \"fmt\"\n\n")
-	src.WriteString(opsDataStructSrc)
-	src.WriteString(genStr[funcIdx:])
-	src.WriteString("\nfunc main() {\n\td := ")
-	src.WriteString(dataLiteral)
-	src.WriteString("\n\tif err := RenderOps(io.Discard, d); err != nil {\n\t\tfmt.Println(\"ERR:\" + err.Error())\n\t\treturn\n\t}\n\tfmt.Println(\"OK\")\n}\n")
-
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src.String()), 0o644); err != nil {
-		t.Fatalf("writing main.go: %v", err)
-	}
-
-	cmd := exec.Command("go", "run", ".")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go run on generated code failed:\n%s\n--- source ---\n%s", out, src.String())
-	}
-	return strings.TrimSpace(string(out))
-}
-
 // codegenFallibleErrorCase is a differential test case proving error parity:
 // both the interpreter (Compile().Render) and the generated code (GenerateGo,
-// built and run via runGeneratedGoWantErr) must fail identically when src's
+// built and run via runDifferentialBatch) must fail identically when src's
 // `/` or `%` expression hits its one runtime-fallible case, a numeric zero
 // divisor — the interpreter's own returned error is the oracle its message
 // is compared against, never a hand-written expectation.
@@ -71,39 +17,82 @@ type codegenFallibleErrorCase struct {
 	dataLiteral string
 }
 
+// runCodegenFallibleErrorDifferential is the single-case form of
+// runCodegenFallibleErrorDifferentialBatch, kept for every call site (in this
+// file and several others) that has only one case to check and gains nothing
+// from batching. It routes through the same runDifferentialBatch mechanism
+// as every other differential RUN test — the (string, error) RenderOps
+// returns on a division/modulo-by-zero surfaces as the batch case's Err via
+// the shared Run() wrapper's ordinary `if err := %s(...); err != nil` path,
+// not its recover() branch (see TestRunDifferentialBatchRecoversPanic in
+// codegen_batch_test.go for that path's own, separate proof).
 func runCodegenFallibleErrorDifferential(t *testing.T, tc codegenFallibleErrorCase) {
 	t.Helper()
+	runCodegenFallibleErrorDifferentialBatch(t, []codegenFallibleErrorCase{tc})
+}
 
-	ast, err := Parse(tc.src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", tc.src, err)
-	}
-	generated, err := GenerateGo(ast, Config{
-		PackageName:     "main",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err != nil {
-		t.Fatalf("GenerateGo(%q): %v", tc.src, err)
-	}
+// runCodegenFallibleErrorDifferentialBatch batches multiple
+// codegenFallibleErrorCase checks into a single runDifferentialBatch call:
+// every case's GenerateGo output and interpreter oracle error
+// (Compile().Render, expected non-nil) are prepared up front, then submitted
+// together, cutting the dominant per-case cost (a fresh module build) down
+// to one for the whole slice. Each case's own pass/fail is still reported
+// through its own t.Run(tc.name, ...), matched to its batch result by index.
+func runCodegenFallibleErrorDifferentialBatch(t *testing.T, cases []codegenFallibleErrorCase) {
+	t.Helper()
 
-	tmpl, err := Compile(tc.src, nil)
-	if err != nil {
-		t.Fatalf("Compile(%q): %v", tc.src, err)
-	}
-	_, wantErr := tmpl.Render(tc.data)
-	if wantErr == nil {
-		t.Fatalf("interpreter Render(%q): expected an error, got nil", tc.src)
+	if len(cases) == 0 {
+		return
 	}
 
-	gotOut := runGeneratedGoWantErr(t, generated, tc.dataLiteral)
-	if !strings.HasPrefix(gotOut, "ERR:") {
-		t.Fatalf("generated RenderOps(%q): expected an error, got success output %q", tc.src, gotOut)
+	type prepared struct {
+		tc      codegenFallibleErrorCase
+		wantErr string
 	}
-	gotErr := strings.TrimPrefix(gotOut, "ERR:")
-	if gotErr != wantErr.Error() {
-		t.Errorf("generated RenderOps error %q does not match interpreter error %q for %q", gotErr, wantErr.Error(), tc.src)
+
+	var diffCases []diffCase
+	var prep []prepared
+
+	for _, tc := range cases {
+		ast, err := Parse(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): %v", tc.src, err)
+		}
+
+		tmpl, err := Compile(tc.src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.src, err)
+		}
+		_, wantErr := tmpl.Render(tc.data)
+		if wantErr == nil {
+			t.Fatalf("interpreter Render(%q): expected an error, got nil", tc.src)
+		}
+
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: tc.dataLiteral})
+		prep = append(prep, prepared{tc: tc, wantErr: wantErr.Error()})
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	for i, p := range prep {
+		t.Run(p.tc.name, func(t *testing.T) {
+			result := results[i]
+			if result.Err == "" {
+				t.Fatalf("generated RenderOps(%q): expected an error, got success output %q", p.tc.src, result.Out)
+			}
+			if result.Err != p.wantErr {
+				t.Errorf("generated RenderOps error %q does not match interpreter error %q for %q", result.Err, p.wantErr, p.tc.src)
+			}
+		})
 	}
 }
 
@@ -216,11 +205,7 @@ func TestCodegenFallibleNonNumericIsEmptyNoError(t *testing.T) {
 			dataLiteral: `opsData{Str1: "x", Str2: "y"}`,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenFallibleFormatting proves gopug.Div/Mod's numeric formatting —
@@ -233,11 +218,7 @@ func TestCodegenFallibleFormatting(t *testing.T) {
 		{name: "modulo of two integers", src: "p= 7 % 2\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 		{name: "modulo truncates a fractional left operand", src: "p= 7.9 % 2\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, tc)
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // Composing a fallible `/`/`%` result into an arithmetic combiner, a nested

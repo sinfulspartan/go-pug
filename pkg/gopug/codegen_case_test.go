@@ -13,16 +13,16 @@ import (
 // match on the second, and no match at all (default).
 func TestCodegenCaseBasicStringMatchAndDefault(t *testing.T) {
 	src := "case Name\n  when \"active\"\n    p Active\n  when \"off\"\n    p Off\n  default\n    p ?\n"
+	var cases []codegenArithCase
 	for _, name := range []string{"active", "off", "other"} {
-		t.Run(name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        name,
-				src:         src,
-				data:        map[string]any{"Name": name},
-				dataLiteral: fmt.Sprintf("opsData{Name: %q}", name),
-			})
+		cases = append(cases, codegenArithCase{
+			name:        name,
+			src:         src,
+			data:        map[string]any{"Name": name},
+			dataLiteral: fmt.Sprintf("opsData{Name: %q}", name),
 		})
 	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenCaseFallThroughEmptyWhen proves an empty-bodied when (`when "a"`
@@ -31,17 +31,16 @@ func TestCodegenCaseBasicStringMatchAndDefault(t *testing.T) {
 // second directly renders it too, and matching neither renders default.
 func TestCodegenCaseFallThroughEmptyWhen(t *testing.T) {
 	src := "case Name\n  when \"a\"\n  when \"b\"\n    p AB\n  default\n    p D\n"
-	cases := []string{"a", "b", "c"}
-	for _, name := range cases {
-		t.Run(name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        name,
-				src:         src,
-				data:        map[string]any{"Name": name},
-				dataLiteral: fmt.Sprintf("opsData{Name: %q}", name),
-			})
+	var cases []codegenArithCase
+	for _, name := range []string{"a", "b", "c"} {
+		cases = append(cases, codegenArithCase{
+			name:        name,
+			src:         src,
+			data:        map[string]any{"Name": name},
+			dataLiteral: fmt.Sprintf("opsData{Name: %q}", name),
 		})
 	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenCaseStickyFallThroughPastNonMatch is the discriminating case
@@ -110,21 +109,19 @@ func TestCodegenCaseNoDefaultNoMatch(t *testing.T) {
 func TestCodegenCaseDefaultAfterFallToEnd(t *testing.T) {
 	src := "case Name\n  when \"a\"\n  when \"b\"\n  default\n    p D\n"
 
-	t.Run("fall to end: every matched when's body empty", func(t *testing.T) {
-		runCodegenArithDifferential(t, codegenArithCase{
-			name:        "fall to end",
+	runCodegenArithDifferentialBatch(t, []codegenArithCase{
+		{
+			name:        "fall to end: every matched when's body empty",
 			src:         src,
 			data:        map[string]any{"Name": "a"},
 			dataLiteral: `opsData{Name: "a"}`,
-		})
-	})
-	t.Run("never matched", func(t *testing.T) {
-		runCodegenArithDifferential(t, codegenArithCase{
+		},
+		{
 			name:        "never matched",
 			src:         src,
 			data:        map[string]any{"Name": "zzz"},
 			dataLiteral: `opsData{Name: "zzz"}`,
-		})
+		},
 	})
 }
 
@@ -143,16 +140,16 @@ func TestCodegenCaseNumericField(t *testing.T) {
 		{name: "matches the numeric when", count: 1},
 		{name: "does not match: falls to default", count: 2},
 	}
+	var diffCases []codegenArithCase
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        tc.name,
-				src:         src,
-				data:        map[string]any{"Count": tc.count},
-				dataLiteral: fmt.Sprintf("opsData{Count: %d}", tc.count),
-			})
+		diffCases = append(diffCases, codegenArithCase{
+			name:        tc.name,
+			src:         src,
+			data:        map[string]any{"Count": tc.count},
+			dataLiteral: fmt.Sprintf("opsData{Count: %d}", tc.count),
 		})
 	}
+	runCodegenArithDifferentialBatch(t, diffCases)
 }
 
 // TestCodegenCaseNested proves a case nested inside another case's when body
@@ -172,16 +169,16 @@ func TestCodegenCaseNested(t *testing.T) {
 		{name: "outer matches, inner falls to its own default", nm: "a", str1: "y"},
 		{name: "outer falls to its own default", nm: "zzz", str1: "x"},
 	}
+	var diffCases []codegenArithCase
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runCodegenArithDifferential(t, codegenArithCase{
-				name:        tc.name,
-				src:         src,
-				data:        map[string]any{"Name": tc.nm, "Str1": tc.str1},
-				dataLiteral: fmt.Sprintf("opsData{Name: %q, Str1: %q}", tc.nm, tc.str1),
-			})
+		diffCases = append(diffCases, codegenArithCase{
+			name:        tc.name,
+			src:         src,
+			data:        map[string]any{"Name": tc.nm, "Str1": tc.str1},
+			dataLiteral: fmt.Sprintf("opsData{Name: %q, Str1: %q}", tc.nm, tc.str1),
 		})
 	}
+	runCodegenArithDifferentialBatch(t, diffCases)
 }
 
 // genCaseErr parses and GenerateGoes src against opsData, returning the

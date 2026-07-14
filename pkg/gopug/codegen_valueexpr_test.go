@@ -117,20 +117,31 @@ func TestCodegenValueExprAddRuntimeDisambiguation(t *testing.T) {
 		{name: "non-numeric concatenates", str1: "a", str2: "b", wantHTML: "<p>ab</p>"},
 	}
 
+	var diffCases []diffCase
+	var wants []string
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			want, err := tmpl.Render(map[string]any{"Str1": tc.str1, "Str2": tc.str2})
-			if err != nil {
-				t.Fatalf("interpreter Render: %v", err)
-			}
-			if want != tc.wantHTML {
-				t.Fatalf("interpreter Render sanity check: got %q, want %q", want, tc.wantHTML)
-			}
+		want, err := tmpl.Render(map[string]any{"Str1": tc.str1, "Str2": tc.str2})
+		if err != nil {
+			t.Fatalf("interpreter Render: %v", err)
+		}
+		if want != tc.wantHTML {
+			t.Fatalf("interpreter Render sanity check: got %q, want %q", want, tc.wantHTML)
+		}
 
-			dataLiteral := fmt.Sprintf("opsData{Str1: %q, Str2: %q}", tc.str1, tc.str2)
-			got := runGeneratedGo(t, generated, dataLiteral)
-			if got != want {
-				t.Errorf("codegen output %q does not match interpreter output %q (Str1=%q, Str2=%q)", got, want, tc.str1, tc.str2)
+		dataLiteral := fmt.Sprintf("opsData{Str1: %q, Str2: %q}", tc.str1, tc.str2)
+		diffCases = append(diffCases, diffCase{name: tc.name, generated: generated, dataLiteral: dataLiteral})
+		wants = append(wants, want)
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := results[i]
+			if result.Err != "" {
+				t.Fatalf("generated RenderOps: unexpected error %q (Str1=%q, Str2=%q)", result.Err, tc.str1, tc.str2)
+			}
+			if result.Out != wants[i] {
+				t.Errorf("codegen output %q does not match interpreter output %q (Str1=%q, Str2=%q)", result.Out, wants[i], tc.str1, tc.str2)
 			}
 		})
 	}
@@ -142,12 +153,7 @@ func TestCodegenValueExprAddRuntimeDisambiguation(t *testing.T) {
 // disagree), and the true/false/null keywords — renders through `= expr`
 // identically to the interpreter.
 func TestCodegenValueExprLeaves(t *testing.T) {
-	cases := []struct {
-		name        string
-		src         string
-		data        map[string]any
-		dataLiteral string
-	}{
+	cases := []codegenArithCase{
 		{name: "int field", src: "p= Count\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
 		{name: "float64 field", src: "p= Price\n", data: map[string]any{"Price": 9.5}, dataLiteral: "opsData{Price: 9.5}"},
 		{name: "bool field", src: "p= Flag\n", data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
@@ -159,38 +165,7 @@ func TestCodegenValueExprLeaves(t *testing.T) {
 		{name: "false keyword", src: "p= false\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 		{name: "null keyword", src: "p= null\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ast, err := Parse(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.src, err)
-			}
-			generated, err := GenerateGo(ast, Config{
-				PackageName:     "main",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err != nil {
-				t.Fatalf("GenerateGo(%q): %v", tc.src, err)
-			}
-
-			tmpl, err := Compile(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Compile(%q): %v", tc.src, err)
-			}
-			want, err := tmpl.Render(tc.data)
-			if err != nil {
-				t.Fatalf("interpreter Render: %v", err)
-			}
-
-			got := runGeneratedGo(t, generated, tc.dataLiteral)
-			if got != want {
-				t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, tc.src)
-			}
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenValueExprUnsupported asserts that every construct outside this

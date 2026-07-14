@@ -122,45 +122,11 @@ func TestCodegenTemplateLiteralBacktickEscape(t *testing.T) {
 // backtick immediately followed by a closing backtick, with no content)
 // evaluates to the empty string in both value and attribute position.
 func TestCodegenTemplateLiteralEmpty(t *testing.T) {
-	cases := []struct {
-		name string
-		src  string
-	}{
-		{name: "value context", src: "p= ``\n"},
-		{name: "attribute value", src: "a(href=``) Link\n"},
+	cases := []codegenArithCase{
+		{name: "value context", src: "p= ``\n", data: map[string]any{}, dataLiteral: "opsData{}"},
+		{name: "attribute value", src: "a(href=``) Link\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ast, err := Parse(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.src, err)
-			}
-			generated, err := GenerateGo(ast, Config{
-				PackageName:     "main",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err != nil {
-				t.Fatalf("GenerateGo(%q): %v", tc.src, err)
-			}
-
-			tmpl, err := Compile(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Compile(%q): %v", tc.src, err)
-			}
-			want, err := tmpl.Render(map[string]any{})
-			if err != nil {
-				t.Fatalf("interpreter Render: %v", err)
-			}
-
-			got := runGeneratedGo(t, generated, "opsData{}")
-			if got != want {
-				t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, tc.src)
-			}
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenAttrValueExprConcat proves the general dynamic-attribute-value
@@ -204,15 +170,13 @@ func TestCodegenAttrValueExprConcat(t *testing.T) {
 // dot-path rooted at an each-loop variable resolving into a nested struct's
 // int field — the diagnostic's headline attr-template-literal gap.
 func TestCodegenAttrTemplateLiteral(t *testing.T) {
-	cases := []struct {
-		name string
-		src  string
-		data map[string]any
-	}{
+	sharedDataLiteral := "opsData{Count: 7, Firms: []opsFirm{{ID: 7}, {ID: 42}}}"
+	cases := []codegenArithCase{
 		{
-			name: "plain int field",
-			src:  "div(id=`row-${Count}`) Row\n",
-			data: map[string]any{"Count": 7},
+			name:        "plain int field",
+			src:         "div(id=`row-${Count}`) Row\n",
+			data:        map[string]any{"Count": 7},
+			dataLiteral: sharedDataLiteral,
 		},
 		{
 			name: "dot-path rooted at an each-loop variable into a nested struct field",
@@ -221,40 +185,10 @@ func TestCodegenAttrTemplateLiteral(t *testing.T) {
 				map[string]any{"ID": 7},
 				map[string]any{"ID": 42},
 			}},
+			dataLiteral: sharedDataLiteral,
 		},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ast, err := Parse(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.src, err)
-			}
-			generated, err := GenerateGo(ast, Config{
-				PackageName:     "main",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err != nil {
-				t.Fatalf("GenerateGo(%q): %v", tc.src, err)
-			}
-
-			tmpl, err := Compile(tc.src, nil)
-			if err != nil {
-				t.Fatalf("Compile(%q): %v", tc.src, err)
-			}
-			want, err := tmpl.Render(tc.data)
-			if err != nil {
-				t.Fatalf("interpreter Render: %v", err)
-			}
-
-			got := runGeneratedGo(t, generated, "opsData{Count: 7, Firms: []opsFirm{{ID: 7}, {ID: 42}}}")
-			if got != want {
-				t.Errorf("codegen output %q does not match interpreter output %q for %q", got, want, tc.src)
-			}
-		})
-	}
+	runCodegenArithDifferentialBatch(t, cases)
 }
 
 // TestCodegenAttrTemplateLiteralEntitySafety proves the attribute value
