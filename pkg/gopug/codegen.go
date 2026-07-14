@@ -1081,8 +1081,13 @@ func (g *generator) genBlockText(block *BlockTextNode) error {
 //
 //   - a bare attribute (no value) emits its static " name" form, unchanged
 //     from increment 1;
-//   - a plain quoted string literal is escaped and baked into the static
-//     buffer at generate time (htmlEscapeAttr), also unchanged;
+//   - a plain quoted string literal is baked into the static buffer at
+//     generate time, escaped (htmlEscapeAttr) unless the attribute is
+//     unescaped (`!=`/an unescaped shorthand), in which case the literal is
+//     baked in RAW — Runtime.renderTag computes the identical `evaluated`
+//     value for the escaped and unescaped forms of the same attribute and
+//     differs only by whether it wraps it in htmlEscapeAttr, so the
+//     unescaped form is simply that wrapper dropped;
 //   - a dynamic value whose name IS an HTML boolean attribute
 //     (isBooleanAttribute) requires a bool-typed field: it emits a
 //     conditional bare write — ` name="true"` iff the field is true, nothing
@@ -1092,32 +1097,52 @@ func (g *generator) genBlockText(block *BlockTextNode) error {
 //     name is deferred (error) rather than risking a byte-identical breach —
 //     the interpreter also omits a boolean-attribute-named value that merely
 //     stringifies to "false" (e.g. a string field literally holding
-//     "false"), a general rule this increment doesn't reproduce;
+//     "false"), a general rule this increment doesn't reproduce. An
+//     unescaped boolean attribute is deferred outright (a distinct error) —
+//     the value can only ever be "true" or omitted, so escaping is moot, but
+//     combining the omit-on-false rule with an unescaped write is a separate
+//     claim this increment doesn't make;
 //   - a dynamic value on any other, non-"class" name is built by genValueExpr
-//     (genValueExpr's whole supported grammar) and always escaped through the
-//     exported EscapeAttr (never html.EscapeString — attribute escaping has
-//     different rules from text escaping), applied once to the built value
-//     as a whole rather than per-leaf, exactly as genInterpolation and genCode
-//     do for the same value-context grammar. When genValueExpr reports the
-//     value fallible (a top-level `/` or `%`), its genFallibleExtraction
-//     prelude is emitted BEFORE the attribute's own static ` name="` text —
-//     the extraction is a statement, so it must land as its own line ahead
-//     of the write sequence it feeds, never interleaved inside it;
+//     (genValueExpr's whole supported grammar) and, for the ordinary escaped
+//     case, always escaped through the exported EscapeAttr (never
+//     html.EscapeString — attribute escaping has different rules from text
+//     escaping), applied once to the built value as a whole rather than
+//     per-leaf, exactly as genInterpolation and genCode do for the same
+//     value-context grammar. An unescaped value on such a name writes the
+//     SAME genValueExpr result RAW instead — no EscapeAttr wrapper, and this
+//     write alone never sets g.needsGopug (a sibling escaped write or any
+//     other gopug-needing construct in the template still will). When
+//     genValueExpr reports the value fallible (a top-level `/` or `%`), the
+//     escaped case's genFallibleExtraction prelude is emitted BEFORE the
+//     attribute's own static ` name="` text — the extraction is a statement,
+//     so it must land as its own line ahead of the write sequence it feeds,
+//     never interleaved inside it. A fallible unescaped value is deferred
+//     instead of extracted: Runtime.renderTag's own dynamic-attribute
+//     evaluation (the branch this whole case mirrors) falls back to the RAW,
+//     un-evaluated expression source the moment evaluateExpr errors, rather
+//     than aborting the render — a fallback a generated function that aborts
+//     the whole render on that same error cannot reproduce, for either the
+//     escaped or the unescaped form. (The escaped form still uses
+//     genFallibleExtraction regardless, matching its own prior increment
+//     unchanged; this increment does not touch that.)
 //   - a dynamic "class" value merging shorthand class tokens with one or
 //     more bare string-field tokens (see genDynamicClass) emits a runtime
 //     write joining the tokens with the exported JoinClasses (which drops an
 //     empty token, matching the interpreter's empty-token rule) and escapes
-//     the joined result with EscapeAttr;
+//     the joined result with EscapeAttr. An unescaped dynamic class value is
+//     deferred outright (a distinct error) — merging class-normalization
+//     with no-escape is a separate claim this increment doesn't make;
 //
-// A style object, `&attributes`, an unescaped attribute, a class-object/
-// array value, or any value genValueExpr still can't build (a
-// non-string-keyed map index, most method calls, an array/object literal,
-// …) is out of scope for this increment and returns an error rather than
-// guessing at output that might not match the interpreter. With a nil
-// Config.DataReflectType (type-blind mode), a dynamic value can't be
-// classified as scalar or bool at all (nor a class token confirmed a string
-// field), so only static/bare attributes are supported there, matching
-// increment 1 unchanged.
+// A style object, `&attributes`, an unescaped dynamic class or boolean
+// attribute, a fallible unescaped value, a class-object/array value, or any
+// value genValueExpr still can't build (a non-string-keyed map index, most
+// method calls, an array/object literal, …) is out of scope for this
+// increment and returns an error rather than guessing at output that might
+// not match the interpreter. With a nil Config.DataReflectType (type-blind
+// mode), a dynamic value can't be classified as scalar or bool at all (nor a
+// class token confirmed a string field), so only static/bare attributes
+// (including a static unescaped literal, which needs no type information)
+// are supported there, matching increment 1 unchanged.
 func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 	if _, ok := attrs["&attributes"]; ok {
 		return fmt.Errorf("unsupported dynamic &attributes in codegen")
@@ -1131,17 +1156,20 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 			continue
 		}
 
-		if val.Unescaped {
-			return fmt.Errorf("unsupported unescaped attribute %q in codegen", name)
-		}
-
 		trimmed := strings.TrimSpace(val.Value)
 		if lit, ok := unwrapQuotedLiteral(trimmed); ok {
-			g.writeStatic(" " + name + `="` + htmlEscapeAttr(lit) + `"`)
+			if val.Unescaped {
+				g.writeStatic(" " + name + `="` + lit + `"`)
+			} else {
+				g.writeStatic(" " + name + `="` + htmlEscapeAttr(lit) + `"`)
+			}
 			continue
 		}
 
 		if name == "class" {
+			if val.Unescaped {
+				return fmt.Errorf("unsupported unescaped attribute %q in codegen (a dynamic unescaped class value is not supported in this increment)", name)
+			}
 			if err := g.genDynamicClass(trimmed); err != nil {
 				return fmt.Errorf("attribute %q: %w", name, err)
 			}
@@ -1153,6 +1181,9 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 		}
 
 		if isBooleanAttribute(name) {
+			if val.Unescaped {
+				return fmt.Errorf("unsupported unescaped attribute %q in codegen (an unescaped HTML boolean attribute is not supported in this increment)", name)
+			}
 			goExpr, typ, err := g.resolveFieldExpr(trimmed)
 			if err != nil {
 				return fmt.Errorf("attribute %q: %w", name, err)
@@ -1171,6 +1202,17 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 		if err != nil {
 			return fmt.Errorf("attribute %q: %w", name, err)
 		}
+
+		if val.Unescaped {
+			if fallible {
+				return fmt.Errorf("unsupported unescaped attribute %q in codegen (a fallible expression — a division or modulo operator — cannot be reproduced, since the interpreter falls back to the raw, un-evaluated expression source on an evaluation error rather than aborting the render)", name)
+			}
+			g.writeStatic(" " + name + `="`)
+			g.writeExprWrite(valExpr)
+			g.writeStatic(`"`)
+			continue
+		}
+
 		if fallible {
 			valExpr = g.genFallibleExtraction(valExpr)
 		}

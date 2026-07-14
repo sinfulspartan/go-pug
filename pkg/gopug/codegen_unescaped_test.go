@@ -284,27 +284,38 @@ func TestCodegenUnescapedUnsupportedExpressionSameSurface(t *testing.T) {
 	}
 }
 
-// TestCodegenUnescapedAttributeStillDeferred pins that this slice's scope is
-// TEXT output only: an unescaped attribute value (`div(x!= f)`) still hard-
-// errors with its own distinct message, unchanged by this slice's genCode/
-// genInterpolation edits.
-func TestCodegenUnescapedAttributeStillDeferred(t *testing.T) {
-	src := "div(x!=Name)\n"
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
+// TestCodegenUnescapedAttributeClassAndBooleanStillDeferred pins that an
+// ordinary unescaped attribute (`div(x!= f)`) is supported by this slice —
+// see codegen_unescaped_attr_test.go for its differential proofs — while an
+// unescaped dynamic class attribute and an unescaped HTML boolean attribute
+// each still hard-error with their own distinct messages, unchanged.
+func TestCodegenUnescapedAttributeClassAndBooleanStillDeferred(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "unescaped dynamic class attribute", src: "div(class!=Name)\n"},
+		{name: "unescaped boolean attribute", src: "input(checked!=Flag)\n"},
 	}
-	_, err = GenerateGo(ast, Config{
-		PackageName:     "gopug",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an unsupported unescaped-attribute error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "unescaped attribute") {
-		t.Errorf("GenerateGo(%q): error %q does not describe an unsupported unescaped attribute", src, err.Error())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, err := Parse(tc.src, nil)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+			_, err = GenerateGo(ast, Config{
+				PackageName:     "gopug",
+				FuncName:        "RenderOps",
+				DataType:        "opsData",
+				DataReflectType: opsDataReflectType,
+			})
+			if err == nil {
+				t.Fatalf("GenerateGo(%q): expected an unsupported unescaped-attribute error, got nil", tc.src)
+			}
+			if !strings.Contains(err.Error(), "unescaped attribute") {
+				t.Errorf("GenerateGo(%q): error %q does not describe an unsupported unescaped attribute", tc.src, err.Error())
+			}
+		})
 	}
 }
 
