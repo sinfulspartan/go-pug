@@ -768,6 +768,14 @@ var (
 	reflectTypeFloat64 = reflect.TypeOf(float64(0))
 )
 
+// reflectTypeStringSlice is the reflect.Type a mixin rest parameter
+// (`...items`) is pushed onto the generator's scope with — a Go `[]string`,
+// the element type Runtime.renderMixinCall's own rest-argument collection
+// always produces (each element is a string, via evaluateMixinArg), so the
+// existing slice-typed body machinery (genEach, `.length`, index, `.join`)
+// consumes it unchanged.
+var reflectTypeStringSlice = reflect.TypeOf([]string(nil))
+
 // convertExpr returns goExpr unchanged when typ is exactly builtin (no
 // conversion needed to satisfy a function parameter of that builtin type),
 // or wraps it in an explicit conversion (goTypeName + "(" + goExpr + ")")
@@ -3821,6 +3829,12 @@ func uniqueGoName(candidate string, used map[string]bool) string {
 // writer parameter "w".
 const blockParamGoName = "pugBlock"
 
+// restParamGoName is the fixed Go parameter name genMixinFunc adds to a
+// rest-parameter mixin's helper signature for its collected `[]string`
+// argument. It can never collide with a positional argument (always named
+// "argN"), with blockParamGoName, or with the writer parameter "w".
+const restParamGoName = "restArgs"
+
 // mixinBodyHasBlockSlot reports whether body contains a `block` node
 // (*BlockNode, regardless of its Name — Runtime.renderNode's own dispatch
 // for a *BlockNode reached while r.inMixin is true renders the caller's
@@ -3919,9 +3933,18 @@ func nodeUsesAttributesForward(n Node) bool {
 // Runtime.renderMixinCall's own full isolation (a mixin body sees only its
 // parameters) as a compile-time, fail-closed GenerateGo error rather than a
 // silent "" the way the interpreter's own lookup miss would render it. A
-// rest parameter is unconditionally unsupported this increment (checked up
-// front, before any body generation) since the interpreter's variadic
-// rest-argument collection has no codegen counterpart yet. A default
+// rest parameter (decl.RestParamName != "") gains one further signature
+// parameter, `restArgs []string`, pushed onto that same scope with
+// reflectTypeStringSlice — a `[]string` scope var, unlike every other
+// parameter's plain string one — so the body's `each`/`.length`/index/
+// `.join` on it flow through the SAME existing slice-typed machinery those
+// constructs already use for a slice-typed struct field (genEach requires
+// Kind() Slice/Array; genLengthOperand, genIndexValueExpr, and
+// genJoinValueExpr all switch on typ.Kind() the same way); no new per-op
+// code was needed for any of those. A whole-slice-valued reference to it
+// (`= items`, `#{items}`) still fails closed with a clean error, unchanged:
+// genScalarStringify's own type switch has no Slice case, so it falls to its
+// existing default error rather than any new code added here. A default
 // parameter value needs no special handling here at all: a default is
 // resolved entirely at the CALL SITE (see genMixinParamValue), so this
 // function's own signature and body generation are identical whether or
@@ -3939,10 +3962,6 @@ func nodeUsesAttributesForward(n Node) bool {
 // genMixinFunc never does, since GenerateGo only ever calls it for a
 // top-level mixin declaration).
 func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, error) {
-	if decl.RestParamName != "" {
-		return "", fmt.Errorf("mixin %q: a rest parameter (...%s) is not supported in codegen yet", decl.Name, decl.RestParamName)
-	}
-
 	hasSlot := g.mixinHasSlot[decl.Name]
 
 	savedScope := g.scope
@@ -3964,6 +3983,9 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 		argName := fmt.Sprintf("arg%d", i+1)
 		argNames[i] = argName
 		g.pushScope(p, argName, reflectTypeString, false)
+	}
+	if decl.RestParamName != "" {
+		g.pushScope(decl.RestParamName, restParamGoName, reflectTypeStringSlice, false)
 	}
 
 	var bodyErr error
@@ -3993,6 +4015,9 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 	fmt.Fprintf(&sig, "func %s(w io.Writer", fnName)
 	for _, argName := range argNames {
 		fmt.Fprintf(&sig, ", %s string", argName)
+	}
+	if decl.RestParamName != "" {
+		fmt.Fprintf(&sig, ", %s []string", restParamGoName)
 	}
 	if hasSlot {
 		fmt.Fprintf(&sig, ", %s func(io.Writer) error", blockParamGoName)
@@ -4072,6 +4097,48 @@ func (g *generator) genMixinParamValue(call *MixinCallNode, decl *MixinDeclNode,
 	return `""`, nil
 }
 
+// genMixinRestArg computes the Go `[]string{...}` literal a call binds to
+// decl's rest parameter, reproducing Runtime.renderMixinCall's own rest-
+// argument collection loop exactly: every call argument BEYOND
+// len(decl.Parameters) — call.Arguments[len(decl.Parameters):] — is
+// evaluated in the CALLER's own scope, in order, the same genValueExpr call
+// every positional argument uses, and becomes one element of the literal. A
+// call supplying no extra arguments (len(call.Arguments) <= len(decl.
+// Parameters), including a call with FEWER arguments than decl.Parameters
+// itself) produces the empty literal `[]string{}`, matching the
+// interpreter's own `rest := make([]any, 0)` when its collection loop never
+// runs.
+//
+// A fallible rest-argument expression (e.g. a division) is refused with a
+// clean, distinct error rather than generated: unlike a positional
+// argument's own genFallibleExtraction (an IIFE returning (string, error)
+// that can extract into a plain `:=` local before the call), a slice-literal
+// ELEMENT position cannot host that same two-value extraction inline, and
+// hoisting every element into its own local first is a distinct,
+// untested claim this increment does not make — Runtime.renderMixinCall's
+// own rest-collection loop returns the render error immediately on a
+// fallible element (r.evaluateMixinArg), so refusing to generate it at all
+// is fail-closed, not a bounded-agreement breach.
+func (g *generator) genMixinRestArg(call *MixinCallNode, decl *MixinDeclNode) (string, error) {
+	n := len(decl.Parameters)
+	if len(call.Arguments) <= n {
+		return "[]string{}", nil
+	}
+
+	elems := make([]string, 0, len(call.Arguments)-n)
+	for i := n; i < len(call.Arguments); i++ {
+		v, fallible, err := g.genValueExpr(call.Arguments[i])
+		if err != nil {
+			return "", fmt.Errorf("mixin %q rest argument %d (%q): %w", call.Name, i-n+1, call.Arguments[i], err)
+		}
+		if fallible {
+			return "", fmt.Errorf("mixin %q: rest argument %d (%q) is a fallible expression and is not supported in codegen: a fallible slice-literal element has no equivalent codegen extraction site yet", call.Name, i-n+1, call.Arguments[i])
+		}
+		elems = append(elems, v)
+	}
+	return "[]string{" + strings.Join(elems, ", ") + "}", nil
+}
+
 // genMixinCall emits a call to call.Name's already-generated helper function
 // (see genMixinFunc), reproducing Runtime.renderMixinCall's own argument
 // binding exactly: an argument is built by genValueExpr in the CALLER's own
@@ -4079,13 +4146,16 @@ func (g *generator) genMixinParamValue(call *MixinCallNode, decl *MixinDeclNode,
 // the first len(decl.Parameters) call arguments — a missing trailing
 // argument (fewer call arguments than parameters) becomes the default
 // value's own genValueExpr result when the parameter has one, or the
-// literal "" otherwise (see genMixinParamValue) — and any call argument
-// beyond the parameter count is simply ignored (no rest-parameter support
-// yet). A fallible argument expression (e.g. a division) is extracted, in
-// argument order, through the same genFallibleExtraction every other
-// fallible write site uses, so the generated function returns that error
-// immediately rather than call the mixin helper with a value that was
-// never actually computed.
+// literal "" otherwise (see genMixinParamValue). A fallible POSITIONAL
+// argument expression (e.g. a division) is extracted, in argument order,
+// through the same genFallibleExtraction every other fallible write site
+// uses, so the generated function returns that error immediately rather
+// than call the mixin helper with a value that was never actually computed.
+// When decl has a rest parameter, every call argument beyond the parameter
+// count is instead collected into a `[]string{...}` literal (see
+// genMixinRestArg) and passed as one further argument, positioned right
+// after the positional ones and before the block-callback argument (if
+// any) — matching genMixinFunc's own signature order.
 //
 // A nested mixin call (encountered while g.insideMixinBody or
 // g.insideBlockClosure is set — i.e. one mixin's own body, or a call site's
@@ -4148,7 +4218,7 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 	hasSlot := g.mixinHasSlot[call.Name]
 	dynamicBlock := hasSlot && len(call.BlockContent) > 0
 
-	args := make([]string, 0, len(decl.Parameters)+1)
+	args := make([]string, 0, len(decl.Parameters)+2)
 	var margNames []string
 	var callID int
 	if dynamicBlock {
@@ -4168,6 +4238,14 @@ func (g *generator) genMixinCall(call *MixinCallNode) error {
 		} else {
 			args = append(args, valExpr)
 		}
+	}
+
+	if decl.RestParamName != "" {
+		restExpr, err := g.genMixinRestArg(call, decl)
+		if err != nil {
+			return err
+		}
+		args = append(args, restExpr)
 	}
 
 	if hasSlot {

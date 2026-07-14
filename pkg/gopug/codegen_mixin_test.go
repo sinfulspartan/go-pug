@@ -237,8 +237,8 @@ func TestCodegenMixinDeferrals(t *testing.T) {
 			wantSub: "attributes",
 		},
 		{
-			name:    "rest parameter",
-			src:     "mixin foo(...items)\n  p hi\n+foo(\"a\", \"b\")\n",
+			name:    "rest parameter combined with &attributes forwarding",
+			src:     "mixin foo(...items)\n  a&attributes(attributes)\n+foo(\"a\", \"b\")(class=\"x\")\n",
 			wantSub: "rest parameter",
 		},
 		{

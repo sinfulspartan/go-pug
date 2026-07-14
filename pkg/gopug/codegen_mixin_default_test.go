@@ -170,17 +170,17 @@ func TestCodegenMixinDefaultMixedParams(t *testing.T) {
 // default parameter value adds on top of every prior increment's own
 // deferrals (which stay deferred unchanged: see TestCodegenMixinDeferrals,
 // TestCodegenMixinAttrForwardDeferrals, TestCodegenMixinBlockDynamicDeferralsAreDistinct).
+//
+// A default parameter composed with a REST parameter (`mixin foo(a = "x",
+// ...items)`) is no longer a deferral at all — see
+// TestCodegenMixinRestComposesWithDefaultParam in codegen_mixin_rest_test.go
+// for the differential now covering that combination.
 func TestCodegenMixinDefaultDeferrals(t *testing.T) {
 	cases := []struct {
 		name    string
 		src     string
 		wantSub string
 	}{
-		{
-			name:    "rest parameter, even alongside a default parameter",
-			src:     "mixin foo(a = \"x\", ...items)\n  p= a\n+foo(\"y\")\n",
-			wantSub: "rest parameter",
-		},
 		{
 			name:    "fallible default expression (division by zero)",
 			src:     "mixin g(a = 1/0)\n  p= a\n+g()\n",
