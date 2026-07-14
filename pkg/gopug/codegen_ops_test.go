@@ -469,6 +469,8 @@ func TestCodegenConditionOperatorLiteralOverflowAccepts(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			ast, err := Parse(tc.src, nil)
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
@@ -575,6 +577,8 @@ func TestCodegenConditionLeadingZeroLiteralAccepts(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			ast, err := Parse(tc.src, nil)
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
@@ -641,29 +645,81 @@ func TestCodegenNumericLiteralDifferentialMatchesInterpreter(t *testing.T) {
 		{name: "float 3.14", token: "3.14", field: "Price", expected: 3.14},
 	}
 
+	// Every (case, branch) pair is prepared up front — Parse/GenerateGo/Compile
+	// run once per case, and each branch contributes one diffCase — so a
+	// single runDifferentialBatch call compiles and runs every case's
+	// generated code in one throwaway module instead of one `go run` per
+	// branch. prepared mirrors diffCases index-for-index (built by the same
+	// nested loop, in the same order), so results[i] always corresponds to
+	// prepared[i].
+	type prepared struct {
+		src      string
+		tmpl     *Template
+		dataKey  string
+		mapValue any
+	}
+
+	var diffCases []diffCase
+	var prepared_ []prepared
+
+	for _, tc := range cases {
+		src := "if " + tc.field + " == " + tc.token + "\n  p yes\nelse\n  p no\n"
+
+		ast, err := Parse(src, nil)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", src, err)
+		}
+		generated, err := GenerateGo(ast, Config{
+			PackageName:     "main",
+			FuncName:        "RenderOps",
+			DataType:        "opsData",
+			DataReflectType: opsDataReflectType,
+		})
+		if err != nil {
+			t.Fatalf("GenerateGo(%q): expected no error for a within-bounds literal, got: %v", src, err)
+		}
+
+		tmpl, err := Compile(src, nil)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", src, err)
+		}
+
+		branches := []struct {
+			name  string
+			value float64
+		}{
+			{"matching branch", tc.expected},
+			{"non-matching branch", tc.expected + 1},
+		}
+
+		for _, br := range branches {
+			var dataKey string
+			var dataLiteral string
+			var mapValue any
+			if tc.field == "Price" {
+				dataKey = "Price"
+				dataLiteral = fmt.Sprintf("opsData{Price: %v}", br.value)
+				mapValue = br.value
+			} else {
+				dataKey = "Count"
+				dataLiteral = fmt.Sprintf("opsData{Count: %d}", int64(br.value))
+				mapValue = int(br.value)
+			}
+
+			diffCases = append(diffCases, diffCase{
+				name:        tc.name + "/" + br.name,
+				generated:   generated,
+				dataLiteral: dataLiteral,
+			})
+			prepared_ = append(prepared_, prepared{src: src, tmpl: tmpl, dataKey: dataKey, mapValue: mapValue})
+		}
+	}
+
+	results := runDifferentialBatch(t, opsDataStructSrc, "RenderOps", diffCases)
+
+	i := 0
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			src := "if " + tc.field + " == " + tc.token + "\n  p yes\nelse\n  p no\n"
-
-			ast, err := Parse(src, nil)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", src, err)
-			}
-			generated, err := GenerateGo(ast, Config{
-				PackageName:     "main",
-				FuncName:        "RenderOps",
-				DataType:        "opsData",
-				DataReflectType: opsDataReflectType,
-			})
-			if err != nil {
-				t.Fatalf("GenerateGo(%q): expected no error for a within-bounds literal, got: %v", src, err)
-			}
-
-			tmpl, err := Compile(src, nil)
-			if err != nil {
-				t.Fatalf("Compile(%q): %v", src, err)
-			}
-
 			branches := []struct {
 				name  string
 				value float64
@@ -674,27 +730,20 @@ func TestCodegenNumericLiteralDifferentialMatchesInterpreter(t *testing.T) {
 
 			for _, br := range branches {
 				t.Run(br.name, func(t *testing.T) {
-					var dataKey string
-					var dataLiteral string
-					var mapValue any
-					if tc.field == "Price" {
-						dataKey = "Price"
-						dataLiteral = fmt.Sprintf("opsData{Price: %v}", br.value)
-						mapValue = br.value
-					} else {
-						dataKey = "Count"
-						dataLiteral = fmt.Sprintf("opsData{Count: %d}", int64(br.value))
-						mapValue = int(br.value)
-					}
+					p := prepared_[i]
+					result := results[i]
+					i++
 
-					want, err := tmpl.Render(map[string]any{dataKey: mapValue})
+					want, err := p.tmpl.Render(map[string]any{p.dataKey: p.mapValue})
 					if err != nil {
 						t.Fatalf("interpreter Render: %v", err)
 					}
 
-					got := runGeneratedGo(t, generated, dataLiteral)
-					if got != want {
-						t.Errorf("codegen output %q does not match interpreter output %q for template %q with %s = %v", got, want, src, dataKey, mapValue)
+					if result.Err != "" {
+						t.Fatalf("generated RenderOps(%q): unexpected error %q", p.src, result.Err)
+					}
+					if result.Out != want {
+						t.Errorf("codegen output %q does not match interpreter output %q for template %q with %s = %v", result.Out, want, p.src, p.dataKey, p.mapValue)
 					}
 				})
 			}
