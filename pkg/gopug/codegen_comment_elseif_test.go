@@ -2,7 +2,6 @@ package gopug
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -277,28 +276,5 @@ func TestCodegenPlainIfRegression(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runCodegenArithDifferential(t, tc)
 		})
-	}
-}
-
-// TestCodegenUnlessStillRejected proves `unless` remains an unsupported
-// construct after the else-if guard is removed — the else-if fix must not
-// accidentally widen genConditional's IsUnless rejection.
-func TestCodegenUnlessStillRejected(t *testing.T) {
-	src := "unless Flag\n  p yes\n"
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-	_, err = GenerateGo(ast, Config{
-		PackageName:     "gopug",
-		FuncName:        "RenderOps",
-		DataType:        "opsData",
-		DataReflectType: opsDataReflectType,
-	})
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an unsupported-construct error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("GenerateGo(%q): error %q does not describe an unsupported construct", src, err.Error())
 	}
 }

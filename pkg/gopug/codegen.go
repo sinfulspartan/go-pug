@@ -882,6 +882,8 @@ func (g *generator) genNode(n Node) error {
 		return g.genEach(node)
 	case *ConditionalNode:
 		return g.genConditional(node)
+	case *CaseNode:
+		return g.genCase(node)
 	case *CommentNode:
 		return g.genComment(node)
 	case *MixinDeclNode:
@@ -3713,31 +3715,39 @@ func (g *generator) genComment(n *CommentNode) error {
 	return nil
 }
 
-// genConditional emits a Go if/else for `if <condition>` with an optional
-// plain `else`, including an else-if chain (`else if`, represented in the
-// AST as a single *ConditionalNode with IsElseIf set inside Alternate — see
-// ast.go's ConditionalNode doc comment). The recursive genNode call on that
-// inner *ConditionalNode nests a second if/else inside the outer else block
-// (`if a {...} else { if b {...} else {...} }`), which is valid Go and
-// renders byte-identically to the interpreter's own equivalent nesting of
-// else-if — the extra braces only affect Go source structure, never the
-// HTML output. `unless` is a later increment. The condition itself is
-// translated by genCondition, which supports bare bool/numeric/string-field
-// truthiness, `.length` truthiness, a bounded set of comparison operators,
-// and the `&&`/`||`/`!` combinators over any of those; anything else
-// returns an error (including an else-if whose own condition genCondition
-// can't compile, which propagates that error unchanged).
+// genConditional emits a Go if/else for `if <condition>` (or, when
+// n.IsUnless is set, `unless <condition>`) with an optional plain `else`,
+// including an else-if chain (`else if`, represented in the AST as a single
+// *ConditionalNode with IsElseIf set inside Alternate — see ast.go's
+// ConditionalNode doc comment). The recursive genNode call on that inner
+// *ConditionalNode nests a second if/else inside the outer else block (`if a
+// {...} else { if b {...} else {...} }`), which is valid Go and renders
+// byte-identically to the interpreter's own equivalent nesting of else-if —
+// the extra braces only affect Go source structure, never the HTML output.
+// The condition itself is translated by genCondition, which supports bare
+// bool/numeric/string-field truthiness, `.length` truthiness, a bounded set
+// of comparison operators, and the `&&`/`||`/`!` combinators over any of
+// those; anything else returns an error (including an else-if whose own
+// condition genCondition can't compile, which propagates that error
+// unchanged). `unless` reuses the exact same translated condition, wrapped in
+// a Go `!(...)`: Runtime.renderConditional computes boolVal :=
+// isTruthy(evaluateExpr(condition)) and then, only for `unless`, negates it
+// before branching — genCondition already returns a native Go bool equal to
+// isTruthy(val) for every shape it compiles, so `!(cond)` is that same
+// negation, byte-identical, with Consequent/Alternate handled completely
+// unchanged from the `if` path (an `unless`'s Alternate is its `else`, which
+// the parser accepts identically to an `if`'s).
 func (g *generator) genConditional(n *ConditionalNode) error {
-	if n.IsUnless {
-		return fmt.Errorf("unsupported unless in codegen")
-	}
-
 	cond, err := g.genCondition(n.Condition)
 	if err != nil {
 		return err
 	}
 
-	g.writeRaw(fmt.Sprintf("if %s {\n", cond))
+	if n.IsUnless {
+		g.writeRaw(fmt.Sprintf("if !(%s) {\n", cond))
+	} else {
+		g.writeRaw(fmt.Sprintf("if %s {\n", cond))
+	}
 	mark := g.scopeMark()
 	for _, child := range n.Consequent {
 		if err := g.genNode(child); err != nil {
@@ -3761,6 +3771,130 @@ func (g *generator) genConditional(n *ConditionalNode) error {
 	}
 
 	g.body.WriteString("}\n")
+	return nil
+}
+
+// genCase emits a `case`/`when`/`default` block. Runtime.renderCase evaluates
+// the case expression once (caseVal), then walks c.Cases in source order:
+// whenVal := evaluateExpr(when.Expression), and if caseVal == whenVal (STRING
+// equality — both sides come from evaluateExpr's own stringification) it sets
+// a sticky `matched` flag that is only ever set, never cleared. While matched,
+// an empty-bodied when falls through (its "continue" reaches the next when's
+// own comparison, still under the same sticky matched flag), while a
+// non-empty matched when renders its body and stops for good; c.Default
+// renders whenever the walk reaches the end of c.Cases without having
+// rendered a non-empty matched when's body (whether because nothing ever
+// matched, or because every matched when's body was empty and fall-through
+// ran off the end).
+//
+// Whether a when's body is empty is known at GENERATE time (len(when.Body)),
+// so the "does this empty when fall through" question needs no runtime
+// state — only two runtime bools are needed: matchedTmp, mirroring the
+// interpreter's own sticky `matched` (set, never cleared, by each when's
+// comparison in turn), and doneTmp, which goes true the moment a non-empty
+// matched when's body has rendered and short-circuits every later when's body
+// (and the final default) exactly the way the interpreter's own `return nil`
+// does after rendering a matched non-empty when. genValueExpr reproduces
+// evaluateExpr's stringification for every construct it supports, so
+// caseTmp == whenExpr in the generated Go is the same STRING comparison the
+// interpreter performs, byte for byte. Every genValueExpr call this function
+// makes for a when expression is unconditionally evaluated (not short-
+// circuited the way the interpreter's own loop stops as soon as it renders a
+// body) — harmless only because a non-fallible Go expression can't error or
+// have an observable side effect, so evaluating a later when's expression
+// that the interpreter would never have reached produces no divergence.
+//
+// A case expression or any when expression that genValueExpr reports as
+// fallible (can produce a runtime error, e.g. a division) is refused outright
+// rather than generated: the interpreter can abort partway through the when
+// walk the instant such an expression errors, at whatever point in that walk
+// it's reached, and codegen has no way to reproduce that exact error and its
+// position faithfully — so the whole template is deferred instead of risking
+// a silently different error (or none at all).
+func (g *generator) genCase(n *CaseNode) error {
+	caseExpr, caseFallible, err := g.genValueExpr(n.Expression)
+	if err != nil {
+		return fmt.Errorf("unsupported case expression %q in codegen: %w", n.Expression, err)
+	}
+	if caseFallible {
+		return fmt.Errorf("unsupported fallible case expression %q in codegen: the interpreter could abort with an error partway through the when clauses, a point codegen cannot reproduce", n.Expression)
+	}
+
+	whenExprs := make([]string, len(n.Cases))
+	for i, when := range n.Cases {
+		whenExpr, whenFallible, err := g.genValueExpr(when.Expression)
+		if err != nil {
+			return fmt.Errorf("unsupported when expression %q in codegen: %w", when.Expression, err)
+		}
+		if whenFallible {
+			return fmt.Errorf("unsupported fallible when expression %q in codegen: the interpreter could abort with an error partway through the when clauses, a point codegen cannot reproduce", when.Expression)
+		}
+		whenExprs[i] = whenExpr
+	}
+
+	if len(n.Cases) == 0 {
+		// No `when` clauses at all: the interpreter's own loop over c.Cases
+		// never runs, so `matched` stays false and c.Default renders
+		// unconditionally whenever it's non-empty. caseExpr is still emitted
+		// as a blank-identifier discard (never a named local) so it neither
+		// trips Go's declared-and-not-used check nor leaves needsGopug/
+		// needsStrconv true with nothing in the generated source that
+		// actually references the package they gate.
+		g.writeRaw(fmt.Sprintf("_ = %s\n", caseExpr))
+		if len(n.Default) == 0 {
+			return nil
+		}
+		mark := g.scopeMark()
+		for _, child := range n.Default {
+			if err := g.genNode(child); err != nil {
+				g.scopeRestore(mark)
+				return err
+			}
+		}
+		g.scopeRestore(mark)
+		g.flushStatic()
+		return nil
+	}
+
+	caseTmp := fmt.Sprintf("__caseVal%d", g.nextTmp())
+	matchedTmp := fmt.Sprintf("__matched%d", g.nextTmp())
+	doneTmp := fmt.Sprintf("__done%d", g.nextTmp())
+
+	g.writeRaw(fmt.Sprintf("%s := %s\n", caseTmp, caseExpr))
+	g.body.WriteString(fmt.Sprintf("%s := false\n", matchedTmp))
+	g.body.WriteString(fmt.Sprintf("%s := false\n", doneTmp))
+
+	mark := g.scopeMark()
+	for i, when := range n.Cases {
+		g.body.WriteString(fmt.Sprintf("if %s == %s {\n%s = true\n}\n", caseTmp, whenExprs[i], matchedTmp))
+		g.body.WriteString(fmt.Sprintf("if %s && !%s {\n", matchedTmp, doneTmp))
+		if len(when.Body) > 0 {
+			for _, child := range when.Body {
+				if err := g.genNode(child); err != nil {
+					g.scopeRestore(mark)
+					return err
+				}
+			}
+			g.scopeRestore(mark)
+			g.flushStatic()
+			g.body.WriteString(fmt.Sprintf("%s = true\n", doneTmp))
+		}
+		g.body.WriteString("}\n")
+	}
+
+	g.body.WriteString(fmt.Sprintf("if !%s {\n", doneTmp))
+	if len(n.Default) > 0 {
+		for _, child := range n.Default {
+			if err := g.genNode(child); err != nil {
+				g.scopeRestore(mark)
+				return err
+			}
+		}
+		g.scopeRestore(mark)
+		g.flushStatic()
+	}
+	g.body.WriteString("}\n")
+
 	return nil
 }
 
