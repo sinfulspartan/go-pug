@@ -941,6 +941,18 @@ func EscapeAttr(s string) string {
 	return htmlEscapeAttr(s)
 }
 
+// EscapeText escapes s for safe inclusion inside HTML text content, with
+// exactly the same semantics Runtime.renderBlockText uses for a normal-
+// context (non-raw-text-element) escaped value: it escapes <, >, and bare &,
+// leaves single and double quotes untouched, and never double-escapes an
+// already-valid &entity; reference. It is exported so codegen-generated code
+// can call it directly, keeping text escaping single-sourced in
+// htmlEscapeText rather than duplicating (and risking diverging from) that
+// logic in generated code.
+func EscapeText(s string) string {
+	return htmlEscapeText(s)
+}
+
 // JoinClasses returns classes joined by a single space, dropping any empty
 // element. It is exported so codegen-generated code can reproduce
 // Runtime.renderTag's dynamic class-merge rule exactly: a shorthand class

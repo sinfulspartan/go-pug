@@ -413,6 +413,14 @@ type generator struct {
 	// `*BlockNode` reached by genNode invokes this parameter when non-empty
 	// and refuses (as an unsupported node) otherwise.
 	blockParamName string
+	// inRawTextElement mirrors Runtime.renderTag's own bracketed flag
+	// (runtime.go, set/restored around a raw-text element's children —
+	// script/style, see isRawTextElement): true only while genNode is
+	// generating the children of such a tag, so genBlockText knows whether a
+	// dot-block text's own text and #{} interpolations must be written raw
+	// (no HTML-entity escaping) instead of through the normal escaped path.
+	// Consumed only by genBlockText this slice.
+	inRawTextElement bool
 }
 
 // nextTmp returns a fresh, monotonically increasing index for naming a
@@ -867,6 +875,8 @@ func (g *generator) genNode(n Node) error {
 	case *PipeNode:
 		g.writeStatic(htmlEscapeText(node.Content))
 		return nil
+	case *BlockTextNode:
+		return g.genBlockText(node)
 	case *TextRunNode:
 		for _, child := range node.Nodes {
 			if err := g.genNode(child); err != nil {
@@ -961,16 +971,105 @@ func (g *generator) genTag(tag *TagNode) error {
 	}
 	g.writeStatic(">")
 
+	if isRawTextElement(tag.Name) {
+		g.inRawTextElement = true
+	}
+
 	mark := g.scopeMark()
 	for _, child := range tag.Children {
 		if err := g.genNode(child); err != nil {
 			g.scopeRestore(mark)
+			if isRawTextElement(tag.Name) {
+				g.inRawTextElement = false
+			}
 			return err
 		}
 	}
 	g.scopeRestore(mark)
 
+	if isRawTextElement(tag.Name) {
+		g.inRawTextElement = false
+	}
+
 	g.writeStatic("</" + tag.Name + ">")
+	return nil
+}
+
+// genBlockText emits a dot-block text node (`p.` / `script.` etc.) by
+// tokenizing block.Content, at GENERATE time, through the exact same
+// Lexer.emitTextWithInterpolations helper Runtime.renderBlockText calls at
+// RENDER time. Since block.Content is a static string, this produces
+// byte-identical tokens to whatever the interpreter would split at render
+// time — there is no render-state input to that split beyond the static
+// content itself — so each token can be mapped straight onto already-proven
+// codegen machinery instead of re-deriving the split.
+//
+// The interpreter's own per-token escaping (Runtime.renderBlockText) is
+// CONTEXT-SPECIFIC: a TokenText and a TokenInterpolation (`#{}`) are each
+// escaped through htmlEscapeText — NOT html.EscapeString, which also escapes
+// quotes and would diverge — in the normal case, but written completely raw
+// (no escaping at all) while g.inRawTextElement mirrors the interpreter
+// being inside a raw-text element (script/style). A TokenInterpolationUnescape
+// (`!{}`) is always written raw, in both contexts. A TokenText's static
+// portion is escaped (or not) at GENERATE time, exactly like genNode's own
+// TextNode/PipeNode cases already do; a TokenInterpolation/
+// TokenInterpolationUnescape's dynamic portion is escaped (or not) at RUNTIME
+// via the exported gopug.EscapeText, generated code's single-sourced twin of
+// htmlEscapeText.
+//
+// A fallible interpolation (genValueExpr's own fallible flag — a top-level
+// `/` or `%`) is refused rather than extracted: Runtime.renderBlockText
+// silently falls back to the RAW, un-evaluated expression source the moment
+// evaluateExpr errors, a fallback a generated function that aborts the whole
+// render on that same error cannot reproduce. Tag interpolation (`#[...]`) is
+// refused too — reproducing its inner sub-lex+parse+render at generate time
+// is a separate, larger claim this slice does not attempt.
+func (g *generator) genBlockText(block *BlockTextNode) error {
+	lx := NewLexer("")
+	lx.emitTextWithInterpolations(block.Content, 0)
+
+	for _, tok := range lx.tokens {
+		switch tok.Type {
+		case TokenText:
+			if g.inRawTextElement {
+				g.writeStatic(tok.Value)
+			} else {
+				g.writeStatic(htmlEscapeText(tok.Value))
+			}
+
+		case TokenInterpolation:
+			valExpr, fallible, err := g.genValueExpr(tok.Value)
+			if err != nil {
+				return fmt.Errorf("unsupported block text interpolation %q in codegen: %w", tok.Value, err)
+			}
+			if fallible {
+				return fmt.Errorf("unsupported block text interpolation %q in codegen: a fallible expression (a division or modulo operator) cannot be reproduced, since the interpreter falls back to the raw, un-evaluated expression source on an evaluation error rather than aborting the render", tok.Value)
+			}
+			if g.inRawTextElement {
+				g.writeExprWrite(valExpr)
+			} else {
+				g.needsGopug = true
+				g.writeExprWrite("gopug.EscapeText(" + valExpr + ")")
+			}
+
+		case TokenInterpolationUnescape:
+			valExpr, fallible, err := g.genValueExpr(tok.Value)
+			if err != nil {
+				return fmt.Errorf("unsupported block text interpolation %q in codegen: %w", tok.Value, err)
+			}
+			if fallible {
+				return fmt.Errorf("unsupported block text interpolation %q in codegen: a fallible expression (a division or modulo operator) cannot be reproduced, since the interpreter falls back to the raw, un-evaluated expression source on an evaluation error rather than aborting the render", tok.Value)
+			}
+			g.writeExprWrite(valExpr)
+
+		case TokenTagInterpolationStart, TokenTagInterpolationEnd:
+			return fmt.Errorf("unsupported block text tag interpolation (#[...]) in codegen")
+
+		default:
+			return fmt.Errorf("unsupported block text token type %v in codegen", tok.Type)
+		}
+	}
+
 	return nil
 }
 
