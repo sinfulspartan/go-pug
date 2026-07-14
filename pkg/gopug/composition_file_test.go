@@ -57,6 +57,7 @@ func compareComposedFileOutput(t *testing.T, basedir, childPath string, interpDa
 // interpreter. It also covers an overridden block and a dynamic block body
 // (interpolation + if/else) evaluated against a declared struct.
 func TestResolveCompositionFileSubdirSiblingLayout(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	layoutDir := filepath.Join(dir, "layout")
 	if err := os.MkdirAll(layoutDir, 0o755); err != nil {
@@ -166,6 +167,7 @@ func TestResolveCompositionFileParity(t *testing.T) {
 // worked through the string-based ResolveComposition still works
 // identically through ResolveCompositionFile.
 func TestResolveCompositionFileSlashFormRegression(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	layoutDir := filepath.Join(dir, "layout")
 	if err := os.MkdirAll(layoutDir, 0o755); err != nil {

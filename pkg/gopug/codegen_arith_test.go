@@ -120,6 +120,7 @@ func runCodegenArithDifferentialBatch(t *testing.T, cases []codegenArithCase) {
 // for a numeric field minus a literal, matching evaluateExpr's own `-`
 // branch exactly.
 func TestCodegenValueExprSubtraction(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "int field minus literal",
 		src:         "p= Count - 2\n",
@@ -133,6 +134,7 @@ func TestCodegenValueExprSubtraction(t *testing.T) {
 // fields of different Go kinds multiplied together, matching evaluateExpr's
 // own `*` branch exactly.
 func TestCodegenValueExprMultiplication(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "int field times literal",
@@ -156,6 +158,7 @@ func TestCodegenValueExprMultiplication(t *testing.T) {
 // of Add's "a"+"b" -> "ab" proof), and that this is exactly what codegen's
 // gopug.Sub/gopug.Mul calls also produce.
 func TestCodegenValueExprArithmeticNonNumeric(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "subtraction of non-numeric strings",
@@ -178,6 +181,7 @@ func TestCodegenValueExprArithmeticNonNumeric(t *testing.T) {
 // through both Sub and Mul, exactly like the interpreter's own toFloat
 // disambiguation.
 func TestCodegenValueExprArithmeticNumericStrings(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "subtraction of numeric-looking strings",
@@ -202,6 +206,7 @@ func TestCodegenValueExprArithmeticNumericStrings(t *testing.T) {
 // Render output, not a hand-computed "Go-native" expectation, since the two
 // engines' precedence choice is exactly what's under test.
 func TestCodegenValueExprArithmeticPrecedence(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Count": 10, "Age": int8(4), "BigInt": int64(2)}
 	dataLiteral := "opsData{Count: 10, Age: 4, BigInt: 2}"
 
@@ -217,6 +222,7 @@ func TestCodegenValueExprArithmeticPrecedence(t *testing.T) {
 // combined with a literal through `-` formats identically to evaluateExpr's
 // strconv.FormatFloat(..., 'f', -1, 64) call.
 func TestCodegenValueExprArithmeticFloatFormatting(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "float field minus a literal",
 		src:         "p= Price - 0.5\n",
@@ -230,6 +236,7 @@ func TestCodegenValueExprArithmeticFloatFormatting(t *testing.T) {
 // exercising the same genTemplateLiteral -> genValueExpr recursion the
 // earlier template-literal increment relies on.
 func TestCodegenValueExprArithmeticInTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "multiplication nested in a template literal",
 		src:         "p= `total ${Count * Price}`\n",

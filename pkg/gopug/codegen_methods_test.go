@@ -21,6 +21,7 @@ import (
 // every documented alias (toUppercase, toLowercase, trimStart, trimEnd,
 // String) produces output identical to its primary spelling.
 func TestCodegenMethodTrivialStringMethods(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{name: "toUpperCase", src: "p= Name.toUpperCase()\n", data: map[string]any{"Name": "Hello World"}, dataLiteral: `opsData{Name: "Hello World"}`},
 		{name: "toUppercase alias", src: "p= Name.toUppercase()\n", data: map[string]any{"Name": "Hello World"}, dataLiteral: `opsData{Name: "Hello World"}`},
@@ -41,6 +42,7 @@ func TestCodegenMethodTrivialStringMethods(t *testing.T) {
 // byte-identical generated-code output to its primary spelling, not merely
 // output that separately matches the interpreter.
 func TestCodegenMethodAliasesMatchPrimary(t *testing.T) {
+	t.Parallel()
 	pairs := []struct {
 		name      string
 		primary   string
@@ -79,6 +81,7 @@ func TestCodegenMethodAliasesMatchPrimary(t *testing.T) {
 // in the three write contexts genValueExpr feeds: `#{}` interpolation,
 // buffered code (`= expr`), and a dynamic (non-class) attribute value.
 func TestCodegenMethodContexts(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "interpolation",
@@ -107,6 +110,7 @@ func TestCodegenMethodContexts(t *testing.T) {
 // separator (`split(',')`) and a double-quoted separator (`split(",")`)
 // both match the interpreter (and therefore each other).
 func TestCodegenMethodRepeatSplitReplace(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{name: "repeat", src: "p= Name.repeat(3)\n", data: map[string]any{"Name": "ab"}, dataLiteral: `opsData{Name: "ab"}`},
 		{name: "repeat zero", src: "p= Name.repeat(0)\n", data: map[string]any{"Name": "ab"}, dataLiteral: `opsData{Name: "ab"}`},
@@ -159,6 +163,7 @@ func TestMethodReplaceAliasedQuoteStripQuirk(t *testing.T) {
 // code, agreeing with each other exactly because they are the same
 // implementation.
 func TestCodegenMethodReplaceAliasedQuoteStripQuirkThroughFields(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "aliased quote-strip via field arguments",
 		src:         "p= Name.replace(Str1, Str2)\n",
@@ -171,6 +176,7 @@ func TestCodegenMethodReplaceAliasedQuoteStripQuirkThroughFields(t *testing.T) {
 // split(",") produce IDENTICAL generated-code output to each other, not
 // merely output that separately matches the interpreter.
 func TestCodegenMethodSplitQuoteStripBothQuoteStylesAgree(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": "a,b,c"}
 	dataLiteral := `opsData{Name: "a,b,c"}`
 
@@ -249,6 +255,7 @@ func runCodegenMethodOutput(t *testing.T, src, dataLiteral string) string {
 // character stripped before use, exactly like the interpreter's own
 // evaluateExpr(argsStr) + quote-strip sequence does.
 func TestCodegenMethodQuoteStripAppliesToFieldValuesToo(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "indexOf needle field value looks quoted",
 		src:         "p= Name.indexOf(Str1)\n",
@@ -261,6 +268,7 @@ func TestCodegenMethodQuoteStripAppliesToFieldValuesToo(t *testing.T) {
 // interpreter's exact negative-index (counts back from the end) and
 // out-of-range clamp behavior for both the one- and two-argument forms.
 func TestCodegenMethodSlice(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": "abcdef"}
 	dataLiteral := `opsData{Name: "abcdef"}`
 
@@ -282,6 +290,7 @@ func TestCodegenMethodSlice(t *testing.T) {
 // index-returning helpers, each in both their true/found and false/not-found
 // forms, plus the no-argument sentinel each returns.
 func TestCodegenMethodIndexOfIncludesStartsEndsWith(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": "hello world"}
 	dataLiteral := `opsData{Name: "hello world"}`
 
@@ -307,6 +316,7 @@ func TestCodegenMethodIndexOfIncludesStartsEndsWith(t *testing.T) {
 // with an explicit pad character and relying on the default space, and the
 // no-op case when the target length is not longer than the receiver.
 func TestCodegenMethodPad(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": "ab"}
 	dataLiteral := `opsData{Name: "ab"}`
 
@@ -331,6 +341,7 @@ func TestCodegenMethodPad(t *testing.T) {
 // text before either engine ever evaluates it) must still parse to 5 and pad
 // on both paths, not silently no-op on one of them.
 func TestCodegenMethodPadLengthArgWithWhitespace(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "padStart, one-arg, whitespace-padded length field",
@@ -358,6 +369,7 @@ func TestCodegenMethodPadLengthArgWithWhitespace(t *testing.T) {
 // dot-path (`User.Name.toUpperCase()`), resolved by recursing genValueExpr
 // on the receiver text before dispatching the method.
 func TestCodegenMethodDotPathReceiver(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "nested struct field receiver",
 		src:         "p= User.Name.toUpperCase()\n",
@@ -370,6 +382,7 @@ func TestCodegenMethodDotPathReceiver(t *testing.T) {
 // (`.trim().toUpperCase()`) work, since the outermost call's receiver is
 // itself resolved by the same genMethodCall recursion.
 func TestCodegenMethodChainedCalls(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "trim then toUpperCase",
 		src:         "p= Name.trim().toUpperCase()\n",
@@ -383,6 +396,7 @@ func TestCodegenMethodChainedCalls(t *testing.T) {
 // returns the int's own decimal string form, matching
 // evaluateExpr(objExpr)'s stringify-first contract.
 func TestCodegenMethodNonStringReceiverStringified(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "int field toString",
 		src:         "p= Count.toString()\n",
@@ -395,6 +409,7 @@ func TestCodegenMethodNonStringReceiverStringified(t *testing.T) {
 // boundaries, not byte boundaries, on a receiver with multi-byte characters
 // — a plain byte slice/pad would corrupt UTF-8 or count the wrong length.
 func TestCodegenMethodMultibyte(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": "日本語ABC"}
 	dataLiteral := `opsData{Name: "日本語ABC"}`
 

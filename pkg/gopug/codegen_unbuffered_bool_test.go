@@ -12,6 +12,7 @@ import (
 // condition (`if`) and a buffered stringify (`#{}`-equivalent `= x`)
 // position, byte-identical to the interpreter for every branch.
 func TestCodegenUnbufferedAssignBoolComparison(t *testing.T) {
+	t.Parallel()
 	src := "- var filterAll = Name === \"all\"\n" +
 		"if filterAll\n  p yes\nelse\n  p no\n" +
 		"p=filterAll\n"
@@ -38,6 +39,7 @@ func TestCodegenUnbufferedAssignBoolComparison(t *testing.T) {
 // bool field and whose RIGHT operand is a comparison — both provably bool —
 // exercised across all four truth combinations.
 func TestCodegenUnbufferedAssignBoolBothOperandsOr(t *testing.T) {
+	t.Parallel()
 	src := "- var navToggleActive = Flag || Name === \"dashboard\"\n" +
 		"if navToggleActive\n  p yes\nelse\n  p no\n" +
 		"p=navToggleActive\n"
@@ -74,6 +76,7 @@ func quoteBoolOpsData(flag bool, name string) string {
 // TestCodegenUnbufferedAssignBoolNegation proves a unary "!" over a bool
 // field reads back correctly, for both operand values.
 func TestCodegenUnbufferedAssignBoolNegation(t *testing.T) {
+	t.Parallel()
 	src := "- var notFlag = !Flag\n" +
 		"if notFlag\n  p yes\nelse\n  p no\n" +
 		"p=notFlag\n"
@@ -89,6 +92,7 @@ func TestCodegenUnbufferedAssignBoolNegation(t *testing.T) {
 // comparison operators genCondition compiles reads back correctly as a
 // bool-valued `- var` local, both branches.
 func TestCodegenUnbufferedAssignBoolComparisonOps(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		op      string
@@ -130,6 +134,7 @@ func TestCodegenUnbufferedAssignBoolComparisonOps(t *testing.T) {
 // TestCodegenUnbufferedAssignBoolFieldBare proves a bare bool-typed field
 // RHS (no operator at all) reads back correctly.
 func TestCodegenUnbufferedAssignBoolFieldBare(t *testing.T) {
+	t.Parallel()
 	src := "- var isFlag = Flag\n" +
 		"if isFlag\n  p yes\nelse\n  p no\n" +
 		"p=isFlag\n"
@@ -146,6 +151,7 @@ func TestCodegenUnbufferedAssignBoolFieldBare(t *testing.T) {
 // operands provably bool since both are bool-typed locals), across all four
 // truth combinations.
 func TestCodegenUnbufferedAssignBoolLocalReferencedByLaterLocal(t *testing.T) {
+	t.Parallel()
 	src := "- var a = Flag\n" +
 		"- var c = FlagB\n" +
 		"- var b = a && c\n" +
@@ -187,6 +193,7 @@ func TestCodegenUnbufferedAssignBoolLocalReferencedByLaterLocal(t *testing.T) {
 // canonicalized "true"/"false") byte-for-byte, in both a stringify AND a
 // condition-truthiness use.
 func TestCodegenUnbufferedAssignBoolBoundaryNonBoolOrStaysString(t *testing.T) {
+	t.Parallel()
 	src := "- var label = Name || \"anon\"\n" +
 		"if label\n  p yes\nelse\n  p no\n" +
 		"p=label\n"
@@ -267,6 +274,7 @@ func TestCodegenUnbufferedNumericBoolRHSDeferred(t *testing.T) {
 // codegen_array_indexof_test.go for the full differential coverage of this
 // shape (both real corpus arrays, `.includes`, `=== -1`, and every deferral).
 func TestCodegenUnbufferedArrayIndexOfBoolRHSSupported(t *testing.T) {
+	t.Parallel()
 	src := "- var x = [\"a\", \"b\"].indexOf(Name) !== -1\nif x\n  p yes\nelse\n  p no\np=x\n"
 	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
 		{
@@ -397,6 +405,7 @@ func TestUnbufferedAssignBoolRawInvariantFaultInjection(t *testing.T) {
 // exercising the generated code's output, not merely checking it built and
 // ran.
 func TestCodegenUnbufferedAssignBoolFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "- var isFlag = Flag\np=isFlag\n"
 
 	ast, err := Parse(src, nil)

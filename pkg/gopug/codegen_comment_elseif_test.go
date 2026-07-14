@@ -9,6 +9,7 @@ import (
 // through genNode's *CommentNode case as the same "<!-- " + Content + " -->"
 // static text renderComment writes, matching the interpreter byte for byte.
 func TestCodegenCommentBuffered(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "plain buffered comment",
 		src:         "// hello world\n",
@@ -20,6 +21,7 @@ func TestCodegenCommentBuffered(t *testing.T) {
 // TestCodegenCommentUnbuffered proves an unbuffered (`//-`) comment produces
 // no output at all in codegen, matching renderComment's no-op branch.
 func TestCodegenCommentUnbuffered(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "unbuffered comment produces no output",
 		src:         "//- secret\n",
@@ -35,6 +37,7 @@ func TestCodegenCommentUnbuffered(t *testing.T) {
 // codegen path routed Content through htmlEscapeText instead of the static
 // text path.
 func TestCodegenCommentUnescapedContent(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "buffered comment content with HTML-special characters stays raw",
 		src:         `// <b>&"quoted"` + "\n",
@@ -47,6 +50,7 @@ func TestCodegenCommentUnescapedContent(t *testing.T) {
 // and surrounding whitespace match the interpreter's when it sits between
 // two tags.
 func TestCodegenCommentInterleavedWithTags(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "comment interleaved with tags",
 		src:         "p Before\n// note\np After\n",
@@ -59,6 +63,7 @@ func TestCodegenCommentInterleavedWithTags(t *testing.T) {
 // parser joins the indented body lines with "\n" into a single Content
 // string, round-trips through the static-text path unchanged.
 func TestCodegenCommentBlock(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "block buffered comment",
 		src:         "//\n  first line\n  second line\np after\n",
@@ -70,6 +75,7 @@ func TestCodegenCommentBlock(t *testing.T) {
 // TestCodegenCommentUnbufferedBlock proves a multi-line unbuffered comment
 // also produces no output, matching the plain unbuffered case.
 func TestCodegenCommentUnbufferedBlock(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "block unbuffered comment produces no output",
 		src:         "//-\n  first line\n  second line\np after\n",
@@ -84,6 +90,7 @@ func TestCodegenCommentUnbufferedBlock(t *testing.T) {
 // branch wins regardless of b), a false/b true (second branch), and both
 // false (the trailing else).
 func TestCodegenElseIfBranchSelection(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		a, b bool
@@ -111,6 +118,7 @@ func TestCodegenElseIfBranchSelection(t *testing.T) {
 // `else` (falling through to nothing when every condition is false) matches
 // the interpreter, both when a branch is taken and when none is.
 func TestCodegenElseIfNoTrailingElse(t *testing.T) {
+	t.Parallel()
 	src := "if Flag\n  p a\nelse if FlagB\n  p b\n"
 
 	cases := []struct {
@@ -137,6 +145,7 @@ func TestCodegenElseIfNoTrailingElse(t *testing.T) {
 // (if/else-if/else-if/else) resolves each of its four possible branches
 // identically to the interpreter.
 func TestCodegenElseIfThreeDeep(t *testing.T) {
+	t.Parallel()
 	src := "if Flag\n  p a\nelse if FlagB\n  p b\nelse if FlagC\n  p c\nelse\n  p d\n"
 
 	cases := []struct {
@@ -164,6 +173,7 @@ func TestCodegenElseIfThreeDeep(t *testing.T) {
 // comparison operator (Count > 3) resolves through genCondition the same way
 // a top-level if condition does.
 func TestCodegenElseIfConditionOperator(t *testing.T) {
+	t.Parallel()
 	src := "if Flag\n  p a\nelse if Count > 3\n  p b\nelse\n  p c\n"
 
 	cases := []struct {
@@ -191,6 +201,7 @@ func TestCodegenElseIfConditionOperator(t *testing.T) {
 // `&&`/`||` combinator resolves through genCondition's own combinator
 // restructure the same way a top-level if condition does.
 func TestCodegenElseIfConditionCombinator(t *testing.T) {
+	t.Parallel()
 	src := "if Flag\n  p a\nelse if FlagB && FlagC\n  p b\nelse\n  p c\n"
 
 	cases := []struct {
@@ -219,6 +230,7 @@ func TestCodegenElseIfConditionCombinator(t *testing.T) {
 // exercising genNode's recursion through both the else-if restructure and an
 // ordinary nested conditional in the same template.
 func TestCodegenElseIfNested(t *testing.T) {
+	t.Parallel()
 	src := "if Flag\n  p a\nelse if FlagB\n  div\n    if FlagC\n      p nested-yes\n    else\n      p nested-no\nelse\n  p c\n"
 
 	cases := []struct {
@@ -246,6 +258,7 @@ func TestCodegenElseIfNested(t *testing.T) {
 // still generates and renders byte-identically to the interpreter, guarding
 // against a regression from removing genConditional's else-if rejection.
 func TestCodegenPlainIfRegression(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "plain if, true",

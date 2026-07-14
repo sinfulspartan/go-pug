@@ -9,6 +9,7 @@ import (
 // (a string and an int) into the surrounding literal text, matching the
 // interpreter's own template-literal walk.
 func TestCodegenTemplateLiteralValueContext(t *testing.T) {
+	t.Parallel()
 	src := "p= `Hello ${Name}, item ${Count}`\n"
 
 	ast, err := Parse(src, nil)
@@ -47,6 +48,7 @@ func TestCodegenTemplateLiteralValueContext(t *testing.T) {
 // scanBalancedBraces must also get right to hand genValueExpr the raw
 // backtick text intact.
 func TestCodegenTemplateLiteralInterpolationPosition(t *testing.T) {
+	t.Parallel()
 	src := "p #{`x=${Count + 1}`}\n"
 
 	ast, err := Parse(src, nil)
@@ -84,6 +86,7 @@ func TestCodegenTemplateLiteralInterpolationPosition(t *testing.T) {
 // literal early, matching Runtime.evaluateExpr's own escape handling
 // exactly.
 func TestCodegenTemplateLiteralBacktickEscape(t *testing.T) {
+	t.Parallel()
 	src := "p= `It\\`s ${Name}`\n"
 
 	ast, err := Parse(src, nil)
@@ -122,6 +125,7 @@ func TestCodegenTemplateLiteralBacktickEscape(t *testing.T) {
 // backtick immediately followed by a closing backtick, with no content)
 // evaluates to the empty string in both value and attribute position.
 func TestCodegenTemplateLiteralEmpty(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{name: "value context", src: "p= ``\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 		{name: "attribute value", src: "a(href=``) Link\n", data: map[string]any{}, dataLiteral: "opsData{}"},
@@ -134,6 +138,7 @@ func TestCodegenTemplateLiteralEmpty(t *testing.T) {
 // resolveFieldExpr lookup, so a `+` concatenation of a string literal and a
 // string field works as an attribute value.
 func TestCodegenAttrValueExprConcat(t *testing.T) {
+	t.Parallel()
 	src := `a(href="/x/" + Slug) Link` + "\n"
 
 	ast, err := Parse(src, nil)
@@ -170,6 +175,7 @@ func TestCodegenAttrValueExprConcat(t *testing.T) {
 // dot-path rooted at an each-loop variable resolving into a nested struct's
 // int field — the diagnostic's headline attr-template-literal gap.
 func TestCodegenAttrTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	sharedDataLiteral := "opsData{Count: 7, Firms: []opsFirm{{ID: 7}, {ID: 42}}}"
 	cases := []codegenArithCase{
 		{
@@ -199,6 +205,7 @@ func TestCodegenAttrTemplateLiteral(t *testing.T) {
 // EscapeAttr the same way (once, to evaluateExpr's already-concatenated
 // return value).
 func TestCodegenAttrTemplateLiteralEntitySafety(t *testing.T) {
+	t.Parallel()
 	src := "a(href=`/x/${Name}`) Link\n"
 
 	ast, err := Parse(src, nil)
@@ -235,6 +242,7 @@ func TestCodegenAttrTemplateLiteralEntitySafety(t *testing.T) {
 // resolved a bare field) now renders correctly, since it too is built by
 // genValueExpr.
 func TestCodegenAttrValueExprOperator(t *testing.T) {
+	t.Parallel()
 	src := "div(title=Count + 1) Widget\n"
 
 	ast, err := Parse(src, nil)

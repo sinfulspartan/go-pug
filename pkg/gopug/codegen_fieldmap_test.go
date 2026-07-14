@@ -137,6 +137,7 @@ func TestCodegenFieldMapEmitsResolvedGoFieldNames(t *testing.T) {
 // field would be unreachable from a generated render package built
 // separately from the data-model package).
 func TestCodegenFieldMapDifferentialMatchesInterpreter(t *testing.T) {
+	t.Parallel()
 	src := "p= taskPreview.AdjusterName\np= firm_id\np= id\n"
 
 	ast, err := Parse(src, nil)

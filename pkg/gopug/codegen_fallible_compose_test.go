@@ -15,6 +15,7 @@ import "testing"
 // depth, producing the same successful output as the interpreter when no
 // divisor is zero.
 func TestCodegenFallibleComposeArithmeticSuccess(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "fallible left operand of +",
@@ -58,6 +59,7 @@ func TestCodegenFallibleComposeArithmeticSuccess(t *testing.T) {
 // `${}` part inside a template literal composes and produces the same
 // concatenated output as the interpreter when the division succeeds.
 func TestCodegenFallibleComposeTemplateLiteralSuccess(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "template literal with a fallible ${} part that succeeds",
 		src:         "p= `r=${Count / B}`\n",
@@ -71,6 +73,7 @@ func TestCodegenFallibleComposeTemplateLiteralSuccess(t *testing.T) {
 // composition (up-front extraction, Pattern 1) with the identical error
 // message the interpreter itself returns.
 func TestCodegenFallibleComposeErrorParity(t *testing.T) {
+	t.Parallel()
 	cases := []codegenFallibleErrorCase{
 		{
 			name:        "fallible left operand of + errors",
@@ -109,6 +112,7 @@ func TestCodegenFallibleComposeErrorParity(t *testing.T) {
 // left, the observed error would say "modulo by zero" instead of "division
 // by zero" — asserting the exact interpreter message pins the order.
 func TestCodegenFallibleComposeLeftBeforeRightErrorOrder(t *testing.T) {
+	t.Parallel()
 	cases := []codegenFallibleErrorCase{
 		{
 			name:        "both operands are zero divisors; left's error wins",
@@ -139,6 +143,7 @@ func TestCodegenFallibleComposeLeftBeforeRightErrorOrder(t *testing.T) {
 // the interpreter (not assumed), and codegen's genFallibleTemplatePart
 // reproduces it exactly.
 func TestCodegenFallibleComposeTemplateLiteralSwallowsError(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "template literal with a fallible ${} part that errors renders that segment empty, with no overall error",
 		src:         "p= `r=${Count / Zero}`\n",
@@ -154,6 +159,7 @@ func TestCodegenFallibleComposeTemplateLiteralSwallowsError(t *testing.T) {
 // "1" — verified directly against Compile().Render before being encoded as
 // this test's expectation.
 func TestCodegenFallibleComposeNonNumeric(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "non-numeric division composed with + still succeeds with no error",
 		src:         "p= Str1 / Str2 + 1\n",
@@ -169,6 +175,7 @@ func TestCodegenFallibleComposeNonNumeric(t *testing.T) {
 // evaluateExpr on the taken branch, and genTernaryValueExpr's IIFE puts each
 // branch's extraction inside that branch's own if/else arm to match.
 func TestCodegenFallibleComposeTernaryShortCircuit(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "false condition: untaken true branch divides by zero, never evaluated",
@@ -231,6 +238,7 @@ func TestCodegenFallibleComposeTernaryShortCircuit(t *testing.T) {
 // divisor is zero, both engines error identically — the taken branch is
 // still evaluated eagerly, only the untaken one is skipped.
 func TestCodegenFallibleComposeTernaryEagerTakenBranchErrors(t *testing.T) {
+	t.Parallel()
 	cases := []codegenFallibleErrorCase{
 		{
 			name:        "true condition selects the fallible branch, which errors",

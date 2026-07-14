@@ -39,6 +39,7 @@ func genSpreadIntKeyErr(t *testing.T, src string) error {
 // a string value spreads through byte-identically to a map[string]string
 // spread of the same value (probe 1).
 func TestCodegenSpreadAttrsAnyString(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"title": "hello"}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"title": "hello"}}`
@@ -49,6 +50,7 @@ func TestCodegenSpreadAttrsAnyString(t *testing.T) {
 // fmt.Sprintf("%v", v) identically on both backends (probe 2): %v(5) ==
 // "5".
 func TestCodegenSpreadAttrsAnyInt(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"count": 5}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"count": 5}}`
@@ -63,6 +65,7 @@ func TestCodegenSpreadAttrsAnyInt(t *testing.T) {
 // stringifies with Go's default %v float format (probe 3a): %v(1.5) ==
 // "1.5".
 func TestCodegenSpreadAttrsAnyFloatFractional(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"ratio": 1.5}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"ratio": 1.5}}`
@@ -77,6 +80,7 @@ func TestCodegenSpreadAttrsAnyFloatFractional(t *testing.T) {
 // drops its trailing ".0" under Go's default %v float format (probe 3b):
 // %v(1.0) == "1", not "1.0".
 func TestCodegenSpreadAttrsAnyFloatWhole(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"ratio": 1.0}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"ratio": 1.0}}`
@@ -92,6 +96,7 @@ func TestCodegenSpreadAttrsAnyFloatWhole(t *testing.T) {
 // map[string]string spread's string "true" hits, because both backends
 // compare against fmt.Sprintf("%v", true) == "true" (probe 4a).
 func TestCodegenSpreadAttrsAnyBoolTrue(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"disabled": true}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"disabled": true}}`
@@ -106,6 +111,7 @@ func TestCodegenSpreadAttrsAnyBoolTrue(t *testing.T) {
 // string "false") DELETES the attribute entirely, even when the tag's own
 // base attribute of that name was itself a bare boolean (probe 4b).
 func TestCodegenSpreadAttrsAnyBoolFalse(t *testing.T) {
+	t.Parallel()
 	src := "div(hidden)&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"hidden": false}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"hidden": false}}`
@@ -121,6 +127,7 @@ func TestCodegenSpreadAttrsAnyBoolFalse(t *testing.T) {
 // is then HTML-escaped like any other attribute value (probe 5: "<nil>"
 // contains angle brackets, so this also exercises escaping).
 func TestCodegenSpreadAttrsAnyNil(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"data-x": nil}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"data-x": nil}}`
@@ -134,6 +141,7 @@ func TestCodegenSpreadAttrsAnyNil(t *testing.T) {
 // TestCodegenSpreadAttrsAnyDataAttrInt proves a data-* attribute name with an
 // int value renders identically to any other non-"class" name (probe 6).
 func TestCodegenSpreadAttrsAnyDataAttrInt(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"data-count": 42}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"data-count": 42}}`
@@ -148,6 +156,7 @@ func TestCodegenSpreadAttrsAnyDataAttrInt(t *testing.T) {
 // "class" value in a map[string]any spread merges with a base class exactly
 // like the map[string]string path (probe 7a).
 func TestCodegenSpreadAttrsAnyClassMergeString(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"class": "extra"}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"class": "extra"}}`
@@ -160,6 +169,7 @@ func TestCodegenSpreadAttrsAnyClassMergeString(t *testing.T) {
 // merge ever sees it, so there is no special-casing needed for a
 // non-string class value (probe 7b).
 func TestCodegenSpreadAttrsAnyClassMergeNonString(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(AttrsAny)\n"
 	data := map[string]any{"AttrsAny": map[string]any{"class": 5}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"class": 5}}`
@@ -173,6 +183,7 @@ func TestCodegenSpreadAttrsAnyClassMergeNonString(t *testing.T) {
 // TestCodegenSpreadAttrsAnyEmptyMap proves an empty map[string]any spread
 // renders only the tag's own base attributes, no error (probe 8).
 func TestCodegenSpreadAttrsAnyEmptyMap(t *testing.T) {
+	t.Parallel()
 	src := `div(id="x")&attributes(AttrsAny)` + "\n"
 	data := map[string]any{"AttrsAny": map[string]any{}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{}}`
@@ -185,6 +196,7 @@ func TestCodegenSpreadAttrsAnyEmptyMap(t *testing.T) {
 // merged, already-%v-stringified result exactly like the map[string]string
 // path (probe 9).
 func TestCodegenSpreadAttrsAnySortOrder(t *testing.T) {
+	t.Parallel()
 	src := `div(z2="base")&attributes(AttrsAny)` + "\n"
 	data := map[string]any{"AttrsAny": map[string]any{"id": "i", "class": "c", "z": 9, "a": "a"}}
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"id": "i", "class": "c", "z": 9, "a": "a"}}`
@@ -255,6 +267,7 @@ func TestCodegenSpreadAttrsAnyDeferrals(t *testing.T) {
 // itself is non-vacuous for the map[string]any entry point: a deliberately
 // WRONG expected value must fail the comparison.
 func TestCodegenSpreadAttrsAnyFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(AttrsAny)\n"
 	dataLiteral := `spreadAttrsData{AttrsAny: map[string]any{"class": "extra"}}`
 
@@ -287,6 +300,7 @@ func TestCodegenSpreadAttrsAnyFaultInjection(t *testing.T) {
 // the full original suite lives in codegen_spread_attrs_test.go and is run
 // unchanged alongside this file.
 func TestCodegenSpreadAttrsAnyMapStringStringSuiteUnperturbed(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		src := "div&attributes(Attrs)\n"
 		data := map[string]any{"Attrs": map[string]string{"data-x": "1", "role": "btn"}}

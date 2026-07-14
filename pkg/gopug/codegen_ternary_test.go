@@ -88,6 +88,7 @@ func runCodegenTernaryDifferentialBatch(t *testing.T, cases []codegenTernaryCase
 // interpreter's isTruthy(evaluateExpr(cond)) does for both a true and a
 // false condition value.
 func TestCodegenTernaryBoolCondition(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "true condition, buffered code",
@@ -123,6 +124,7 @@ func TestCodegenTernaryBoolCondition(t *testing.T) {
 // unchanged by the ternary's IIFE — picks the correct branch for both a
 // positive and a non-positive value.
 func TestCodegenTernaryComparisonCondition(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "positive count",
@@ -147,6 +149,7 @@ func TestCodegenTernaryComparisonCondition(t *testing.T) {
 // true branch's genValueExpr — an empty string is falsy (isTruthy's empty-
 // string case) and a non-empty one is truthy.
 func TestCodegenTernaryStringFieldCondition(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "empty string is falsy",
@@ -169,6 +172,7 @@ func TestCodegenTernaryStringFieldCondition(t *testing.T) {
 // (genCondition's logical-combinator support) composes correctly as a
 // ternary's condition.
 func TestCodegenTernaryLogicalCondition(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "both true",
@@ -191,6 +195,7 @@ func TestCodegenTernaryLogicalCondition(t *testing.T) {
 // itself a full genValueExpr expression — here, `+`/`-` arithmetic on the
 // same field the condition inspects.
 func TestCodegenTernaryArithmeticBranches(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "true branch arithmetic",
@@ -213,6 +218,7 @@ func TestCodegenTernaryArithmeticBranches(t *testing.T) {
 // ternary's true branch recurses correctly through genValueExpr — the outer
 // IIFE's true-branch return is itself an inner IIFE call expression.
 func TestCodegenTernaryNestedBranch(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "outer true, inner true",
@@ -242,6 +248,7 @@ func TestCodegenTernaryNestedBranch(t *testing.T) {
 // IIFE call expression becomes one of the template literal's concatenated
 // segments.
 func TestCodegenTernaryCompositionTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "true condition",
@@ -265,6 +272,7 @@ func TestCodegenTernaryCompositionTemplateLiteral(t *testing.T) {
 // html.EscapeString, exactly as any other genValueExpr result reaching
 // genInterpolation is.
 func TestCodegenTernaryCompositionInterpolation(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "true condition",
@@ -289,6 +297,7 @@ func TestCodegenTernaryCompositionInterpolation(t *testing.T) {
 // any other genValueExpr result reaching genAttributes, so the "<"/">"/"&"
 // in the branch text end up entity-escaped in the rendered attribute.
 func TestCodegenTernaryCompositionAttrHTMLSpecialChar(t *testing.T) {
+	t.Parallel()
 	src := "a(title=Flag ? \"<a> & b\" : \"plain\")\n"
 
 	ast, err := Parse(src, nil)
@@ -330,6 +339,7 @@ func TestCodegenTernaryCompositionAttrHTMLSpecialChar(t *testing.T) {
 // so a ternary written with no surrounding spaces at all must render
 // byte-identically to the same ternary with conventional spacing.
 func TestCodegenTernaryWhitespace(t *testing.T) {
+	t.Parallel()
 	cases := []codegenTernaryCase{
 		{
 			name:        "spaces around ? and :",

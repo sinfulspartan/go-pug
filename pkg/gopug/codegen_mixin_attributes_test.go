@@ -12,6 +12,7 @@ import (
 // Runtime.renderTag's own sortAttrNames produces: "class" before any other
 // name, then alphabetically).
 func TestCodegenMixinAttrForwardBasic(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/x\")(class=\"active\", target=\"_blank\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -20,6 +21,7 @@ func TestCodegenMixinAttrForwardBasic(t *testing.T) {
 // shorthand class token) is space-appended to, never overwritten by, a
 // spread "class" — matching Runtime.renderTag's class-specific merge branch.
 func TestCodegenMixinAttrForwardClassMerge(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  button.base&attributes(attributes)\n+box()(class=\"b\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -28,6 +30,7 @@ func TestCodegenMixinAttrForwardClassMerge(t *testing.T) {
 // (`+foo()(disabled)`) becomes a bare boolean attribute on the forwarding
 // tag, exactly like a bare attribute written directly on a tag.
 func TestCodegenMixinAttrForwardBoolTrue(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  input&attributes(attributes)\n+box()(disabled)\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -41,6 +44,7 @@ func TestCodegenMixinAttrForwardBoolTrue(t *testing.T) {
 // call-attribute classification (staticCallAttrValue) reproduces that
 // collapse exactly.
 func TestCodegenMixinAttrForwardBoolTrueQuoted(t *testing.T) {
+	t.Parallel()
 	srcQuoted := "mixin box()\n  input&attributes(attributes)\n+box()(disabled=\"true\")\n"
 	runMixinDifferential(t, srcQuoted, map[string]any{}, "mixinDataStruct{}")
 
@@ -53,6 +57,7 @@ func TestCodegenMixinAttrForwardBoolTrueQuoted(t *testing.T) {
 // tag entirely, even when the tag's own base attribute of that name was a
 // bare boolean.
 func TestCodegenMixinAttrForwardBoolFalse(t *testing.T) {
+	t.Parallel()
 	srcQuoted := "mixin box()\n  input(hidden)&attributes(attributes)\n+box()(hidden=\"false\")\n"
 	runMixinDifferential(t, srcQuoted, map[string]any{}, "mixinDataStruct{}")
 
@@ -65,6 +70,7 @@ func TestCodegenMixinAttrForwardBoolFalse(t *testing.T) {
 // that base attribute was itself static or a dynamic reference to the
 // mixin's own parameter.
 func TestCodegenMixinAttrForwardOverwriteBase(t *testing.T) {
+	t.Parallel()
 	srcStaticBase := "mixin box()\n  a(href=\"/base\")&attributes(attributes)\n+box()(href=\"/new\")\n"
 	runMixinDifferential(t, srcStaticBase, map[string]any{}, "mixinDataStruct{}")
 
@@ -77,6 +83,7 @@ func TestCodegenMixinAttrForwardOverwriteBase(t *testing.T) {
 // (`&`, `<`, `>`) is escaped identically to any other static attribute
 // value, through EscapeAttr/htmlEscapeAttr.
 func TestCodegenMixinAttrForwardEscaping(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  a&attributes(attributes)\n+box()(title=\"a & b <c>\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -84,6 +91,7 @@ func TestCodegenMixinAttrForwardEscaping(t *testing.T) {
 // TestCodegenMixinAttrForwardEmpty proves a call with no attributes group at
 // all renders the tag with only its own base attributes, no error.
 func TestCodegenMixinAttrForwardEmpty(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  a(href=\"/x\")&attributes(attributes)\n+box()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -94,6 +102,7 @@ func TestCodegenMixinAttrForwardEmpty(t *testing.T) {
 // per-call-site generation: no shared runtime state, and no accidental
 // generate-time state reuse either).
 func TestCodegenMixinAttrForwardTwoCallSites(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  div.base&attributes(attributes)\n+box()(class=\"a\", id=\"one\")\n+box()(class=\"b\", target=\"_blank\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -103,6 +112,7 @@ func TestCodegenMixinAttrForwardTwoCallSites(t *testing.T) {
 // spread class and a spread "other" attribute, so the resulting merged
 // attribute set spans all three sortAttrNames buckets from both sources.
 func TestCodegenMixinAttrForwardSortOrder(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  div(id=\"base\", z=\"1\")&attributes(attributes)\n+box()(class=\"c\", a=\"z\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 
@@ -219,6 +229,7 @@ func TestCodegenMixinAttrForwardNonMixinAttributesStillDefers(t *testing.T) {
 // itself is non-vacuous for this feature: a deliberately WRONG expected
 // value must fail the comparison.
 func TestCodegenMixinAttrForwardFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  button.base&attributes(attributes)\n+box()(class=\"b\")\n"
 
 	ast, err := Parse(src, nil)

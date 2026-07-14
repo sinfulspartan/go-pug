@@ -16,6 +16,7 @@ import "testing"
 // `= expr`, a `#{}` interpolation, and a dynamic attribute value (which
 // routes through genValueExpr exactly like interpolation does).
 func TestCodegenLogicalValueOrDefaultIdiom(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "buffered code, left falsy: returns the right value",
@@ -66,6 +67,7 @@ func TestCodegenLogicalValueOrDefaultIdiom(t *testing.T) {
 // when left is falsy, and the right operand's value, unchanged, when left is
 // truthy.
 func TestCodegenLogicalValueAndValue(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "left falsy (empty string): literal \"false\", not \"\"",
@@ -103,6 +105,7 @@ func TestCodegenLogicalValueAndValue(t *testing.T) {
 // strings "true"/"false" from gopug.Not(genValueExpr(inner)) — for both a
 // falsy/truthy string field and a bool field's own stringify.
 func TestCodegenLogicalValueNot(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "! of a falsy string field",
@@ -142,6 +145,7 @@ func TestCodegenLogicalValueNot(t *testing.T) {
 // the same "true"/"false" string the interpreter's own value-context
 // compareValues-based comparison does.
 func TestCodegenLogicalValueComparison(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "numeric comparison, true",
@@ -192,6 +196,7 @@ func TestCodegenLogicalValueComparison(t *testing.T) {
 // be evaluated (and so never error) when the left operand is already truthy
 // — matching Runtime.evaluateExpr's own short-circuit `||` branch exactly.
 func TestCodegenLogicalValueOrShortCircuitFallible(t *testing.T) {
+	t.Parallel()
 	t.Run("truthy left: right is never evaluated, no error", func(t *testing.T) {
 		runCodegenArithDifferential(t, codegenArithCase{
 			name:        "truthy left short-circuits a division by zero on the right",
@@ -215,6 +220,7 @@ func TestCodegenLogicalValueOrShortCircuitFallible(t *testing.T) {
 // (and never error) when the left operand is already falsy, since `&&`
 // returns the literal "false" without evaluating right at all in that case.
 func TestCodegenLogicalValueAndShortCircuitFallible(t *testing.T) {
+	t.Parallel()
 	t.Run("falsy left: right is never evaluated, no error, returns literal false", func(t *testing.T) {
 		runCodegenArithDifferential(t, codegenArithCase{
 			name:        "falsy left short-circuits a division by zero on the right",
@@ -238,6 +244,7 @@ func TestCodegenLogicalValueAndShortCircuitFallible(t *testing.T) {
 // operand is conditional), so its error propagates regardless of what the
 // right operand is.
 func TestCodegenLogicalValueOrFallibleLeftErrors(t *testing.T) {
+	t.Parallel()
 	runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
 		name:        "fallible left operand of || errors before the right is ever considered",
 		src:         "p= Count / Zero || \"x\"\n",
@@ -252,6 +259,7 @@ func TestCodegenLogicalValueOrFallibleLeftErrors(t *testing.T) {
 // interpreter's own Render output, not a hand-computed "expected" value,
 // since the two engines' precedence choice is exactly what's under test.
 func TestCodegenLogicalValueNesting(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "left-associative || chain, first operand truthy",
@@ -316,6 +324,7 @@ func TestCodegenLogicalValueNesting(t *testing.T) {
 // a fallible logical part's division-by-zero error is discarded, rendering
 // that segment empty rather than aborting the whole render.
 func TestCodegenLogicalValueInTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "logical value expression as a template-literal ${} part",
@@ -348,6 +357,7 @@ func TestCodegenLogicalValueInTemplateLiteral(t *testing.T) {
 // Go's own zero-value notion of falsy: the string "0" is falsy, so
 // `"0" || "y"` evaluates the right operand and returns "y".
 func TestCodegenLogicalValueTruthySet(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        `"0" is falsy under gopug.Truthy, so "0" || "y" returns "y"`,
 		src:         "p= \"0\" || \"y\"\n",

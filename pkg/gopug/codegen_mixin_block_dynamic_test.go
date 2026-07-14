@@ -12,6 +12,7 @@ import (
 // shared with the block-content closure through the same __margN local the
 // helper call itself uses).
 func TestCodegenMixinBlockDynamicParamRefLiteralAndDataArg(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label)\n  .x\n    block\n+w(\"Hello\")\n  p= label\n+w(Title)\n  p= label\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "World"}, `mixinDataStruct{Title: "World"}`)
 }
@@ -21,6 +22,7 @@ func TestCodegenMixinBlockDynamicParamRefLiteralAndDataArg(t *testing.T) {
 // argument for resolves to the empty string, exactly like the missing-arg
 // default the mixin body itself already gets.
 func TestCodegenMixinBlockDynamicMissingParamIsEmptyString(t *testing.T) {
+	t.Parallel()
 	src := "mixin g(a, b)\n  block\n+g(\"x\")\n  p= b\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -30,6 +32,7 @@ func TestCodegenMixinBlockDynamicMissingParamIsEmptyString(t *testing.T) {
 // context already supported for a mixin's own body: a dynamic attribute
 // value, a buffered `= expr`, and a backtick template literal.
 func TestCodegenMixinBlockDynamicParamInAttrAndTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label)\n  block\n+w(\"L\")\n  span(data-x=label)= label\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 
@@ -41,6 +44,7 @@ func TestCodegenMixinBlockDynamicParamInAttrAndTemplateLiteral(t *testing.T) {
 // used as an `if` condition in block content is byte-identical over both a
 // truthy and a falsy (missing/empty) argument value.
 func TestCodegenMixinBlockDynamicParamInIfCondition(t *testing.T) {
+	t.Parallel()
 	falsySrc := "mixin w(label)\n  block\n+w(\"\")\n  if label\n    p yes\n  else\n    p no\n"
 	runMixinDifferential(t, falsySrc, map[string]any{}, "mixinDataStruct{}")
 
@@ -56,6 +60,7 @@ func TestCodegenMixinBlockDynamicParamInIfCondition(t *testing.T) {
 // that exactly (using the __margN local, never falling back to any caller
 // scope entry for the same name).
 func TestCodegenMixinBlockDynamicShadowsCallerLocal(t *testing.T) {
+	t.Parallel()
 	src := "- var label = \"caller\"\nmixin w(label)\n  block\n+w(\"mix\")\n  p= label\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -65,6 +70,7 @@ func TestCodegenMixinBlockDynamicShadowsCallerLocal(t *testing.T) {
 // the parameter, produces two independently-closed closures — each closing
 // over its own call's __margN value, not a single shared one.
 func TestCodegenMixinBlockDynamicTwoCallSitesDifferentArgs(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label)\n  block\n+w(\"First\")\n  p= label\n+w(\"Second\")\n  p= label\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -74,6 +80,7 @@ func TestCodegenMixinBlockDynamicTwoCallSitesDifferentArgs(t *testing.T) {
 // each occurrence resolving the parameter independently (not, say, caching
 // the first occurrence's resolved value for the second).
 func TestCodegenMixinBlockDynamicMultipleSlotsEachResolveParam(t *testing.T) {
+	t.Parallel()
 	src := "mixin twice(label)\n  block\n  block\n+twice(\"X\")\n  p= label\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -83,6 +90,7 @@ func TestCodegenMixinBlockDynamicMultipleSlotsEachResolveParam(t *testing.T) {
 // content with no identifier reference at all, passed to a mixin that DOES
 // declare parameters, still renders as pure static markup.
 func TestCodegenMixinBlockDynamicStaticContentStillWorks(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label)\n  block\n+w(\"L\")\n  p Hello\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -92,6 +100,7 @@ func TestCodegenMixinBlockDynamicStaticContentStillWorks(t *testing.T) {
 // parameter is used only in its own body, never in block content (which is
 // silently discarded, as before).
 func TestCodegenMixinBlockDynamicSlotlessMixinUnaffected(t *testing.T) {
+	t.Parallel()
 	src := "mixin simple(label)\n  p= label\n+simple(\"Hi\")\n  p this should not appear\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -310,6 +319,7 @@ func TestCodegenMixinBlockDynamicDeferralsAreDistinct(t *testing.T) {
 // WRONG expected value must fail the comparison, so a passing differential
 // above is actually exercising the generated code's output.
 func TestCodegenMixinBlockDynamicFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label)\n  block\n+w(\"Hello\")\n  p= label\n"
 
 	ast, err := Parse(src, nil)

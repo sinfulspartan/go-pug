@@ -455,6 +455,7 @@ func TestCodegenConditionOperatorLiteralOverflow(t *testing.T) {
 // TestCodegenConditionOperatorLiteralOverflow — see that test's doc comment
 // for why bounded agreement requires refusing it.
 func TestCodegenConditionOperatorLiteralOverflowAccepts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		src  string
@@ -556,6 +557,7 @@ func TestCodegenConditionNumericLiteralNotAField(t *testing.T) {
 // Go source octal, so GenerateGo must never emit "0100" verbatim. A couple
 // build the emitted comparison to prove it actually compiles.
 func TestCodegenConditionLeadingZeroLiteralAccepts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		src          string
@@ -624,6 +626,7 @@ func TestCodegenConditionLeadingZeroLiteralAccepts(t *testing.T) {
 // this test transitively proves pug.js == interpreter == codegen for every
 // literal it covers.
 func TestCodegenNumericLiteralDifferentialMatchesInterpreter(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		token    string

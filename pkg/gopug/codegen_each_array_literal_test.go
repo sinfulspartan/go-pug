@@ -12,6 +12,7 @@ import (
 // dynamic attribute value AND buffered code in the same tag, byte-identical
 // to the interpreter across the full rendered loop.
 func TestCodegenEachArrayLiteralStringRealShape(t *testing.T) {
+	t.Parallel()
 	src := `each opt in ["3h", "24h", "72h"]` + "\n" +
 		"  button(data-threshold=opt)= opt\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
@@ -27,6 +28,7 @@ func TestCodegenEachArrayLiteralStringRealShape(t *testing.T) {
 // part — the shape that proves the float64 element model is right (`1`
 // stringifies to "1d", not "1.000000d" or similar).
 func TestCodegenEachArrayLiteralNumericRealShape(t *testing.T) {
+	t.Parallel()
 	src := "each d in [1, 2, 3, 7, 14, 28, 60]\n" +
 		"  button(data-diary-fill=d)= `${d}d`\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
@@ -39,6 +41,7 @@ func TestCodegenEachArrayLiteralNumericRealShape(t *testing.T) {
 // TestCodegenEachArrayLiteralNumericPercent is the third real corpus shape,
 // a plain `#{pct}` interpolation over a numeric array literal.
 func TestCodegenEachArrayLiteralNumericPercent(t *testing.T) {
+	t.Parallel()
 	src := "each pct in [50, 55, 60, 65, 70, 75]\n" +
 		"  p #{pct}\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
@@ -60,6 +63,7 @@ func TestCodegenEachArrayLiteralNumericPercent(t *testing.T) {
 // canonical-decimal rendering ("100", "8", "3.5"), proven independently by
 // TestEachArrayLiteralNumericElementModelSelfConsistencyProbe below.
 func TestCodegenEachArrayLiteralElementModelDistinguishing(t *testing.T) {
+	t.Parallel()
 	src := "each n in [1e2, 010, 3.5]\n" +
 		"  p #{n}\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
@@ -213,6 +217,7 @@ func TestCodegenEachArrayLiteralEmptyDeferred(t *testing.T) {
 // checking it built and ran: a deliberately WRONG expected value must fail
 // the comparison.
 func TestCodegenEachArrayLiteralFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "each pct in [50, 55, 60]\n  p #{pct}\n"
 
 	ast, err := Parse(src, nil)
@@ -294,6 +299,7 @@ func TestCodegenEachArrayLiteralStringTypeBlindWorks(t *testing.T) {
 // the array-literal detection guard added at the top of genEach — a plain
 // slice field collection still resolves and renders exactly as before.
 func TestCodegenEachArrayLiteralFieldCollectionRegression(t *testing.T) {
+	t.Parallel()
 	src := "each x in Items\n  p=x\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,

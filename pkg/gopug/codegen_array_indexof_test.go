@@ -23,6 +23,7 @@ const navGroupArrayLiteral = `["offers", "my-tasks", "diary", "my-earnings", "pr
 // array-receiver `.indexOf` fix targets: a naive substring search would
 // wrongly report this as found).
 func TestCodegenArrayIndexOfBoolLocalManageShape(t *testing.T) {
+	t.Parallel()
 	src := "- var manageGroupActive = " + manageGroupArrayLiteral + ".indexOf(Slug) !== -1\n" +
 		"if manageGroupActive\n  p yes\nelse\n  p no\n" +
 		"p=manageGroupActive\n"
@@ -43,6 +44,7 @@ func TestCodegenArrayIndexOfBoolLocalManageShape(t *testing.T) {
 // navGroupActive, proving the feature isn't accidentally specific to the
 // first array's element count/content.
 func TestCodegenArrayIndexOfBoolLocalNavShape(t *testing.T) {
+	t.Parallel()
 	src := "- var navGroupActive = " + navGroupArrayLiteral + ".indexOf(Slug) !== -1\n" +
 		"if navGroupActive\n  p yes\nelse\n  p no\n" +
 		"p=navGroupActive\n"
@@ -65,6 +67,7 @@ func TestCodegenArrayIndexOfBoolLocalNavShape(t *testing.T) {
 // the comparison as a genuine numeric coercion rather than a string-truthy
 // check.
 func TestCodegenArrayIndexOfBoolLocalIndexZero(t *testing.T) {
+	t.Parallel()
 	src := "- var found = [\"users\", \"firms\"].indexOf(Slug) !== -1\n" +
 		"if found\n  p yes\nelse\n  p no\n" +
 		"p=found\n"
@@ -82,6 +85,7 @@ func TestCodegenArrayIndexOfBoolLocalIndexZero(t *testing.T) {
 // MethodIncludesSlice already returns the interpreter's own canonical
 // "true"/"false" — reads back correctly for both membership outcomes.
 func TestCodegenArrayIncludesBoolLocal(t *testing.T) {
+	t.Parallel()
 	src := "- var manageGroupActive = " + manageGroupArrayLiteral + ".includes(Slug)\n" +
 		"if manageGroupActive\n  p yes\nelse\n  p no\n" +
 		"p=manageGroupActive\n"
@@ -100,6 +104,7 @@ func TestCodegenArrayIncludesBoolLocal(t *testing.T) {
 // engine's own extension, not standard JS, but handled identically to
 // `.includes` throughout) behaves the same way.
 func TestCodegenArrayContainsBoolLocal(t *testing.T) {
+	t.Parallel()
 	src := "- var isMember = [\"a\", \"b\", \"c\"].contains(Slug)\n" +
 		"if isMember\n  p yes\nelse\n  p no\n" +
 		"p=isMember\n"
@@ -114,6 +119,7 @@ func TestCodegenArrayContainsBoolLocal(t *testing.T) {
 // TestCodegenArrayIndexOfBoolLocalNegated proves the `=== -1` polarity (the
 // complement of `!== -1`) reads back correctly.
 func TestCodegenArrayIndexOfBoolLocalNegated(t *testing.T) {
+	t.Parallel()
 	src := "- var notInGroup = " + manageGroupArrayLiteral + ".indexOf(Slug) === -1\n" +
 		"if notInGroup\n  p yes\nelse\n  p no\n" +
 		"p=notInGroup\n"
@@ -135,6 +141,7 @@ func TestCodegenArrayIndexOfBoolLocalNegated(t *testing.T) {
 // works too: an array-indexOf-derived bool local used as the LEFT operand of
 // a later `- var`'s "||", both operands provably bool.
 func TestCodegenArrayIndexOfBoolLocalOrCombinator(t *testing.T) {
+	t.Parallel()
 	src := "- var navGroupActive = " + navGroupArrayLiteral + ".indexOf(Slug) !== -1\n" +
 		"- var navToggleActive = navGroupActive || Slug === \"dashboard\"\n" +
 		"if navToggleActive\n  p yes\nelse\n  p no\n" +
@@ -159,6 +166,7 @@ func TestCodegenArrayIndexOfBoolLocalOrCombinator(t *testing.T) {
 // genMethodCall's general array-literal `.indexOf` support — it is not
 // restricted to the `!== -1` comparison shape.
 func TestCodegenArrayIndexOfNumericContextInterpolationWorks(t *testing.T) {
+	t.Parallel()
 	src := "p=" + manageGroupArrayLiteral + ".indexOf(Slug)\n"
 	cases := []codegenUnbufferedCase{
 		{name: "found at index 0", data: map[string]any{"Slug": "users"}, dataLiteral: `opsData{Slug: "users"}`},
@@ -178,6 +186,7 @@ func TestCodegenArrayIndexOfNumericContextInterpolationWorks(t *testing.T) {
 // identically, but this proves the `#{}` spelling the task's own wording uses
 // explicitly, not just its buffered-code equivalent.
 func TestCodegenArrayIndexOfNumericContextRawInterpolationWorks(t *testing.T) {
+	t.Parallel()
 	src := "p #{" + manageGroupArrayLiteral + ".indexOf(Slug)}\n"
 	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
 		{name: "found", src: src, data: map[string]any{"Slug": "coverage-map"}, dataLiteral: `opsData{Slug: "coverage-map"}`},
@@ -251,6 +260,7 @@ func TestCodegenArrayIndexOfBareNumericLocalDeferred(t *testing.T) {
 // the full differential coverage), unaffected by and independent of this
 // file's own `.indexOf`/`.includes` support.
 func TestCodegenArrayLiteralEachIterationNowSupported(t *testing.T) {
+	t.Parallel()
 	src := "each opt in [\"a\", \"b\", \"c\"]\n  p=opt\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -295,6 +305,7 @@ func TestCodegenArrayIndexOfBoolLocalLeakCollisionDeferred(t *testing.T) {
 // merely checking it built and ran: a deliberately WRONG expected value must
 // fail the comparison.
 func TestCodegenArrayIndexOfBoolLocalFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "- var manageGroupActive = " + manageGroupArrayLiteral + ".indexOf(Slug) !== -1\np=manageGroupActive\n"
 
 	ast, err := Parse(src, nil)

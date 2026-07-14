@@ -13,6 +13,7 @@ import (
 // holds — this proves the previously-unsupported buffered CodeNode is now
 // wired through genValueExpr.
 func TestCodegenValueExprBufferedCodeStringConcat(t *testing.T) {
+	t.Parallel()
 	src := "p= \"Total: \" + Count\n"
 
 	ast, err := Parse(src, nil)
@@ -48,6 +49,7 @@ func TestCodegenValueExprBufferedCodeStringConcat(t *testing.T) {
 // genValueExpr and reproduces evaluateExpr's left-to-right `+` splitting for
 // a nested expression combining two string fields with a literal separator.
 func TestCodegenValueExprInterpolationNestedPlus(t *testing.T) {
+	t.Parallel()
 	src := "p #{Str1 + \" \" + Str2}\n"
 
 	ast, err := Parse(src, nil)
@@ -87,6 +89,7 @@ func TestCodegenValueExprInterpolationNestedPlus(t *testing.T) {
 // resolved from the fields' static Go type (both are plain strings), only
 // from their runtime values, which is exactly what gopug.Add checks.
 func TestCodegenValueExprAddRuntimeDisambiguation(t *testing.T) {
+	t.Parallel()
 	src := "p= Str1 + Str2\n"
 
 	ast, err := Parse(src, nil)
@@ -153,6 +156,7 @@ func TestCodegenValueExprAddRuntimeDisambiguation(t *testing.T) {
 // disagree), and the true/false/null keywords — renders through `= expr`
 // identically to the interpreter.
 func TestCodegenValueExprLeaves(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{name: "int field", src: "p= Count\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
 		{name: "float64 field", src: "p= Price\n", data: map[string]any{"Price": 9.5}, dataLiteral: "opsData{Price: 9.5}"},

@@ -113,6 +113,7 @@ func assertConditionDiffResult(t *testing.T, cond, dataLiteral string, r conditi
 // a divergence in either operand's truthiness or in Go's own short-circuit
 // evaluation would show up as a mismatched branch.
 func TestCodegenConditionLogicTruthTable(t *testing.T) {
+	t.Parallel()
 	combos := []struct{ a, b bool }{
 		{true, true},
 		{true, false},
@@ -177,6 +178,7 @@ func boolBranch(b bool) string {
 // genComparison for one side, and genOperandTruthiness for the other, is
 // exercised within the same condition.
 func TestCodegenConditionLogicMixedOperands(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		cond        string
@@ -249,6 +251,7 @@ func TestCodegenConditionLogicMixedOperands(t *testing.T) {
 // comparison — the two shapes evaluateExpr's own `!` branch has to handle
 // identically (a leading `!` that is NOT the start of a `!=` comparison).
 func TestCodegenConditionLogicNegation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		cond        string
@@ -285,6 +288,7 @@ func TestCodegenConditionLogicNegation(t *testing.T) {
 // too, the same way a bool/numeric field's OWN stringify could never
 // accidentally produce them.
 func TestCodegenConditionLogicStringTruthiness(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		value string
@@ -325,6 +329,7 @@ func TestCodegenConditionLogicStringTruthiness(t *testing.T) {
 // would, so "Name && Flag" only takes the true branch when Name is a
 // non-falsy string AND Flag is true.
 func TestCodegenConditionLogicStringTruthinessCombinator(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		nameVal string
@@ -366,6 +371,7 @@ func TestCodegenConditionLogicStringTruthinessCombinator(t *testing.T) {
 // true || (false && false) == true, while the wrong left-to-right grouping
 // would yield (true || false) && false == false.
 func TestCodegenConditionLogicPrecedence(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name               string
 		a, b, c            bool

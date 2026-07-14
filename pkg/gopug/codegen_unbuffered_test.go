@@ -140,6 +140,7 @@ func genUnbufferedErr(t *testing.T, src string) error {
 // buffered-code use and a dynamic attribute value, byte-identical to the
 // interpreter across every combination of the two operands.
 func TestCodegenUnbufferedAssignTernaryStringLiteral(t *testing.T) {
+	t.Parallel()
 	src := "- var confirmDialogsAttr = (!Flag || FlagB) ? \"true\" : \"false\"\n" +
 		"button(data-confirm=confirmDialogsAttr)= confirmDialogsAttr\n"
 
@@ -171,6 +172,7 @@ func TestCodegenUnbufferedAssignTernaryStringLiteral(t *testing.T) {
 // (resolveFieldExpr's leaf case, restricted to a string-typed field) reads
 // back correctly.
 func TestCodegenUnbufferedAssignStringField(t *testing.T) {
+	t.Parallel()
 	src := "- var greeting = User.Name\np=greeting\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -183,6 +185,7 @@ func TestCodegenUnbufferedAssignStringField(t *testing.T) {
 // literal RHS reads back correctly, including when the variable is used
 // more than once.
 func TestCodegenUnbufferedAssignStringLiteral(t *testing.T) {
+	t.Parallel()
 	src := "- var greeting = \"hello\"\np=greeting\np=greeting\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -194,6 +197,7 @@ func TestCodegenUnbufferedAssignStringLiteral(t *testing.T) {
 // TestCodegenUnbufferedAssignConcat proves a top-level `+` string
 // concatenation RHS (both operands string fields) reads back correctly.
 func TestCodegenUnbufferedAssignConcat(t *testing.T) {
+	t.Parallel()
 	src := "- var full = Str1 + Str2\np=full\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -208,6 +212,7 @@ func TestCodegenUnbufferedAssignConcat(t *testing.T) {
 // — safe because Runtime.evaluateExprRaw never descends into a template
 // literal's structure at all (see genAssignRHS's doc comment).
 func TestCodegenUnbufferedAssignTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	src := "- var label = `count: ${Count}`\np=label\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -220,6 +225,7 @@ func TestCodegenUnbufferedAssignTemplateLiteral(t *testing.T) {
 // (`Name || "anon"`) reads back correctly for both a truthy and a falsy left
 // operand.
 func TestCodegenUnbufferedAssignOrDefault(t *testing.T) {
+	t.Parallel()
 	cases := []codegenUnbufferedCase{
 		{
 			name:        "left truthy",
@@ -241,6 +247,7 @@ func TestCodegenUnbufferedAssignOrDefault(t *testing.T) {
 // combinator reads back correctly for both a truthy and a falsy left
 // operand.
 func TestCodegenUnbufferedAssignAndCombinator(t *testing.T) {
+	t.Parallel()
 	cases := []codegenUnbufferedCase{
 		{
 			name:        "left truthy",
@@ -261,6 +268,7 @@ func TestCodegenUnbufferedAssignAndCombinator(t *testing.T) {
 // TestCodegenUnbufferedAssignVisibleBeforeEach proves a `- var` set before an
 // each-loop is visible (and correctly resolved) inside the loop body.
 func TestCodegenUnbufferedAssignVisibleBeforeEach(t *testing.T) {
+	t.Parallel()
 	src := "- var label = \"item: \"\neach x in Items\n  p=label + x\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -274,6 +282,7 @@ func TestCodegenUnbufferedAssignVisibleBeforeEach(t *testing.T) {
 // RHS even when the variable is never read, and codegen must not silently
 // drop that evaluation (or fail to compile a declared-and-unused Go local).
 func TestCodegenUnbufferedAssignUnusedVarStillCompiles(t *testing.T) {
+	t.Parallel()
 	src := "- var unused = \"hi\"\np static\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -287,6 +296,7 @@ func TestCodegenUnbufferedAssignUnusedVarStillCompiles(t *testing.T) {
 // comparison, so a passing differential test above is actually exercising
 // the generated code's output, not merely checking it built and ran.
 func TestCodegenUnbufferedAssignFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "- var greeting = \"hello\"\np=greeting\n"
 
 	ast, err := Parse(src, nil)
@@ -485,6 +495,7 @@ func TestUnbufferedAssignLeakEmpiricalMatrix(t *testing.T) {
 // computing a string attribute value once, used later in the same
 // template) MUST keep working.
 func TestCodegenUnbufferedAssignTopLevelSurvivesFieldCollision(t *testing.T) {
+	t.Parallel()
 	src := "- var Name = \"local\"\np=Name\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,

@@ -10,6 +10,7 @@ import (
 // helper's block-callback parameter and the call site's closure agree with
 // the interpreter byte-for-byte.
 func TestCodegenMixinBlockStaticContentAtSlot(t *testing.T) {
+	t.Parallel()
 	src := "mixin card\n  .card\n    block\n+card\n  p Hello\n  span World\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -18,6 +19,7 @@ func TestCodegenMixinBlockStaticContentAtSlot(t *testing.T) {
 // mixin's block slot reaches a `block` nested inside a wrapping tag, not
 // just one written as a direct child of the mixin declaration.
 func TestCodegenMixinBlockSlotNestedInTag(t *testing.T) {
+	t.Parallel()
 	src := "mixin box\n  div.outer\n    block\n+box\n  p x\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -27,6 +29,7 @@ func TestCodegenMixinBlockSlotNestedInTag(t *testing.T) {
 // called with block content discards that content — no error, no leaked
 // output — and the helper gets no block-callback parameter at all.
 func TestCodegenMixinBlockNoSlotContentDiscarded(t *testing.T) {
+	t.Parallel()
 	src := "mixin simple\n  p body\n+simple\n  p this should not appear\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -35,6 +38,7 @@ func TestCodegenMixinBlockNoSlotContentDiscarded(t *testing.T) {
 // interpreter behavior: a mixin body with two `block` nodes renders the
 // caller's block content once per occurrence, not once total.
 func TestCodegenMixinBlockMultipleSlotsRenderTwice(t *testing.T) {
+	t.Parallel()
 	src := "mixin twice\n  block\n  block\n+twice\n  p x\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -44,6 +48,7 @@ func TestCodegenMixinBlockMultipleSlotsRenderTwice(t *testing.T) {
 // block-callback parameter, and the slot renders nothing — byte-identical
 // to the interpreter's own empty-callerBlock behavior.
 func TestCodegenMixinBlockSlotNoContentPassesNil(t *testing.T) {
+	t.Parallel()
 	src := "mixin card\n  .card\n    block\n+card\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -53,6 +58,7 @@ func TestCodegenMixinBlockSlotNoContentPassesNil(t *testing.T) {
 // parameters used inside its own body — the block param is simply one more
 // argument alongside the positional string params.
 func TestCodegenMixinBlockComposesWithOwnParams(t *testing.T) {
+	t.Parallel()
 	src := "mixin panel(title)\n  .panel\n    h1= title\n    block\n+panel(\"Hi\")\n  p body-content\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -65,6 +71,7 @@ func TestCodegenMixinBlockComposesWithOwnParams(t *testing.T) {
 // content already sitting in g.body both before and after the call. This
 // proves that content survives the swap untouched.
 func TestCodegenMixinBlockClosureSurroundedByRealSiblingContent(t *testing.T) {
+	t.Parallel()
 	src := "p before\nmixin card\n  .card\n    block\np middle\n+card\n  p inside\np after\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -82,6 +89,7 @@ func TestCodegenMixinBlockClosureSurroundedByRealSiblingContent(t *testing.T) {
 // codegen_mixin_block_dynamic_test.go for the fuller differential coverage
 // of this mechanism.
 func TestCodegenMixinBlockDynamicContentReferencingParamNowResolves(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label)\n  block\n+w(\"L\")\n  p= label\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -187,6 +195,7 @@ func TestCodegenMixinBlockDeferralsAreDistinct(t *testing.T) {
 // is non-vacuous for the block-content shape: a deliberately WRONG expected
 // value must fail the comparison.
 func TestCodegenMixinBlockFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin card\n  .card\n    block\n+card\n  p Hello\n"
 
 	ast, err := Parse(src, nil)
@@ -245,6 +254,7 @@ func TestCodegenMixinBlockSlotlessSignatureUnperturbed(t *testing.T) {
 // this increment must not perturb: exactly one generated func for a template
 // with no mixin at all, and unchanged differential output.
 func TestCodegenMixinBlockNoMixinRegression(t *testing.T) {
+	t.Parallel()
 	src := "p Hello #{Name}\n"
 
 	ast, err := Parse(src, nil)

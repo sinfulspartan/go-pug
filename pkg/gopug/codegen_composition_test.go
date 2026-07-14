@@ -116,6 +116,7 @@ func compareComposedOutput(t *testing.T, dir, childPath string, interpData map[s
 // replace, the default `block name` form) and leaves the other at its
 // parent default.
 func TestResolveCompositionReplaceAndDefault(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "layout.pug", "doctype html\nhtml\n  body\n    block content\n      p Default Content\n    block sidebar\n      p Default Sidebar\n")
 	childPath := mustWriteFile(t, dir, "child.pug", "extends layout\nblock content\n  p Child Content\n")
@@ -137,6 +138,7 @@ func TestResolveCompositionReplaceAndDefault(t *testing.T) {
 // interpreter for a child that both prepends and appends to the same
 // parent block: [prepend, parent-default, append].
 func TestResolveCompositionAppendPrepend(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "layout.pug", "doctype html\nhtml\n  body\n    block content\n      p Default\n")
 	childPath := mustWriteFile(t, dir, "child.pug", "extends layout\nblock prepend content\n  p Before\nblock append content\n  p After\n")
@@ -161,6 +163,7 @@ func TestResolveCompositionAppendPrepend(t *testing.T) {
 // land in [child-prepend, layout-default, child-append, grandchild-append]
 // order.
 func TestResolveCompositionMultiLevelChain(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "layout.pug", "doctype html\nhtml\n  body\n    block content\n      p Layout Default\n")
 	mustWriteFile(t, dir, "child.pug", "extends layout\nblock prepend content\n  p Child Before\nblock append content\n  p Child After\n")
@@ -188,6 +191,7 @@ func TestResolveCompositionMultiLevelChain(t *testing.T) {
 // parent default, and both must still be reachable through the conditional
 // branch that actually renders.
 func TestResolveCompositionNestedBlockDeepWalk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "layout.pug", strings.Join([]string{
 		"doctype html",
@@ -225,6 +229,7 @@ func TestResolveCompositionNestedBlockDeepWalk(t *testing.T) {
 // against a declared struct, once ResolveComposition has spliced the block
 // body into the tree.
 func TestResolveCompositionDynamicBlockBody(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "layout.pug", "doctype html\nhtml\n  body\n    block content\n      p Default\n")
 	childPath := mustWriteFile(t, dir, "child.pug", strings.Join([]string{
@@ -260,6 +265,7 @@ func TestResolveCompositionDynamicBlockBody(t *testing.T) {
 // standalone block to its own body, matching renderBlockBody rendering it
 // directly.
 func TestResolveCompositionNoExtendsStandaloneBlock(t *testing.T) {
+	t.Parallel()
 	src := "doctype html\nhtml\n  body\n    block content\n      p Standalone Default\n"
 
 	want, err := Render(src, map[string]any{}, nil)

@@ -13,6 +13,7 @@ import (
 // three downstream contexts the corpus actually uses — across both a zero
 // and a non-zero value (truthiness must flip with it).
 func TestCodegenUnbufferedAssignNumericIntField(t *testing.T) {
+	t.Parallel()
 	src := "- var offerID = Offer.ID\n" +
 		"div(data-id=offerID)= offerID\n" +
 		"if offerID\n  p yes\nelse\n  p no\n"
@@ -37,6 +38,7 @@ func TestCodegenUnbufferedAssignNumericIntField(t *testing.T) {
 // TestCodegenUnbufferedAssignNumericUintField proves a bare uint-kind field
 // RHS reads back correctly.
 func TestCodegenUnbufferedAssignNumericUintField(t *testing.T) {
+	t.Parallel()
 	src := "- var u = UintVal\np=u\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -48,6 +50,7 @@ func TestCodegenUnbufferedAssignNumericUintField(t *testing.T) {
 // TestCodegenUnbufferedAssignNumericInt64Field proves a bare int64-kind field
 // RHS reads back correctly.
 func TestCodegenUnbufferedAssignNumericInt64Field(t *testing.T) {
+	t.Parallel()
 	src := "- var big = BigInt\np=big\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -60,6 +63,7 @@ func TestCodegenUnbufferedAssignNumericInt64Field(t *testing.T) {
 // field RHS reads back correctly across a positive fraction, a whole number,
 // zero, and a negative value.
 func TestCodegenUnbufferedAssignNumericFloat64Field(t *testing.T) {
+	t.Parallel()
 	src := "- var p = Price\np=p\n"
 	cases := []codegenUnbufferedCase{
 		{name: "fraction", src: src, data: map[string]any{"Price": 3.14}, dataLiteral: "opsData{Price: 3.14}"},
@@ -75,6 +79,7 @@ func TestCodegenUnbufferedAssignNumericFloat64Field(t *testing.T) {
 // reads back correctly — the local carries the field's exact Go type
 // through, not merely its reflect.Kind.
 func TestCodegenUnbufferedAssignNumericNamedTypeField(t *testing.T) {
+	t.Parallel()
 	src := "- var n = NamedCount\np=n\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -87,6 +92,7 @@ func TestCodegenUnbufferedAssignNumericNamedTypeField(t *testing.T) {
 // a plain decimal, hex, and scientific-notation token — reads back in its
 // canonical decimal form.
 func TestCodegenUnbufferedAssignNumericLiteral(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		rhs  string
@@ -148,6 +154,7 @@ func TestCodegenUnbufferedAssignNumericLiteralCanonicalFormat(t *testing.T) {
 // attribute value — stringifies the local via genScalarStringify before
 // concatenating, matching the interpreter's gopug.Add(strOf(x), ...).
 func TestCodegenUnbufferedAssignNumericConcat(t *testing.T) {
+	t.Parallel()
 	src := "- var offerID = Offer.ID\n" +
 		"a(href=\"/offers/\" + offerID)= \"link\"\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
@@ -161,6 +168,7 @@ func TestCodegenUnbufferedAssignNumericConcat(t *testing.T) {
 // as a ternary VALUE (not condition) branch reads back correctly, for both
 // branches.
 func TestCodegenUnbufferedAssignNumericTernaryValue(t *testing.T) {
+	t.Parallel()
 	src := "- var offerID = Offer.ID\np= Flag ? offerID : Zero\n"
 	cases := []codegenUnbufferedCase{
 		{
@@ -187,6 +195,7 @@ func TestCodegenUnbufferedAssignNumericTernaryValue(t *testing.T) {
 // genValueExpr's own `+` case (stringify each operand, then gopug.Add) needs
 // no new code at all for this to work.
 func TestCodegenUnbufferedAssignNumericArithmeticValueContextWorksFree(t *testing.T) {
+	t.Parallel()
 	src := "- var offerID = Offer.ID\np= offerID + 1\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -287,6 +296,7 @@ func TestUnbufferedAssignNumericRawInvariantFaultInjection(t *testing.T) {
 // numeric differential tests above are actually exercising the generated
 // code's output, not merely checking it built and ran.
 func TestCodegenUnbufferedAssignNumericFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "- var offerID = Offer.ID\np=offerID\n"
 
 	ast, err := Parse(src, nil)
@@ -366,6 +376,7 @@ func TestGenNumericExprBoundary(t *testing.T) {
 // them), so the numeric-looking OUTPUT comes entirely from gopug.Add's own
 // runtime-value disambiguation, not from anything genNumericExpr does.
 func TestCodegenUnbufferedAssignNumericBoundaryArithmeticStaysString(t *testing.T) {
+	t.Parallel()
 	src := "- var total = Str1 + Str2\np=total\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -378,6 +389,7 @@ func TestCodegenUnbufferedAssignNumericBoundaryArithmeticStaysString(t *testing.
 // string-typed field RHS is still handled by slice 1's string-local path,
 // unaffected by the numeric classifier's addition.
 func TestCodegenUnbufferedAssignNumericBoundaryStringFieldStaysSlice1(t *testing.T) {
+	t.Parallel()
 	src := "- var greeting = User.Name\np=greeting\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,
@@ -391,6 +403,7 @@ func TestCodegenUnbufferedAssignNumericBoundaryStringFieldStaysSlice1(t *testing
 // unaffected by the numeric classifier's addition (genBoolExpr is tried
 // before genNumericExpr).
 func TestCodegenUnbufferedAssignNumericBoundaryBoolFieldStaysSlice2(t *testing.T) {
+	t.Parallel()
 	src := "- var isFlag = Flag\n" +
 		"if isFlag\n  p yes\nelse\n  p no\n" +
 		"p=isFlag\n"
@@ -489,6 +502,7 @@ func TestCodegenUnbufferedAssignNumericLeakCollisionDeferred(t *testing.T) {
 // LOCAL, not a same-named struct field, even when a real field of that exact
 // name exists.
 func TestCodegenUnbufferedAssignNumericTopLevelSurvivesFieldCollision(t *testing.T) {
+	t.Parallel()
 	src := "- var Count = Zero\np=Count\n"
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         src,

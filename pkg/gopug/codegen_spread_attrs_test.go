@@ -109,6 +109,7 @@ func genSpreadErr(t *testing.T, src string, noType bool) error {
 // in sortAttrNames's id/class/rest-alphabetical order, byte-identically to
 // Runtime.renderTag's own spread-merge.
 func TestCodegenSpreadAttrsBasic(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"data-x": "1", "role": "btn"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"data-x": "1", "role": "btn"}}`
@@ -119,6 +120,7 @@ func TestCodegenSpreadAttrsBasic(t *testing.T) {
 // token) is space-appended to, never overwritten by, a spread "class" key —
 // base first (probe 2).
 func TestCodegenSpreadAttrsClassMerge(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"class": "extra"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"class": "extra"}}`
@@ -128,6 +130,7 @@ func TestCodegenSpreadAttrsClassMerge(t *testing.T) {
 // TestCodegenSpreadAttrsBoolTrue proves a spread value of "true" renders as
 // a bare boolean attribute (probe 3, true half).
 func TestCodegenSpreadAttrsBoolTrue(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"disabled": "true"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"disabled": "true"}}`
@@ -138,6 +141,7 @@ func TestCodegenSpreadAttrsBoolTrue(t *testing.T) {
 // the attribute entirely, even when the tag's own base attribute of that
 // name was itself a bare boolean (probe 3, false half).
 func TestCodegenSpreadAttrsBoolFalse(t *testing.T) {
+	t.Parallel()
 	src := "div(hidden)&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"hidden": "false"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"hidden": "false"}}`
@@ -147,6 +151,7 @@ func TestCodegenSpreadAttrsBoolFalse(t *testing.T) {
 // TestCodegenSpreadAttrsOverwriteBase proves a non-"class" spread attribute
 // completely overwrites a base attribute of the same name (probe 4).
 func TestCodegenSpreadAttrsOverwriteBase(t *testing.T) {
+	t.Parallel()
 	src := `div(data-x="base")&attributes(Attrs)` + "\n"
 	data := map[string]any{"Attrs": map[string]string{"data-x": "new"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"data-x": "new"}}`
@@ -157,6 +162,7 @@ func TestCodegenSpreadAttrsOverwriteBase(t *testing.T) {
 // that must be HTML-escaped inside an attribute (`&`, `<`, `>`) is escaped
 // identically to any other attribute value, through EscapeAttr (probe 5).
 func TestCodegenSpreadAttrsEscaping(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"title": "a & b <c>"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"title": "a & b <c>"}}`
@@ -166,6 +172,7 @@ func TestCodegenSpreadAttrsEscaping(t *testing.T) {
 // TestCodegenSpreadAttrsEmptyMap proves an empty spread map renders only the
 // tag's own base attributes, no error (probe 6).
 func TestCodegenSpreadAttrsEmptyMap(t *testing.T) {
+	t.Parallel()
 	src := `div(id="x")&attributes(Attrs)` + "\n"
 	data := map[string]any{"Attrs": map[string]string{}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{}}`
@@ -179,6 +186,7 @@ func TestCodegenSpreadAttrsEmptyMap(t *testing.T) {
 // resolved at RUNTIME (the spread's keys are not known at generate time —
 // probe 7).
 func TestCodegenSpreadAttrsSortOrder(t *testing.T) {
+	t.Parallel()
 	src := `div(z2="base")&attributes(Attrs)` + "\n"
 	data := map[string]any{"Attrs": map[string]string{"id": "i", "class": "c", "z": "z", "a": "a"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"id": "i", "class": "c", "z": "z", "a": "a"}}`
@@ -195,6 +203,7 @@ func TestCodegenSpreadAttrsSortOrder(t *testing.T) {
 // gopug.WriteSpreadAttrs's mergeSpreadClass rule and the (fixed)
 // interpreter's own spread-merge.
 func TestCodegenSpreadAttrsClassEmptyValue(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"class": ""}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"class": ""}}`
@@ -206,6 +215,7 @@ func TestCodegenSpreadAttrsClassEmptyValue(t *testing.T) {
 // when merged with a base class — the merge treats the spread value as one
 // opaque token, never re-tokenized or collapsed.
 func TestCodegenSpreadAttrsClassInternalWhitespace(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"class": "a  b"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"class": "a  b"}}`
@@ -216,6 +226,7 @@ func TestCodegenSpreadAttrsClassInternalWhitespace(t *testing.T) {
 // value's own leading/trailing whitespace is preserved verbatim (not
 // trimmed) when there is no base class to merge with.
 func TestCodegenSpreadAttrsClassLeadingTrailingWhitespace(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"class": " x "}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"class": " x "}}`
@@ -225,6 +236,7 @@ func TestCodegenSpreadAttrsClassLeadingTrailingWhitespace(t *testing.T) {
 // TestCodegenSpreadAttrsClassNormal proves an ordinary single class merge
 // (no unusual whitespace) is unaffected by the whitespace-preservation fix.
 func TestCodegenSpreadAttrsClassNormal(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"class": "extra"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"class": "extra"}}`
@@ -275,6 +287,7 @@ func TestCodegenSpreadAttrsBaseClassWhitespaceDefers(t *testing.T) {
 // and render byte-identically to the interpreter, so the deferral above
 // isn't over-broad.
 func TestCodegenSpreadAttrsBaseClassSingleTokenStillWorks(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"data-x": "1"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"data-x": "1"}}`
@@ -287,6 +300,7 @@ func TestCodegenSpreadAttrsBaseClassSingleTokenStillWorks(t *testing.T) {
 // always escaped the raw value directly; the interpreter used to lose data
 // by re-quoting the value and re-parsing it as if it were Pug source).
 func TestCodegenSpreadAttrsEmbeddedQuote(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"title": `a"b`}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"title": "a\"b"}}`
@@ -297,6 +311,7 @@ func TestCodegenSpreadAttrsEmbeddedQuote(t *testing.T) {
 // literal backslash is preserved verbatim (HTML attribute escaping does not
 // touch backslashes).
 func TestCodegenSpreadAttrsBackslashValue(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"title": `a\b`}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"title": "a\\b"}}`
@@ -306,6 +321,7 @@ func TestCodegenSpreadAttrsBackslashValue(t *testing.T) {
 // TestCodegenSpreadAttrsAngleBracketValue proves a spread value containing
 // `<` is HTML-escaped.
 func TestCodegenSpreadAttrsAngleBracketValue(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"title": "a<b"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"title": "a<b"}}`
@@ -318,6 +334,7 @@ func TestCodegenSpreadAttrsAngleBracketValue(t *testing.T) {
 // attribute — the security-relevant shape the interpreter fix specifically
 // targets.
 func TestCodegenSpreadAttrsQuoteInjectionStyleValue(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"title": `x" onmouseover="y`}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"title": "x\" onmouseover=\"y"}}`
@@ -387,6 +404,7 @@ func TestCodegenSpreadAttrsDeferrals(t *testing.T) {
 // itself is non-vacuous for this feature: a deliberately WRONG expected
 // value must fail the comparison.
 func TestCodegenSpreadAttrsFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(Attrs)\n"
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"class": "extra"}}`
 
@@ -434,6 +452,7 @@ func TestCodegenSpreadAttrsNonMapNonMixinStillDefers(t *testing.T) {
 // mergeForwardedAttributes path, not by the new runtime-merge helper this
 // increment adds.
 func TestCodegenSpreadAttrsMixinAttributesVarStillRoutesThroughForwarding(t *testing.T) {
+	t.Parallel()
 	src := "mixin box()\n  div.base&attributes(attributes)\n+box()(class=\"b\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }

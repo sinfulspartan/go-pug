@@ -128,6 +128,7 @@ func runDifferentialBatch(t *testing.T, structSrc string, funcName string, cases
 // the batch's JSON encoding into a non-empty Err, and Out stays empty for
 // that case.
 func TestRunDifferentialBatchRecoversPanic(t *testing.T) {
+	t.Parallel()
 	generated := []byte(`package main
 
 import "io"

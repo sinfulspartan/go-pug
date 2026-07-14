@@ -11,6 +11,7 @@ import (
 // negation), a falsy one renders it, exactly the opposite of a plain `if`
 // over the same condition.
 func TestCodegenUnlessTruthySkipFalsyRender(t *testing.T) {
+	t.Parallel()
 	src := "unless Flag\n  p yes\n"
 	cases := []codegenArithCase{
 		{name: "truthy condition: body skipped", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
@@ -27,6 +28,7 @@ func TestCodegenUnlessTruthySkipFalsyRender(t *testing.T) {
 // same code path as TestCodegenPlainIfRegression's if-else cases with the
 // branch selection flipped.
 func TestCodegenUnlessElse(t *testing.T) {
+	t.Parallel()
 	src := "unless Flag\n  p yes\nelse\n  p no\n"
 	cases := []codegenArithCase{
 		{name: "truthy condition: else branch renders", src: src, data: map[string]any{"Flag": true}, dataLiteral: "opsData{Flag: true}"},
@@ -40,6 +42,7 @@ func TestCodegenUnlessElse(t *testing.T) {
 // truthiness) negates correctly too — genCondition's translated Go bool is
 // negation-agnostic to which of its supported shapes produced it.
 func TestCodegenUnlessComparisonCondition(t *testing.T) {
+	t.Parallel()
 	src := "unless Count == 5\n  p yes\n"
 	cases := []codegenArithCase{
 		{name: "condition true (Count == 5): body skipped", src: src, data: map[string]any{"Count": 5}, dataLiteral: "opsData{Count: 5}"},

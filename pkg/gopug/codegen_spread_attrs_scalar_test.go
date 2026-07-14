@@ -124,6 +124,7 @@ func genScalarSpreadErr(t *testing.T, src string, noType bool) error {
 // the exact same text Runtime.renderTag's own reflect-box-then-%v produces —
 // data-n="5".
 func TestCodegenSpreadAttrsScalarInt(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsInt)\n"
 	data := map[string]any{"AttrsInt": map[string]int{"data-n": 5}}
 	dataLiteral := `spreadAttrsScalarData{AttrsInt: map[string]int{"data-n": 5}}`
@@ -138,6 +139,7 @@ func TestCodegenSpreadAttrsScalarInt(t *testing.T) {
 // value boxes and %v-stringifies identically to the map[string]any path
 // (probe 2, fractional half): %v(1.5) == "1.5".
 func TestCodegenSpreadAttrsScalarFloat64Fractional(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsFloat64)\n"
 	data := map[string]any{"AttrsFloat64": map[string]float64{"x": 1.5}}
 	dataLiteral := `spreadAttrsScalarData{AttrsFloat64: map[string]float64{"x": 1.5}}`
@@ -152,6 +154,7 @@ func TestCodegenSpreadAttrsScalarFloat64Fractional(t *testing.T) {
 // value drops its trailing ".0" identically on both backends (probe 2, whole
 // half): %v(1.0) == "1", not "1.0".
 func TestCodegenSpreadAttrsScalarFloat64Whole(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsFloat64)\n"
 	data := map[string]any{"AttrsFloat64": map[string]float64{"x": 1.0}}
 	dataLiteral := `spreadAttrsScalarData{AttrsFloat64: map[string]float64{"x": 1.0}}`
@@ -171,6 +174,7 @@ func TestCodegenSpreadAttrsScalarFloat64Whole(t *testing.T) {
 // identical %v call runs, the two sides can never disagree regardless of
 // which representation Go's formatter picks: %v(float32(0.1)) == "0.1".
 func TestCodegenSpreadAttrsScalarFloat32ShortestRepr(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsFloat32)\n"
 	data := map[string]any{"AttrsFloat32": map[string]float32{"x": 0.1}}
 	dataLiteral := `spreadAttrsScalarData{AttrsFloat32: map[string]float32{"x": 0.1}}`
@@ -185,6 +189,7 @@ func TestCodegenSpreadAttrsScalarFloat32ShortestRepr(t *testing.T) {
 // map[string]bool spread renders as a bare boolean attribute, exactly like
 // the map[string]any path's own real-bool-true probe (probe 3, true half).
 func TestCodegenSpreadAttrsScalarBoolTrue(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(AttrsBool)\n"
 	data := map[string]any{"AttrsBool": map[string]bool{"disabled": true}}
 	dataLiteral := `spreadAttrsScalarData{AttrsBool: map[string]bool{"disabled": true}}`
@@ -199,6 +204,7 @@ func TestCodegenSpreadAttrsScalarBoolTrue(t *testing.T) {
 // DELETES the attribute entirely, even when the tag's own base attribute of
 // that name was itself a bare boolean (probe 3, false half).
 func TestCodegenSpreadAttrsScalarBoolFalse(t *testing.T) {
+	t.Parallel()
 	src := "div(hidden)&attributes(AttrsBool)\n"
 	data := map[string]any{"AttrsBool": map[string]bool{"hidden": false}}
 	dataLiteral := `spreadAttrsScalarData{AttrsBool: map[string]bool{"hidden": false}}`
@@ -214,6 +220,7 @@ func TestCodegenSpreadAttrsScalarBoolFalse(t *testing.T) {
 // class merge, exactly like the map[string]any path's own non-string-class
 // probe (probe 4).
 func TestCodegenSpreadAttrsScalarIntAsClass(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(AttrsInt)\n"
 	data := map[string]any{"AttrsInt": map[string]int{"class": 5}}
 	dataLiteral := `spreadAttrsScalarData{AttrsInt: map[string]int{"class": 5}}`
@@ -228,6 +235,7 @@ func TestCodegenSpreadAttrsScalarIntAsClass(t *testing.T) {
 // map renders only the tag's own base attributes, no error (probe 5, empty
 // half).
 func TestCodegenSpreadAttrsScalarEmptyMap(t *testing.T) {
+	t.Parallel()
 	src := `div(id="x")&attributes(AttrsInt)` + "\n"
 	data := map[string]any{"AttrsInt": map[string]int{}}
 	dataLiteral := `spreadAttrsScalarData{AttrsInt: map[string]int{}}`
@@ -240,6 +248,7 @@ func TestCodegenSpreadAttrsScalarEmptyMap(t *testing.T) {
 // sortAttrNames orders the merged, boxed-then-%v-stringified result exactly
 // like the map[string]any path (probe 5, ordering half).
 func TestCodegenSpreadAttrsScalarSortOrder(t *testing.T) {
+	t.Parallel()
 	src := `div(z2="base")&attributes(AttrsInt)` + "\n"
 	data := map[string]any{"AttrsInt": map[string]int{"id": 1, "class": 2, "z": 9, "a": 3}}
 	dataLiteral := `spreadAttrsScalarData{AttrsInt: map[string]int{"id": 1, "class": 2, "z": 9, "a": 3}}`
@@ -256,6 +265,7 @@ func TestCodegenSpreadAttrsScalarSortOrder(t *testing.T) {
 // above) — int8/16/32/64 and uint/8/16/32/64 — proving the acceptance ladder
 // is not accidentally narrower than its own documented kind set.
 func TestCodegenSpreadAttrsScalarEveryAcceptedKind(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		src         string
@@ -360,6 +370,7 @@ func TestCodegenSpreadAttrsScalarDeferrals(t *testing.T) {
 // itself is non-vacuous for the concrete-scalar entry point: a deliberately
 // WRONG expected value must fail the comparison.
 func TestCodegenSpreadAttrsScalarFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "div.base&attributes(AttrsInt)\n"
 	dataLiteral := `spreadAttrsScalarData{AttrsInt: map[string]int{"class": 5}}`
 

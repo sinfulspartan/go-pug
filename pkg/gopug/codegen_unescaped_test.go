@@ -14,6 +14,7 @@ import (
 // escaped by mistake would fail the unescaped assertions even though it
 // still matched some other, wrongly-escaped "oracle".
 func TestCodegenUnescapedDiscriminatingHTMLSpecials(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": `<b>&"x"`}
 	dataLiteral := "opsData{Name: `<b>&\"x\"`}"
 
@@ -82,6 +83,7 @@ func TestCodegenUnescapedDiscriminatingHTMLSpecials(t *testing.T) {
 // implementation that still escaped the value would pass this check only if
 // it emitted raw bytes, exactly what this slice is proving.
 func TestCodegenUnescapedFaultInjection(t *testing.T) {
+	t.Parallel()
 	dataLiteral := "opsData{Name: `<b>&\"x\"`}"
 	wrongWant := "<p>&lt;b&gt;&amp;&#34;x&#34;</p>"
 
@@ -112,6 +114,7 @@ func TestCodegenUnescapedFaultInjection(t *testing.T) {
 // renders identically whether escaped or unescaped, for both interpolation
 // and buffered code.
 func TestCodegenUnescapedNoSpecials(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Name": "hello"}
 	dataLiteral := `opsData{Name: "hello"}`
 
@@ -127,6 +130,7 @@ func TestCodegenUnescapedNoSpecials(t *testing.T) {
 // neither can produce an HTML-special character, so escaping was always a
 // no-op for these, but the codegen path must still build and match.
 func TestCodegenUnescapedNumericAndBool(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{name: "numeric interpolation", src: "p !{Count}\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
 		{name: "numeric buffered code", src: "p!= Count\n", data: map[string]any{"Count": 42}, dataLiteral: "opsData{Count: 42}"},
@@ -142,6 +146,7 @@ func TestCodegenUnescapedNumericAndBool(t *testing.T) {
 // unescaped path composes with genValueExpr's expression support, not just
 // its bare-field leaf.
 func TestCodegenUnescapedExpression(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Str1": "<a>", "Str2": "<b>"}
 	dataLiteral := `opsData{Str1: "<a>", Str2: "<b>"}`
 
@@ -206,6 +211,7 @@ func TestCodegenUnescapedExpression(t *testing.T) {
 // with the unescaped write: a successful division renders the quotient with
 // no extraction machinery leaking into the output, for both `!{}` and `!=`.
 func TestCodegenUnescapedFallibleSuccess(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Count": 10}
 	dataLiteral := "opsData{Count: 10}"
 
@@ -222,6 +228,7 @@ func TestCodegenUnescapedFallibleSuccess(t *testing.T) {
 // exactly the same error-propagation shape the escaped path already proves
 // in codegen_fallible_test.go.
 func TestCodegenUnescapedFallibleError(t *testing.T) {
+	t.Parallel()
 	for _, src := range []string{"p !{Count / Zero}\n", "p!= Count / Zero\n"} {
 		t.Run(src, func(t *testing.T) {
 			runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
@@ -307,6 +314,7 @@ func TestCodegenUnescapedAttributeStillDeferred(t *testing.T) {
 // unescaped arm never sets g.needsHTML, since it never emits an
 // html.EscapeString call.
 func TestCodegenUnescapedOnlyTemplateImportGating(t *testing.T) {
+	t.Parallel()
 	src := "p !{Name}\np!= Count\n"
 	ast, err := Parse(src, nil)
 	if err != nil {
@@ -346,6 +354,7 @@ func TestCodegenUnescapedOnlyTemplateImportGating(t *testing.T) {
 // unescaped arm's needsHTML skip must not suppress the import an escaped
 // sibling node in the SAME template still needs.
 func TestCodegenUnescapedAlongsideEscapedImportGating(t *testing.T) {
+	t.Parallel()
 	src := "p !{Name}\np= Name\n"
 	ast, err := Parse(src, nil)
 	if err != nil {

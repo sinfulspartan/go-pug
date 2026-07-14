@@ -12,6 +12,7 @@ import (
 // new per-op code: a `[]string` scope var and a `[]any`-of-strings runtime
 // value range-iterate byte-identically.
 func TestCodegenMixinRestEachOverRest(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  each x in xs\n    li= x\n+f(\"a\", \"b\", \"c\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -23,6 +24,7 @@ func TestCodegenMixinRestEachOverRest(t *testing.T) {
 // arguments and when it supplies none (the rest parameter simply gets no
 // extra arguments, not an error).
 func TestCodegenMixinRestPositionalAndRestSplit(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(a, ...xs)\n  h1= a\n  each x in xs\n    li= x\n+f(\"A\", \"b\", \"c\")\n+f(\"A\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -32,6 +34,7 @@ func TestCodegenMixinRestPositionalAndRestSplit(t *testing.T) {
 // never runs, `.length` reads 0 — matching Runtime.renderMixinCall's own
 // `rest := make([]any, 0)` when its collection loop never iterates.
 func TestCodegenMixinRestEmptyCall(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  each x in xs\n    li= x\n  p= xs.length\n+f()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -42,6 +45,7 @@ func TestCodegenMixinRestEmptyCall(t *testing.T) {
 // len(...)), so no new plumbing was needed — it is covered both with and
 // without extra arguments.
 func TestCodegenMixinRestLength(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  p= xs.length\n+f(\"a\", \"b\")\n+f()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -50,6 +54,7 @@ func TestCodegenMixinRestLength(t *testing.T) {
 // genIndexValueExpr's Slice/Array case already type-switches the same way
 // for any Slice-kind operand.
 func TestCodegenMixinRestIndex(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  p= xs[0]\n+f(\"a\", \"b\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -60,6 +65,7 @@ func TestCodegenMixinRestIndex(t *testing.T) {
 // bounds check collapse to the empty string, so this is byte-identical
 // without any special-casing for a rest parameter specifically.
 func TestCodegenMixinRestIndexOutOfBounds(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  p= xs[5]\n+f(\"a\", \"b\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -70,6 +76,7 @@ func TestCodegenMixinRestIndexOutOfBounds(t *testing.T) {
 // stringification of a string element is a no-op conversion — identical to
 // the interpreter's own per-element stringify of a []any-of-strings.
 func TestCodegenMixinRestJoin(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  p= xs.join(\", \")\n+f(\"a\", \"b\", \"c\")\n+f()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -81,6 +88,7 @@ func TestCodegenMixinRestJoin(t *testing.T) {
 // len(decl.Parameters) — the default parameter counts toward that split
 // even when the call omits it.
 func TestCodegenMixinRestComposesWithDefaultParam(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(a = \"d\", ...xs)\n  h1= a\n  each x in xs\n    li= x\n+f(\"A\", \"b\", \"c\")\n+f()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -163,6 +171,7 @@ func TestCodegenMixinRestDeferrals(t *testing.T) {
 // value must fail the comparison, so the passing differentials above are
 // actually exercising the generated code's output.
 func TestCodegenMixinRestFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin f(...xs)\n  each x in xs\n    li= x\n+f(\"a\", \"b\")\n"
 
 	ast, err := Parse(src, nil)
@@ -192,6 +201,7 @@ func TestCodegenMixinRestFaultInjection(t *testing.T) {
 // `[]string` parameter, and the call site passes no extra slice-literal
 // argument — exactly the Go source every prior slice already emitted.
 func TestCodegenMixinRestNoRestParamIsNoOp(t *testing.T) {
+	t.Parallel()
 	src := "mixin greet(name)\n  p= name\n+greet(\"Sam\")\n"
 
 	ast, err := Parse(src, nil)
@@ -226,6 +236,7 @@ func TestCodegenMixinRestNoRestParamIsNoOp(t *testing.T) {
 // this increment must not perturb: exactly one generated func for a
 // template with no mixin at all, and unchanged differential output.
 func TestCodegenMixinRestNoMixinRegression(t *testing.T) {
+	t.Parallel()
 	src := "p Hello #{Name}\n"
 
 	ast, err := Parse(src, nil)

@@ -12,6 +12,7 @@ import (
 // exercised twice with a different argument count, matching
 // Runtime.renderMixinCall's own missing-arg-with-default binding exactly.
 func TestCodegenMixinDefaultLiteralUsedAndOverridden(t *testing.T) {
+	t.Parallel()
 	src := "mixin g(a, b = \"def\")\n  p= a\n  span= b\n+g(\"X\")\n+g(\"X\",\"Y\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -20,6 +21,7 @@ func TestCodegenMixinDefaultLiteralUsedAndOverridden(t *testing.T) {
 // default value (no quotes) resolves the same way a quoted string default
 // does.
 func TestCodegenMixinDefaultNumericLiteral(t *testing.T) {
+	t.Parallel()
 	src := "mixin g(n = 5)\n  p= n\n+g()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -34,6 +36,7 @@ func TestCodegenMixinDefaultNumericLiteral(t *testing.T) {
 // the identical CALLER-scope code path a present argument already used —
 // so this is byte-identical by construction, not by coincidence.
 func TestCodegenMixinDefaultCallerScopeDataField(t *testing.T) {
+	t.Parallel()
 	src := "mixin g(a = Title)\n  p= a\n+g()\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "fromData"}, `mixinDataStruct{Title: "fromData"}`)
 }
@@ -70,6 +73,7 @@ const mixinSiblingDefaultStructSrc = `type mixinSiblingDefaultStruct struct {
 // "A"; both actually render the caller's own field value, proving
 // caller-side (not mixin-param-side) evaluation byte-identically.
 func TestCodegenMixinDefaultSiblingParamNameAliasesCallerField(t *testing.T) {
+	t.Parallel()
 	src := "mixin g(a, b = a)\n  span= b\n+g(\"A\")\n"
 
 	tmpl, err := Compile(src, nil)
@@ -110,6 +114,7 @@ func TestCodegenMixinDefaultSiblingParamNameAliasesCallerField(t *testing.T) {
 // call sites — one omitting the argument (default used), one supplying it
 // (default overridden).
 func TestCodegenMixinDefaultFlowsThroughAttrAndIf(t *testing.T) {
+	t.Parallel()
 	src := strings.Join([]string{
 		"mixin badge(label = \"d\")",
 		"  span.badge(data-kind=label)",
@@ -131,6 +136,7 @@ func TestCodegenMixinDefaultFlowsThroughAttrAndIf(t *testing.T) {
 // the shared `__margN` local both genMixinCall's own call and
 // genMixinBlockClosure's closure read from.
 func TestCodegenMixinDefaultInDynamicBlockContent(t *testing.T) {
+	t.Parallel()
 	src := "mixin w(label = \"d\")\n  block\n+w()\n  p= label\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -141,6 +147,7 @@ func TestCodegenMixinDefaultInDynamicBlockContent(t *testing.T) {
 // `__margN` hoist genMixinCallAttrForward's own attribute-merge machinery
 // consumes, alongside a call site's own forwarded (spread) attribute.
 func TestCodegenMixinDefaultInAttrForward(t *testing.T) {
+	t.Parallel()
 	src := "mixin badge(label = \"d\")\n  span(data-label=label)&attributes(attributes)\n+badge()(class=\"x\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -151,6 +158,7 @@ func TestCodegenMixinDefaultInAttrForward(t *testing.T) {
 // default", and (for the trailing non-defaulted parameter) "missing with no
 // default" a single call site can produce.
 func TestCodegenMixinDefaultMixedParams(t *testing.T) {
+	t.Parallel()
 	src := strings.Join([]string{
 		"mixin g(a, b = \"B\", c)",
 		"  p= a",
@@ -251,6 +259,7 @@ func TestCodegenMixinDefaultFallibleInterpreterFallsBackToRawString(t *testing.T
 // itself is non-vacuous for a defaulted-parameter mixin: a deliberately
 // WRONG expected value must fail the comparison.
 func TestCodegenMixinDefaultFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin g(a = \"def\")\n  p= a\n+g()\n"
 
 	ast, err := Parse(src, nil)
@@ -281,6 +290,7 @@ func TestCodegenMixinDefaultFaultInjection(t *testing.T) {
 // same Go source genMixinCall/genMixinCallAttrForward emitted before this
 // increment (a plain genValueExpr result, or the literal `""`).
 func TestCodegenMixinDefaultNoDefaultsIsNoOp(t *testing.T) {
+	t.Parallel()
 	src := "mixin greet(name)\n  p= name\n+greet(\"Sam\")\n+greet()\n"
 
 	ast, err := Parse(src, nil)
@@ -314,6 +324,7 @@ func TestCodegenMixinDefaultNoDefaultsIsNoOp(t *testing.T) {
 // needed but doesn't, since defaults are resolved entirely at the CALL
 // site, never inside the helper itself).
 func TestCodegenMixinDefaultFuncCountRegression(t *testing.T) {
+	t.Parallel()
 	src := "mixin greet(name = \"World\")\n  p= name\n+greet()\n+greet(\"X\")\n"
 
 	ast, err := Parse(src, nil)

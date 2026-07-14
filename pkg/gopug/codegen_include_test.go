@@ -13,6 +13,7 @@ import (
 // the page's own data scope, matching RenderFile byte for byte against a
 // declared struct.
 func TestResolveCompositionIncludeBasic(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "partial.pug", strings.Join([]string{
 		"p Hello, #{Title}!",

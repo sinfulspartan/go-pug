@@ -103,6 +103,7 @@ func genDynBaseErr(t *testing.T, src string, noType bool) error {
 // spread renders byte-identically to Runtime.renderTag's own non-spread
 // render branch, including HTML-attribute escaping of special characters.
 func TestCodegenSpreadAttrsDynBasePlainNotOverwritten(t *testing.T) {
+	t.Parallel()
 	src := "a(href=Href)&attributes(Attrs)\n"
 	data := map[string]any{"Href": `a&b<c>"d`, "Attrs": map[string]string{}}
 	dataLiteral := `spreadDynBaseData{Href: "a&b<c>\"d", Attrs: map[string]string{}}`
@@ -118,6 +119,7 @@ func TestCodegenSpreadAttrsDynBasePlainNotOverwritten(t *testing.T) {
 // evaluated at generate time only to build the base map, but is discarded at
 // render time exactly like a static base literal already is.
 func TestCodegenSpreadAttrsDynBaseOverwritten(t *testing.T) {
+	t.Parallel()
 	src := "a(href=Href)&attributes(Attrs)\n"
 	data := map[string]any{"Href": "/orig", "Attrs": map[string]string{"href": "/x"}}
 	dataLiteral := `spreadDynBaseData{Href: "/orig", Attrs: map[string]string{"href": "/x"}}`
@@ -132,6 +134,7 @@ func TestCodegenSpreadAttrsDynBaseOverwritten(t *testing.T) {
 // base value — one of genValueExpr's other scalar shapes — renders exactly
 // like a normal tag's dynamic attribute (probe 3).
 func TestCodegenSpreadAttrsDynBaseTemplateLiteral(t *testing.T) {
+	t.Parallel()
 	src := "a(href=`/p/${A}`)&attributes(Attrs)\n"
 	data := map[string]any{"A": 5, "Attrs": map[string]string{}}
 	dataLiteral := `spreadDynBaseData{A: 5, Attrs: map[string]string{}}`
@@ -145,6 +148,7 @@ func TestCodegenSpreadAttrsDynBaseTemplateLiteral(t *testing.T) {
 // TestCodegenSpreadAttrsDynBaseNumericField proves a bare numeric field base
 // value renders exactly like a normal tag's dynamic attribute (probe 3).
 func TestCodegenSpreadAttrsDynBaseNumericField(t *testing.T) {
+	t.Parallel()
 	src := "a(data-n=A)&attributes(Attrs)\n"
 	data := map[string]any{"A": 5, "Attrs": map[string]string{}}
 	dataLiteral := `spreadDynBaseData{A: 5, Attrs: map[string]string{}}`
@@ -158,6 +162,7 @@ func TestCodegenSpreadAttrsDynBaseNumericField(t *testing.T) {
 // TestCodegenSpreadAttrsDynBaseTernary proves a ternary base value renders
 // exactly like a normal tag's dynamic attribute (probe 3).
 func TestCodegenSpreadAttrsDynBaseTernary(t *testing.T) {
+	t.Parallel()
 	src := `a(href=A > 0 ? "pos" : "neg")&attributes(Attrs)` + "\n"
 	data := map[string]any{"A": 5, "Attrs": map[string]string{}}
 	dataLiteral := `spreadDynBaseData{A: 5, Attrs: map[string]string{}}`
@@ -172,6 +177,7 @@ func TestCodegenSpreadAttrsDynBaseTernary(t *testing.T) {
 // and the runtime spread's own keys sort together correctly across all three
 // sortAttrNames buckets — id, class, and alphabetical rest (probe 6).
 func TestCodegenSpreadAttrsDynBaseSortInterleave(t *testing.T) {
+	t.Parallel()
 	src := `a(z2="static" href=Href)&attributes(Attrs)` + "\n"
 	data := map[string]any{
 		"Href":  "/h",
@@ -190,6 +196,7 @@ func TestCodegenSpreadAttrsDynBaseSortInterleave(t *testing.T) {
 // than map[string]string) is unaffected — the same base map feeds both
 // gopug.WriteSpreadAttrs and gopug.WriteSpreadAttrsAny.
 func TestCodegenSpreadAttrsDynBaseWithMapStringAnySource(t *testing.T) {
+	t.Parallel()
 	src := "a(href=Href)&attributes(AttrsAny)\n"
 	data := map[string]any{"Href": "/orig", "AttrsAny": map[string]any{"data-x": 1}}
 	dataLiteral := `spreadDynBaseData{Href: "/orig", AttrsAny: map[string]any{"data-x": 1}}`
@@ -206,6 +213,7 @@ func TestCodegenSpreadAttrsDynBaseWithMapStringAnySource(t *testing.T) {
 // genSpreadBase's relaxation correctly, not just the field/variable spread
 // path.
 func TestCodegenSpreadAttrsDynBaseWithInlineObjectSource(t *testing.T) {
+	t.Parallel()
 	src := `a(href=Href)&attributes({"data-x": "1"})` + "\n"
 	data := map[string]any{"Href": "/orig"}
 	dataLiteral := `spreadDynBaseData{Href: "/orig"}`
@@ -335,6 +343,7 @@ func TestCodegenSpreadAttrsDynBaseDeferrals(t *testing.T) {
 // itself is non-vacuous for this relaxation: a deliberately WRONG expected
 // value must fail the comparison.
 func TestCodegenSpreadAttrsDynBaseFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "a(href=Href)&attributes(Attrs)\n"
 	dataLiteral := `spreadDynBaseData{Href: "/orig", Attrs: map[string]string{}}`
 

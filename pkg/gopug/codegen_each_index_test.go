@@ -13,6 +13,7 @@ import (
 // model (i rendered as "0", "1", "2", …) proven by the attribute output
 // alone.
 func TestCodegenEachIndexBasic(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         "ul\n  each v, i in Items\n    li(data-i=i)= v\n",
 		data:        map[string]any{"Items": []any{"a", "b", "c"}},
@@ -24,6 +25,7 @@ func TestCodegenEachIndexBasic(t *testing.T) {
 // identically to the interpreter both through plain-text `#{i}`
 // interpolation and through a backtick template-literal `${i}`.
 func TestCodegenEachIndexInterpolation(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferentialBatch(t, []codegenUnbufferedCase{
 		{
 			name:        "plain-text interpolation",
@@ -49,6 +51,7 @@ func TestCodegenEachIndexInterpolation(t *testing.T) {
 // proof that this differential is actually exercising the generated
 // output, not merely compiling it.
 func TestCodegenEachIndexTruthinessSkipsFirst(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         "ul\n  each v, i in Items\n    if i\n      li.yes= v\n    else\n      li.no= v\n",
 		data:        map[string]any{"Items": []any{"a", "b", "c"}},
@@ -61,6 +64,7 @@ func TestCodegenEachIndexTruthinessSkipsFirst(t *testing.T) {
 // interpreter's compareValues numeric-string coercion, across every
 // branch of an if/else-if/else chain.
 func TestCodegenEachIndexComparison(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src: "ul\n  each v, i in Items\n" +
 			"    if i == 0\n      li.first= v\n" +
@@ -76,6 +80,7 @@ func TestCodegenEachIndexComparison(t *testing.T) {
 // the each-index path's own unconditional blank-use of both range
 // variables — would fail to compile ("v declared and not used").
 func TestCodegenEachIndexOnlyBody(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         "ul\n  each v, i in Items\n    li= i\n",
 		data:        map[string]any{"Items": []any{"a", "b", "c"}},
@@ -88,6 +93,7 @@ func TestCodegenEachIndexOnlyBody(t *testing.T) {
 // fail to compile ("i declared and not used") without the index
 // variable's own unconditional blank-use.
 func TestCodegenEachIndexItemOnlyBody(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         "ul\n  each v, i in Items\n    li= v\n",
 		data:        map[string]any{"Items": []any{"a", "b", "c"}},
@@ -99,6 +105,7 @@ func TestCodegenEachIndexItemOnlyBody(t *testing.T) {
 // iterates zero times (no error, no output) with an index variable present,
 // exactly as it does without one.
 func TestCodegenEachIndexEmptyCollection(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         "ul\n  each v, i in Items\n    li= i\n",
 		data:        map[string]any{"Items": []any{}},
@@ -116,6 +123,7 @@ func TestCodegenEachIndexEmptyCollection(t *testing.T) {
 // rendering the FIRST element with the "yes" class instead of "no" — must
 // not match what the generated code actually renders.
 func TestCodegenEachIndexTruthinessFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "each v, i in Items\n  if i\n    p.yes= v\n  else\n    p.no= v\n"
 
 	ast, err := Parse(src, nil)
@@ -184,6 +192,7 @@ func TestCodegenEachIndexElseDeferred(t *testing.T) {
 // disturb) is still byte-for-byte unchanged: a plain `each v in Items`
 // still compiles and renders exactly as it did before this increment.
 func TestCodegenEachIndexNoIndexRegression(t *testing.T) {
+	t.Parallel()
 	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
 		src:         "ul\n  each v in Items\n    li= v\n",
 		data:        map[string]any{"Items": []any{"a", "b", "c"}},

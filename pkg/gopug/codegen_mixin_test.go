@@ -98,6 +98,7 @@ func genMixinErr(t *testing.T, src string, noType bool) error {
 // argument binding (genValueExpr in the CALLER's own scope) are byte-
 // identical to the interpreter.
 func TestCodegenMixinBasicLiteralAndDataArg(t *testing.T) {
+	t.Parallel()
 	src := "mixin card(title)\n  .card\n    h1= title\n+card(\"Hello\")\n+card(Title)\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "World"}, `mixinDataStruct{Title: "World"}`)
 }
@@ -107,6 +108,7 @@ func TestCodegenMixinBasicLiteralAndDataArg(t *testing.T) {
 // as an `if` condition, over two different argument sets — one where the
 // condition parameter is truthy, one where it is the empty string (falsy).
 func TestCodegenMixinMultiParamAttrAndCondition(t *testing.T) {
+	t.Parallel()
 	src := strings.Join([]string{
 		"mixin badge(label, kind)",
 		"  span.badge(data-kind=kind)",
@@ -125,6 +127,7 @@ func TestCodegenMixinMultiParamAttrAndCondition(t *testing.T) {
 // than the mixin declares binds the missing trailing parameter to the empty
 // string, exactly like Runtime.renderMixinCall's own missing-arg default.
 func TestCodegenMixinMissingArgIsEmptyString(t *testing.T) {
+	t.Parallel()
 	src := "mixin greet(name)\n  p= name\n+greet()\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -134,6 +137,7 @@ func TestCodegenMixinMissingArgIsEmptyString(t *testing.T) {
 // like Runtime.renderMixinCall's own binding loop (which only iterates up to
 // len(decl.Parameters)).
 func TestCodegenMixinExtraArgIsIgnored(t *testing.T) {
+	t.Parallel()
 	src := "mixin greet(name)\n  p= name\n+greet(\"Sam\", \"extra\")\n"
 	runMixinDifferential(t, src, map[string]any{}, "mixinDataStruct{}")
 }
@@ -143,6 +147,7 @@ func TestCodegenMixinExtraArgIsIgnored(t *testing.T) {
 // mixin can be called more than once with different arguments — the helper
 // function is reused, not re-emitted per call.
 func TestCodegenMixinTwoMixinsMultipleCalls(t *testing.T) {
+	t.Parallel()
 	src := strings.Join([]string{
 		"mixin card(title)",
 		"  .card",
@@ -283,6 +288,7 @@ func TestCodegenMixinDeferrals(t *testing.T) {
 // so a passing mixin differential test above is actually exercising the
 // generated code's output, not merely checking it built and ran.
 func TestCodegenMixinFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin card(title)\n  .card\n    h1= title\n+card(\"Hello\")\n"
 
 	ast, err := Parse(src, nil)
@@ -311,6 +317,7 @@ func TestCodegenMixinFaultInjection(t *testing.T) {
 // template that declares no mixin at all: exactly one function (the render
 // function itself) is emitted, and the differential output is unchanged.
 func TestCodegenMixinNoMixinRegression(t *testing.T) {
+	t.Parallel()
 	src := "p Hello #{Name}\n"
 
 	ast, err := Parse(src, nil)

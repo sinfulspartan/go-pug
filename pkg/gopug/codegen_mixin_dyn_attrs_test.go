@@ -11,6 +11,7 @@ import (
 // the call site and spread onto the forwarding tag through
 // gopug.WriteSpreadAttrs, byte-identical to the interpreter.
 func TestCodegenMixinDynAttrBasic(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/x\")(class=Title)\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "on"}, `mixinDataStruct{Title: "on"}`)
 }
@@ -20,6 +21,7 @@ func TestCodegenMixinDynAttrBasic(t *testing.T) {
 // path, even when another attribute in the SAME call forces the dynamic
 // runtime-map branch.
 func TestCodegenMixinDynAttrBare(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/x\")(disabled, class=Title)\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "on"}, `mixinDataStruct{Title: "on"}`)
 }
@@ -28,6 +30,7 @@ func TestCodegenMixinDynAttrBare(t *testing.T) {
 // quoted-literal attribute with a dynamic data-field attribute merges both
 // into the same runtime map correctly.
 func TestCodegenMixinDynAttrMixedStaticDynamic(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/x\")(class=\"base\", id=Name)\n"
 	runMixinDifferential(t, src, map[string]any{"Name": "s1"}, `mixinDataStruct{Name: "s1"}`)
 }
@@ -38,6 +41,7 @@ func TestCodegenMixinDynAttrMixedStaticDynamic(t *testing.T) {
 // through the runtime gopug.WriteSpreadAttrs path instead of the gen-time
 // merge.
 func TestCodegenMixinDynAttrClassMergeWithBase(t *testing.T) {
+	t.Parallel()
 	src := "mixin b\n  button.btn&attributes(attributes)\n+b()(class=Title)\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "x"}, `mixinDataStruct{Title: "x"}`)
 }
@@ -49,6 +53,7 @@ func TestCodegenMixinDynAttrClassMergeWithBase(t *testing.T) {
 // result), and gopug.WriteSpreadAttrs escapes each spread value exactly
 // once, the same as any other spread source this generator supports.
 func TestCodegenMixinDynAttrEscapingAndNumeric(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/x\")(title=Name, data-n=Count)\n"
 	runMixinDifferential(t, src, map[string]any{"Name": "a & b <c>", "Count": 42}, `mixinDataStruct{Name: "a & b <c>", Count: 42}`)
 }
@@ -60,6 +65,7 @@ func TestCodegenMixinDynAttrEscapingAndNumeric(t *testing.T) {
 // genSpreadBase, and the "attributes" scope var via genSpreadAttrs) compose
 // without interfering with each other.
 func TestCodegenMixinDynAttrBaseParamPlusDynamicSpread(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/base\")(class=Title)\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "on"}, `mixinDataStruct{Title: "on"}`)
 }
@@ -70,6 +76,7 @@ func TestCodegenMixinDynAttrBaseParamPlusDynamicSpread(t *testing.T) {
 // exercising the sorted, comma-joined map-literal construction
 // genMixinCallAttrsMap emits for more than a single dynamic key.
 func TestCodegenMixinDynAttrMultipleDynamicEntries(t *testing.T) {
+	t.Parallel()
 	src := "mixin link(href)\n  a(href=href)&attributes(attributes)\n+link(\"/x\")(class=Title, id=Name, data-n=Count)\n"
 	runMixinDifferential(t, src, map[string]any{"Title": "on", "Name": "n1", "Count": 7}, `mixinDataStruct{Title: "on", Name: "n1", Count: 7}`)
 }
@@ -168,6 +175,7 @@ func TestCodegenMixinDynAttrDeferrals(t *testing.T) {
 // itself is non-vacuous for the dynamic call-attribute path: a deliberately
 // WRONG expected value must fail the comparison.
 func TestCodegenMixinDynAttrFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := "mixin b\n  button.btn&attributes(attributes)\n+b()(class=Title)\n"
 
 	ast, err := Parse(src, nil)

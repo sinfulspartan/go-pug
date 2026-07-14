@@ -22,6 +22,7 @@ import (
 // form uses scientific notation), an out-of-range index, a negative index,
 // and a non-numeric key all match the interpreter exactly.
 func TestCodegenIndexSlice(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "present element via interpolation",
@@ -104,6 +105,7 @@ func TestCodegenIndexSlice(t *testing.T) {
 // really does use fmt.Sprintf("%%v", …) and not genScalarStringify's
 // FormatFloat path.
 func TestCodegenIndexSliceFloatElementProvesPercentVFormatting(t *testing.T) {
+	t.Parallel()
 	got := runCodegenMethodOutput(t, "p #{Prices[0]}\n", `opsData{Prices: []float64{1000000.0}}`)
 	if !strings.Contains(got, "1e+06") {
 		t.Errorf("generated output %q does not contain the %%v scientific-notation form %q", got, "1e+06")
@@ -117,6 +119,7 @@ func TestCodegenIndexSliceFloatElementProvesPercentVFormatting(t *testing.T) {
 // key, an absent key, a nil map, and an int-valued map all match the
 // interpreter exactly.
 func TestCodegenIndexMap(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "present key",
@@ -154,6 +157,7 @@ func TestCodegenIndexMap(t *testing.T) {
 // field (`Items[Idx]`) or an arithmetic expression (`Items[Count - 1]`), not
 // only a literal.
 func TestCodegenIndexKeyFromExpression(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "key from an int field",
@@ -179,6 +183,7 @@ func TestCodegenIndexKeyFromExpression(t *testing.T) {
 // a map, and a string field — the string case using a multibyte value to
 // prove a RUNE count (utf8.RuneCountInString), not a byte count.
 func TestCodegenLengthValueContext(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "slice length",
@@ -217,6 +222,7 @@ func TestCodegenLengthValueContext(t *testing.T) {
 // three-byte kanji + 3 ASCII letters) but 12 bytes, so a byte-counting bug
 // would silently produce "12" instead of "6".
 func TestCodegenLengthMultibyteIsSixNotTwelve(t *testing.T) {
+	t.Parallel()
 	got := runCodegenMethodOutput(t, "p #{Name.length}\n", `opsData{Name: "日本語ABC"}`)
 	if !strings.Contains(got, "6") {
 		t.Errorf("generated output %q does not contain the rune count 6", got)
@@ -231,6 +237,7 @@ func TestCodegenLengthMultibyteIsSixNotTwelve(t *testing.T) {
 // generated-code output, matching the interpreter's own dispatch which
 // treats them the same way.
 func TestCodegenLengthParensEqualsBare(t *testing.T) {
+	t.Parallel()
 	dataLiteral := `opsData{Items: []string{"a", "b", "c"}}`
 	bare := runCodegenMethodOutput(t, "p #{Items.length}\n", dataLiteral)
 	withParens := runCodegenMethodOutput(t, "p #{Items.length()}\n", dataLiteral)

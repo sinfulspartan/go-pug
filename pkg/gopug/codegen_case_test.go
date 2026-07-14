@@ -12,6 +12,7 @@ import (
 // body the interpreter's renderCase does for a match on the first when, a
 // match on the second, and no match at all (default).
 func TestCodegenCaseBasicStringMatchAndDefault(t *testing.T) {
+	t.Parallel()
 	src := "case Name\n  when \"active\"\n    p Active\n  when \"off\"\n    p Off\n  default\n    p ?\n"
 	var cases []codegenArithCase
 	for _, name := range []string{"active", "off", "other"} {
@@ -30,6 +31,7 @@ func TestCodegenCaseBasicStringMatchAndDefault(t *testing.T) {
 // — matching the first when renders the SECOND when's body, matching the
 // second directly renders it too, and matching neither renders default.
 func TestCodegenCaseFallThroughEmptyWhen(t *testing.T) {
+	t.Parallel()
 	src := "case Name\n  when \"a\"\n  when \"b\"\n    p AB\n  default\n    p D\n"
 	var cases []codegenArithCase
 	for _, name := range []string{"a", "b", "c"} {
@@ -57,6 +59,7 @@ func TestCodegenCaseFallThroughEmptyWhen(t *testing.T) {
 // this test outright, without needing a separately hand-computed
 // expectation.
 func TestCodegenCaseStickyFallThroughPastNonMatch(t *testing.T) {
+	t.Parallel()
 	src := "case Name\n  when \"a\"\n  when \"zzz\"\n    p X\n"
 
 	runCodegenArithDifferential(t, codegenArithCase{
@@ -92,6 +95,7 @@ func TestCodegenCaseStickyFallThroughPastNonMatch(t *testing.T) {
 // TestCodegenCaseNoDefaultNoMatch proves a case with no default clause
 // renders nothing when nothing matches.
 func TestCodegenCaseNoDefaultNoMatch(t *testing.T) {
+	t.Parallel()
 	src := "case Name\n  when \"a\"\n    p A\n"
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "no default, no match: empty output",
@@ -107,6 +111,7 @@ func TestCodegenCaseNoDefaultNoMatch(t *testing.T) {
 // Runtime.renderCase renders default identically in both post-loop cases, so
 // codegen's single `if !doneTmp` gate after the when loop must cover both.
 func TestCodegenCaseDefaultAfterFallToEnd(t *testing.T) {
+	t.Parallel()
 	src := "case Name\n  when \"a\"\n  when \"b\"\n  default\n    p D\n"
 
 	runCodegenArithDifferentialBatch(t, []codegenArithCase{
@@ -132,6 +137,7 @@ func TestCodegenCaseDefaultAfterFallToEnd(t *testing.T) {
 // becomes "1", the when literal 1 also becomes "1"), so the comparison agrees
 // with the interpreter without either side ever being treated as a number.
 func TestCodegenCaseNumericField(t *testing.T) {
+	t.Parallel()
 	src := "case Count\n  when 1\n    p one\n  default\n    p other\n"
 	cases := []struct {
 		name  string
@@ -159,6 +165,7 @@ func TestCodegenCaseNumericField(t *testing.T) {
 // in the same scope) or silently shadow and misbehave; a clean build+run
 // proves neither happened.
 func TestCodegenCaseNested(t *testing.T) {
+	t.Parallel()
 	src := "case Name\n  when \"a\"\n    case Str1\n      when \"x\"\n        p AX\n      default\n        p A?\n  default\n    p D\n"
 	cases := []struct {
 		name string

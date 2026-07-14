@@ -102,6 +102,7 @@ func runCodegenFallibleErrorDifferentialBatch(t *testing.T, cases []codegenFalli
 // "division by zero" error, matching Runtime.evaluateExpr's own `/` branch
 // exactly (via the single-sourced gopug.Div both engines now call).
 func TestCodegenFallibleDivisionByZero(t *testing.T) {
+	t.Parallel()
 	runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
 		name:        "field divided by a zero-valued field",
 		src:         "p= Count / Zero\n",
@@ -116,6 +117,7 @@ func TestCodegenFallibleDivisionByZero(t *testing.T) {
 // operand fallibility flows through genValueExpr's numeric-literal leaf the
 // same way a field operand's does.
 func TestCodegenFallibleDivisionByZeroLiteral(t *testing.T) {
+	t.Parallel()
 	runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
 		name:        "pure literal division by zero",
 		src:         "p= 10 / 0\n",
@@ -127,6 +129,7 @@ func TestCodegenFallibleDivisionByZeroLiteral(t *testing.T) {
 // TestCodegenFallibleModuloByZero mirrors TestCodegenFallibleDivisionByZero
 // for `%`: both engines abort with the identical "modulo by zero" error.
 func TestCodegenFallibleModuloByZero(t *testing.T) {
+	t.Parallel()
 	runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
 		name:        "field modulo a zero-valued field",
 		src:         "p= Count % Zero\n",
@@ -140,6 +143,7 @@ func TestCodegenFallibleModuloByZero(t *testing.T) {
 // the extraction prelude genInterpolation/genCode emit for a fallible value
 // expression never surfacing in the output.
 func TestCodegenFallibleDivisionSuccess(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "int field divided by literal",
 		src:         "p= Count / 2\n",
@@ -151,6 +155,7 @@ func TestCodegenFallibleDivisionSuccess(t *testing.T) {
 // TestCodegenFallibleModuloSuccess mirrors TestCodegenFallibleDivisionSuccess
 // for `%`.
 func TestCodegenFallibleModuloSuccess(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "int field modulo literal",
 		src:         "p= Count % 3\n",
@@ -163,6 +168,7 @@ func TestCodegenFallibleModuloSuccess(t *testing.T) {
 // whole value of a `#{}` interpolation (not just a buffered `= expr`), over
 // two string fields holding numeric-looking text.
 func TestCodegenFallibleInterpolationNumericStrings(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "numeric-looking string fields divided in an interpolation",
 		src:         "p #{Str1 / Str2}\n",
@@ -177,6 +183,7 @@ func TestCodegenFallibleInterpolationNumericStrings(t *testing.T) {
 // before the attribute's ` data-r="` static text is written, not interleaved
 // with it).
 func TestCodegenFallibleAttrValue(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "int field divided by literal in an attribute value",
 		src:         "a(data-r=Count / 2)\n",
@@ -191,6 +198,7 @@ func TestCodegenFallibleAttrValue(t *testing.T) {
 // nil" branch) — division by a non-numeric right operand is not a "zero
 // divisor" and must not be mistaken for one.
 func TestCodegenFallibleNonNumericIsEmptyNoError(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "division of non-numeric strings",
@@ -213,6 +221,7 @@ func TestCodegenFallibleNonNumericIsEmptyNoError(t *testing.T) {
 // left operand (int64-truncated before the Go `%`) — matches evaluateExpr's
 // own strconv.FormatFloat/int64-truncation exactly.
 func TestCodegenFallibleFormatting(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{name: "division yields a fractional quotient", src: "p= 7 / 2\n", data: map[string]any{}, dataLiteral: "opsData{}"},
 		{name: "modulo of two integers", src: "p= 7 % 2\n", data: map[string]any{}, dataLiteral: "opsData{}"},

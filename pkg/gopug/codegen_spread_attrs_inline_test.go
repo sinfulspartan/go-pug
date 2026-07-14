@@ -51,6 +51,7 @@ func runInlineSpreadDifferential(t *testing.T, src string) string {
 // renders every entry, in sortAttrNames's id/class/rest order,
 // byte-identically to Runtime.renderTag's own inline-object spread branch.
 func TestCodegenSpreadAttrsInlineBasic(t *testing.T) {
+	t.Parallel()
 	src := `div&attributes({"data-x": "1", role: "btn"})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -63,6 +64,7 @@ func TestCodegenSpreadAttrsInlineBasic(t *testing.T) {
 // class token) is space-appended to, never overwritten by, an inline
 // object's own "class" key (probe 2).
 func TestCodegenSpreadAttrsInlineClassMerge(t *testing.T) {
+	t.Parallel()
 	src := `div.base&attributes({class: "extra"})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -78,6 +80,7 @@ func TestCodegenSpreadAttrsInlineClassMerge(t *testing.T) {
 // string, since parseInlineObject only strips a matching pair of
 // surrounding quotes and never evaluates anything (probe 3).
 func TestCodegenSpreadAttrsInlineQuotedUnquotedKeyAndValue(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		src  string
@@ -100,6 +103,7 @@ func TestCodegenSpreadAttrsInlineQuotedUnquotedKeyAndValue(t *testing.T) {
 // literal text "true" renders as a bare boolean attribute, exactly like the
 // map[string]string field/variable spread path (probe 4, true half).
 func TestCodegenSpreadAttrsInlineBoolTrue(t *testing.T) {
+	t.Parallel()
 	src := `div&attributes({disabled: "true"})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -113,6 +117,7 @@ func TestCodegenSpreadAttrsInlineBoolTrue(t *testing.T) {
 // own base attribute of that name was itself a bare boolean (probe 4, false
 // half).
 func TestCodegenSpreadAttrsInlineBoolFalse(t *testing.T) {
+	t.Parallel()
 	src := `div(hidden)&attributes({hidden: "false"})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -126,6 +131,7 @@ func TestCodegenSpreadAttrsInlineBoolFalse(t *testing.T) {
 // (`"`, `<`, `>`, `&`) is escaped identically to the field/variable spread
 // path, through the same gopug.WriteSpreadAttrs / EscapeAttr call (probe 5).
 func TestCodegenSpreadAttrsInlineEscaping(t *testing.T) {
+	t.Parallel()
 	src := `div&attributes({title: 'a"b <c> & d'})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -138,6 +144,7 @@ func TestCodegenSpreadAttrsInlineEscaping(t *testing.T) {
 // renders only the tag's own base attributes, no error (probe 6, empty
 // half).
 func TestCodegenSpreadAttrsInlineEmptyObject(t *testing.T) {
+	t.Parallel()
 	src := `div(id="x")&attributes({})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -151,6 +158,7 @@ func TestCodegenSpreadAttrsInlineEmptyObject(t *testing.T) {
 // "continue" behavior for such a pair, while a well-formed sibling pair in
 // the same object still renders (probe 6, malformed half).
 func TestCodegenSpreadAttrsInlineMalformedPair(t *testing.T) {
+	t.Parallel()
 	src := `div&attributes({novalue, id: "x"})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -164,6 +172,7 @@ func TestCodegenSpreadAttrsInlineMalformedPair(t *testing.T) {
 // string, never evaluated — parseInlineObject has no expression evaluator at
 // all (probe 7, expr-looking half).
 func TestCodegenSpreadAttrsInlineExprLookingValue(t *testing.T) {
+	t.Parallel()
 	src := `div&attributes({a: b + c})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -176,6 +185,7 @@ func TestCodegenSpreadAttrsInlineExprLookingValue(t *testing.T) {
 // value that looks like an array literal is likewise treated as a plain
 // literal string, never evaluated (probe 7, nested-looking half).
 func TestCodegenSpreadAttrsInlineNestedLookingValue(t *testing.T) {
+	t.Parallel()
 	src := `div&attributes({a: [1,2]})` + "\n"
 	got := runInlineSpreadDifferential(t, src)
 
@@ -266,6 +276,7 @@ func TestCodegenSpreadAttrsInlineBaseClassWhitespaceInterpreterCollapses(t *test
 // itself is non-vacuous for the inline-object entry point: a deliberately
 // WRONG expected value must fail the comparison.
 func TestCodegenSpreadAttrsInlineFaultInjection(t *testing.T) {
+	t.Parallel()
 	src := `div.base&attributes({class: "extra"})` + "\n"
 
 	ast, err := Parse(src, nil)
@@ -295,6 +306,7 @@ func TestCodegenSpreadAttrsInlineFaultInjection(t *testing.T) {
 // full original suites live in codegen_spread_attrs_test.go and
 // codegen_spread_attrs_any_test.go and run unchanged alongside this file.
 func TestCodegenSpreadAttrsInlineFieldVariablePathStillWorks(t *testing.T) {
+	t.Parallel()
 	src := "div&attributes(Attrs)\n"
 	data := map[string]any{"Attrs": map[string]string{"data-x": "1", "role": "btn"}}
 	dataLiteral := `spreadAttrsData{Attrs: map[string]string{"data-x": "1", "role": "btn"}}`

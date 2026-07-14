@@ -22,6 +22,7 @@ import (
 // per-element %v form the interpreter's own "join" case uses, not a
 // scalar-only stringify).
 func TestCodegenJoinSliceReceivers(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "string slice",
@@ -72,6 +73,7 @@ func TestCodegenJoinSliceReceivers(t *testing.T) {
 // like the existing split(',')/split(",") proof, since UnquoteArg strips
 // either quote style off the separator the same way.
 func TestCodegenJoinSepQuoteStripBothQuoteStylesAgree(t *testing.T) {
+	t.Parallel()
 	data := map[string]any{"Items": []string{"a", "b", "c"}}
 	dataLiteral := `opsData{Items: []string{"a", "b", "c"}}`
 
@@ -100,6 +102,7 @@ func TestCodegenJoinSepQuoteStripBothQuoteStylesAgree(t *testing.T) {
 // formatting exactly, including the negative-precision clamp to 0 decimals
 // and the 0-arg default of 0 decimals.
 func TestCodegenToFixedNumericReceiverTotal(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "float64 field, two decimal places",
@@ -139,6 +142,7 @@ func TestCodegenToFixedNumericReceiverTotal(t *testing.T) {
 // gopug.ToFixed, matching the interpreter's own default-branch
 // ParseFloat(objVal) fallback exactly.
 func TestCodegenToFixedStringReceiverFallibleSuccess(t *testing.T) {
+	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
 		name:        "numeric-looking string field",
 		src:         "p #{Name.toFixed(2)}\n",
@@ -154,6 +158,7 @@ func TestCodegenToFixedStringReceiverFallibleSuccess(t *testing.T) {
 // Runtime.evaluateExpr's own default-branch ParseFloat failure exactly (via
 // the single-sourced gopug.ToFixedStr both engines now call).
 func TestCodegenToFixedStringReceiverErrorParity(t *testing.T) {
+	t.Parallel()
 	runCodegenFallibleErrorDifferential(t, codegenFallibleErrorCase{
 		name:        "non-numeric string field",
 		src:         "p #{Name.toFixed(2)}\n",
@@ -166,6 +171,7 @@ func TestCodegenToFixedStringReceiverErrorParity(t *testing.T) {
 // numeric receiver is TOTAL, matching gopug.ToPrecision's formatting
 // (including the 0-arg default of 6 significant figures) exactly.
 func TestCodegenToPrecisionNumericReceiverTotal(t *testing.T) {
+	t.Parallel()
 	cases := []codegenArithCase{
 		{
 			name:        "float64 field, three significant figures",
@@ -193,6 +199,7 @@ func TestCodegenToPrecisionNumericReceiverTotal(t *testing.T) {
 // and a non-numeric string produces the identical
 // "toPrecision: value ... is not a number" error in both engines.
 func TestCodegenToPrecisionStringReceiverFallible(t *testing.T) {
+	t.Parallel()
 	t.Run("numeric-looking string succeeds", func(t *testing.T) {
 		runCodegenArithDifferential(t, codegenArithCase{
 			name:        "numeric-looking string field",
