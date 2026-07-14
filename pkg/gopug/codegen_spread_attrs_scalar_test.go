@@ -303,9 +303,10 @@ func TestCodegenSpreadAttrsScalarEveryAcceptedKind(t *testing.T) {
 
 // TestCodegenSpreadAttrsScalarBaseClassWhitespaceStillDefers proves the
 // pre-existing irregular-base-class-whitespace deferral still fires for a
-// concrete-scalar spread source too — genSpreadBase's check runs before the
-// spread source's element kind is even inspected, so it is source-type-
-// agnostic by construction, but this test exercises that directly.
+// concrete-scalar spread source too — genSpreadBase runs after the spread
+// source's element kind has already been inspected, but its whitespace
+// check never looks at that element kind, so it is source-type-agnostic
+// by construction, and this test exercises that directly.
 func TestCodegenSpreadAttrsScalarBaseClassWhitespaceStillDefers(t *testing.T) {
 	src := `div(class="a  b")&attributes(AttrsInt)` + "\n"
 	err := genScalarSpreadErr(t, src, false)

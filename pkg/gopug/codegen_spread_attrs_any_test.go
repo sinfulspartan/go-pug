@@ -198,10 +198,11 @@ func TestCodegenSpreadAttrsAnySortOrder(t *testing.T) {
 // TestCodegenSpreadAttrsAnyBaseClassWhitespaceStillDefers proves the
 // pre-existing irregular-base-class-whitespace deferral still fires for a
 // map[string]any spread source too, not just map[string]string —
-// the check happens before the spread source's element kind is even
-// inspected, so it is source-type-agnostic by construction, but this test
-// exercises that directly rather than merely asserting it by reading the
-// code.
+// the check runs in genSpreadBase, which is called after the spread
+// source's element kind has already been inspected, but the check itself
+// never looks at that element kind, so it is source-type-agnostic by
+// construction; this test exercises that directly rather than merely
+// asserting it by reading the code.
 func TestCodegenSpreadAttrsAnyBaseClassWhitespaceStillDefers(t *testing.T) {
 	src := `div(class="a  b")&attributes(AttrsAny)` + "\n"
 	err := genSpreadErr(t, src, false)

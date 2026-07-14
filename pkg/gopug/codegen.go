@@ -1161,7 +1161,7 @@ func (g *generator) mergeForwardedAttributes(attrs map[string]*AttributeValue, s
 // fmt.Sprintf("%v", attrVal)) — before the merge, via gopug.WriteSpreadAttrsAny.
 // A concrete-scalar source (map[string]int, map[string]bool,
 // map[string]float64, ...) is first converted, AT THE CALL SITE, into a
-// map[string]any by boxing each typed value (see genSpreadScalarMapLiteral),
+// map[string]any by boxing each typed value (see genScalarSpreadBoxLiteral),
 // then handed to that SAME gopug.WriteSpreadAttrsAny entry point — boxing a
 // concrete scalar into `any` and then `%v`-ing it produces the identical text
 // Runtime.renderTag's own reflect.Value.MapIndex(...).Interface() boxing
