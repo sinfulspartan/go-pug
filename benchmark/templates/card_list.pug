@@ -1,0 +1,16 @@
+doctype html
+html
+  head
+    title= PageTitle
+  body
+    h1= PageTitle
+    div.product-grid
+      each product in Products
+        div(class=(product.Featured ? "product-card product-card--featured" : "product-card"))
+          h2.product-card__name= product.Name
+          p.product-card__description= product.Description
+          p.product-card__price #{product.Price}
+          if product.InStock
+            span.badge.badge--in-stock In stock
+          else
+            span.badge.badge--out-of-stock Out of stock

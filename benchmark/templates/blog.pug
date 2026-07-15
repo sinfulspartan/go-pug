@@ -1,0 +1,18 @@
+doctype html
+html
+  head
+    title= PageTitle
+  body
+    h1= PageTitle
+    each post in Posts
+      article.post
+        h2= post.Title
+        p.post-meta= post.Author
+        case post.Category
+          when "tech"
+            span.tag.tag--tech Tech
+          when "life"
+            span.tag.tag--life Life
+          default
+            span.tag.tag--general General
+        p= post.Summary

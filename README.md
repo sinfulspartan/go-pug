@@ -14,6 +14,7 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Demo Server](#demo-server)
+- [Benchmarks](#benchmarks)
 - [Syntax Reference](#syntax-reference)
    - [Doctype](#doctype)
    - [Tags](#tags)
@@ -92,6 +93,16 @@ The server embeds all template files and stylesheets at compile time (`//go:embe
 | `uppercase` | Uppercases the body text                                                                          |
 | `shout`     | Uppercases each line and appends a configurable suffix (`!` by default); accepts `suffix=` option |
 | `wrap`      | Wraps each line in configurable brackets (`[` `]` by default); accepts `open=` / `close=` options |
+
+---
+
+## Benchmarks
+
+A public, reproducible 3-way render-throughput comparison lives in [`benchmark/`](benchmark/): **pug.js 3.0.4** (Node) vs the **go-pug interpreter** (`Template.Render`) vs **go-pug codegen** (a generated Go render function, built once and called directly). Every template is verified byte-identical across all three engines before it is timed.
+
+![Render throughput chart](benchmark/chart.svg)
+
+Codegen is the fastest engine on 7 of the 8 templates in the corpus, typically 1.3–2.7x pug.js's throughput (one template, `mixin_attrs`, reaches roughly 19x); on the remaining template, `card_list`, it comes in a few percent behind pug.js, reported as measured. Both pug.js and codegen render one to two orders of magnitude faster than the go-pug interpreter, the tree-walking default path. See [`benchmark/README.md`](benchmark/README.md) for the full methodology, machine details, and the exact reproduce command (`go run ./benchmark`).
 
 ---
 

@@ -1,0 +1,9 @@
+{
+  "name": "go-pug-benchmark",
+  "private": true,
+  "type": "module",
+  "description": "pug.js render-throughput leg of the go-pug 3-way benchmark",
+  "dependencies": {
+    "pug": "3.0.4"
+  }
+}

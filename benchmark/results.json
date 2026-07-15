@@ -1,0 +1,86 @@
+{
+  "generatedAt": "2026-07-15T22:22:19Z",
+  "methodology": {
+    "description": "Every engine is pre-compiled/pre-generated exactly once, outside the timed loop: pug.js via pug.compileFile, the interpreter via gopug.Compile, codegen via GenerateGo + `go build`. Only the render call itself is timed, rendering the same fixture data every iteration to a discarded sink (io.Discard for codegen; the interpreter's returned string is discarded after a length checksum; pug.js accumulates a length checksum so V8 cannot treat the calls as dead code).",
+    "metric": "renders per second (higher is better)",
+    "calibrationIterations": 30,
+    "targetRepSeconds": 0.4,
+    "minIterations": 200,
+    "maxIterations": 3000000,
+    "warmupFraction": 0.15,
+    "repetitions": 5,
+    "aggregation": "median of 5 repetitions, each preceded by its own discarded warmup",
+    "sink": "codegen: io.Discard; interpreter: Template.Render's returned string, discarded after accumulating its length; pug.js: the rendered string's length accumulated into a checksum written to the raw Node-leg output",
+    "byteIdentityAssertion": "For every template, all three engines are rendered once (outside the timed loop) and compared byte-for-byte after trimming a single trailing newline; a template is only timed, and only appears in this file, if pug.js, the interpreter, and codegen produced identical output"
+  },
+  "machine": {
+    "os": "windows/amd64",
+    "cpu": "AMD Ryzen 9 5900HX with Radeon Graphics",
+    "goVersion": "go1.26.0",
+    "nodeVersion": "v24.14.0",
+    "pugVersion": "3.0.4"
+  },
+  "caveats": [
+    "This is a cross-runtime comparison: pug.js runs on Node/V8 (a JIT-compiled dynamic language) and go-pug codegen runs as compiled, ahead-of-time Go — it answers \"what would I deploy\", not \"which language is faster\" in the abstract.",
+    "Absolute renders/second is machine-dependent; only relative ordering and rough magnitude should be expected to reproduce on a different machine.",
+    "The corpus is deliberately restricted to templates where go-pug codegen fully supports the template (no fallback/defer) and all three engines produce byte-identical HTML, so every number here measures equivalent rendered output."
+  ],
+  "templates": [
+    {
+      "name": "mixin_data_args",
+      "description": "mixin called with struct-typed data (positional string args)",
+      "pugjsRendersPerSec": 12296866.32493641,
+      "interpreterRendersPerSec": 457640.114071985,
+      "codegenRendersPerSec": 32472663.429502927
+    },
+    {
+      "name": "mixin_default",
+      "description": "mixin with a default parameter, called twice (data-free)",
+      "pugjsRendersPerSec": 7758841.087430409,
+      "interpreterRendersPerSec": 483968.2297442357,
+      "codegenRendersPerSec": 16205082.886298118
+    },
+    {
+      "name": "mixin_attrs",
+      "description": "mixin with \u0026attributes spreading a caller-supplied attribute block",
+      "pugjsRendersPerSec": 2500809.094994655,
+      "interpreterRendersPerSec": 375189.46599045687,
+      "codegenRendersPerSec": 48386394.39104916
+    },
+    {
+      "name": "nil_pointer_path",
+      "description": "nil-safe dot-path through a non-nil pointer intermediate",
+      "pugjsRendersPerSec": 21318693.711639334,
+      "interpreterRendersPerSec": 1250486.819704236,
+      "codegenRendersPerSec": 57116855.37441051
+    },
+    {
+      "name": "card_list",
+      "description": "product grid: each-loop, paren-ternary dynamic class, if/else badge",
+      "pugjsRendersPerSec": 497854.5769646724,
+      "interpreterRendersPerSec": 11518.18704823052,
+      "codegenRendersPerSec": 471520.2181189659
+    },
+    {
+      "name": "table",
+      "description": "data table: each-loop over rows, class-object zebra highlight",
+      "pugjsRendersPerSec": 207768.46484547318,
+      "interpreterRendersPerSec": 18361.840309714924,
+      "codegenRendersPerSec": 307557.8276378681
+    },
+    {
+      "name": "form",
+      "description": "settings form: each-loop text fields + each-loop select options",
+      "pugjsRendersPerSec": 601836.6224863423,
+      "interpreterRendersPerSec": 42587.47740090152,
+      "codegenRendersPerSec": 872884.3284238924
+    },
+    {
+      "name": "blog",
+      "description": "blog index: each-loop with a nested case/when tag classifier",
+      "pugjsRendersPerSec": 1221725.4246843152,
+      "interpreterRendersPerSec": 41505.34237054922,
+      "codegenRendersPerSec": 1635819.7411707856
+    }
+  ]
+}

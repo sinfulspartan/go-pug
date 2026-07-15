@@ -1,0 +1,17 @@
+doctype html
+html
+  head
+    title Account Settings
+  body
+    h1 Account Settings
+    form(action="/settings" method="post")
+      each field in Fields
+        div.form-group
+          label(for=field.ID)= field.Label
+          input(id=field.ID name=field.ID type="text" value=field.Value)
+      div.form-group
+        label(for="role") Role
+        select(id="role" name="role")
+          each option in RoleOptions
+            option(value=option.Value)= option.Label
+      button(type="submit") Save Changes

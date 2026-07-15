@@ -1,0 +1,20 @@
+doctype html
+html
+  head
+    title= PageTitle
+  body
+    h1= PageTitle
+    table.data-table
+      thead
+        tr
+          th Name
+          th Department
+          th Status
+          th Salary
+      tbody
+        each employee in Employees
+          tr(class={"data-table__row": true, "data-table__row--highlight": employee.Highlight})
+            td= employee.Name
+            td= employee.Department
+            td= employee.Status
+            td= employee.Salary
