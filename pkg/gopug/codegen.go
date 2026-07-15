@@ -4672,8 +4672,18 @@ func (g *generator) genCondition(expr string) (string, error) {
 }
 
 // genOperandTruthiness emits the truthiness form of a single condition
-// operand with no top-level operator: a bare array-literal `.includes(...)`/
-// `.contains(...)` call (MethodIncludesSlice always returns the canonical
+// operand with no top-level operator. Before any of that, the five bare
+// reserved-word literals Runtime.evaluateExpr itself special-cases —
+// "true", "false", "null", "undefined", "nil" — are matched exactly and
+// turned into the constant Go bool isTruthy(evaluateExpr(literal)) would
+// yield: "true" is truthy, "false" is falsy, and the null-family all
+// evaluates to the empty string, which isTruthy treats as falsy. This is an
+// exact-string match against the trimmed/paren-stripped operand, so a field
+// merely named one of these words is never affected — resolveFieldExpr
+// still runs unchanged for anything else, including a field literally named
+// `True` or similar (case-sensitive, so it doesn't collide). A bare
+// array-literal `.includes(...)`/`.contains(...)` call (MethodIncludesSlice
+// always returns the canonical
 // string "true" or "false", so its truthiness is a plain `== "true"`
 // comparison — no gopug.Truthy needed, since that helper's falsy-set nuances
 // never apply to a value restricted to exactly those two strings), a
@@ -4692,6 +4702,15 @@ func (g *generator) genCondition(expr string) (string, error) {
 // with fmt and isTruthy-test that (e.g. an empty slice stringifies to "[]",
 // which is truthy, a footgun this increment doesn't try to reproduce).
 func (g *generator) genOperandTruthiness(expr string) (string, error) {
+	switch expr {
+	case "true":
+		return "true", nil
+	case "false":
+		return "false", nil
+	case "null", "undefined", "nil":
+		return "false", nil
+	}
+
 	if isArrayLiteralMethodCall(expr, "includes", "contains") {
 		goExpr, fallible, err := g.genValueExpr(expr)
 		if err != nil {
