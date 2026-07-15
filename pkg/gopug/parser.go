@@ -228,7 +228,7 @@ func (p *Parser) parseTag() (Node, error) {
 	}
 
 	if p.cur.Type == TokenCodeBuffered && p.cur.IndentDepth == currentDepth && p.cur.Line == attrEndLine {
-		code := &CodeNode{Expression: p.cur.Value, Type: CodeBuffered, Line: p.cur.Line, Col: p.cur.Col}
+		code := &CodeNode{Expression: p.cur.Value, Type: CodeBuffered, Line: p.cur.Line, Col: p.cur.Col, TagShorthand: true}
 		p.advance()
 		p.skipNewlines()
 		tag.Children = append(tag.Children, code)
@@ -236,7 +236,7 @@ func (p *Parser) parseTag() (Node, error) {
 	}
 
 	if p.cur.Type == TokenCodeUnescaped && p.cur.IndentDepth == currentDepth && p.cur.Line == attrEndLine {
-		code := &CodeNode{Expression: p.cur.Value, Type: CodeUnescaped, Line: p.cur.Line, Col: p.cur.Col}
+		code := &CodeNode{Expression: p.cur.Value, Type: CodeUnescaped, Line: p.cur.Line, Col: p.cur.Col, TagShorthand: true}
 		p.advance()
 		p.skipNewlines()
 		tag.Children = append(tag.Children, code)

@@ -42,9 +42,15 @@ func floatEqualNaNAware(a, b float64) bool {
 	return a == b
 }
 
-// TestPrettyInlineRefactorPreservesOutput verifies the hoisted-map refactor
-// of prettyInline does not change pretty-mode output for templates
-// containing inline tags and single-text-child tags.
+// TestPrettyInlineRefactorPreservesOutput pins pug.js 3.0.4's own pretty
+// output for a template mixing inline tags, a block tag with a single text
+// child, and a nested list: pug.render(src, {pretty:true}) ===
+// "\n<div><a href=\"#\">Link</a><span>Inline text</span>\n  <p>Single text
+// child</p>\n  <ul>\n    <li>One</li>\n    <li>Two</li>\n  </ul>\n</div>" —
+// p and li are block-named (each gets its own leading newline) even though
+// each has only a single text child, and the div's own content cannot
+// inline because it contains block-named children, so it also gets a
+// trailing newline.
 func TestPrettyInlineRefactorPreservesOutput(t *testing.T) {
 	src := "div\n  a(href=\"#\") Link\n  span Inline text\n  p Single text child\n  ul\n    li One\n    li Two"
 	opts := &Options{Pretty: true}
@@ -53,15 +59,15 @@ func TestPrettyInlineRefactorPreservesOutput(t *testing.T) {
 		t.Fatalf("Render error: %v", err)
 	}
 
-	want := "\n<div><a href=\"#\">Link</a><span>Inline text</span><p>Single text child</p>\n  <ul><li>One</li><li>Two</li>\n  </ul>\n</div>"
+	want := "\n<div><a href=\"#\">Link</a><span>Inline text</span>\n  <p>Single text child</p>\n  <ul>\n    <li>One</li>\n    <li>Two</li>\n  </ul>\n</div>"
 	if out != want {
 		t.Fatalf("pretty render mismatch:\ngot:  %q\nwant: %q", out, want)
 	}
 }
 
-// TestCompactInlineGatePreservesOutput verifies that gating the
-// prettyInline call behind r.pretty() does not change compact-mode output
-// for the same template.
+// TestCompactInlineGatePreservesOutput verifies that gating the pretty-mode
+// tag-inline classification behind r.pretty() does not change compact-mode
+// output for the same template.
 func TestCompactInlineGatePreservesOutput(t *testing.T) {
 	src := "div\n  a(href=\"#\") Link\n  span Inline text\n  p Single text child\n  ul\n    li One\n    li Two"
 	out, err := Render(src, nil, nil)

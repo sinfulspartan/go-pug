@@ -80,8 +80,8 @@ func (r *Runtime) prettyNewline() {
 }
 
 // inlineTagNames is the set of HTML tag names treated as inline for pretty
-// printing (rendered without child indentation). Built once at package init
-// so prettyInline doesn't allocate a fresh map on every call.
+// printing (suppressing the tag's own leading/closing newline). Built once
+// at package init so tagIsInline doesn't allocate a fresh map on every call.
 var inlineTagNames = map[string]bool{
 	"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
 	"big": true, "br": true, "button": true, "cite": true, "code": true,
@@ -92,27 +92,78 @@ var inlineTagNames = map[string]bool{
 	"tt": true, "var": true,
 }
 
-// prettyInline returns true when the tag should be rendered without child
-// indentation (inline elements and tags whose only child is a text node). A
-// TextRunNode child that spans more than one source line — consecutive
-// piped `|` lines — is the one exception: Pug renders that as an indented,
-// multi-line block even when it is the tag's sole child, so it does not
-// count as inline.
-func prettyInline(tag *TagNode) bool {
-	if inlineTagNames[tag.Name] {
-		return true
-	}
-	// Single text-only child — keep on one line
-	if len(tag.Children) == 1 {
-		switch child := tag.Children[0].(type) {
-		case *TextRunNode:
-			return !textRunSpansMultipleLines(child)
-		case *TextNode, *PipeNode, *BlockTextNode,
-			*InterpolationNode, *CodeNode:
-			return true
+// tagIsInline reports whether a tag suppresses its own pretty-print leading
+// and closing newline. This is purely a function of the tag's HTML element
+// NAME — matching pug.js's own Tag.isInline, which pug-parser sets from a
+// static inline-element list independent of what the tag actually contains.
+func tagIsInline(tag *TagNode) bool {
+	return inlineTagNames[tag.Name]
+}
+
+// tagCanInline reports whether every child of tag can render inline,
+// matching pug.js's pug-code-gen tagCanInline. This is a CONTENT-based
+// decision, independent of tagIsInline, and it governs whether a trailing
+// newline (and therefore indented block layout) is required before the
+// tag's own closing bracket: a tag whose content can inline needs no
+// trailing newline even when the tag itself is not inline-named (e.g. a
+// block tag with a single line of text), and a tag whose content cannot
+// inline needs one even when the tag itself is inline-named. An empty tag
+// (no children at all) vacuously can inline — there is nothing to force a
+// block layout.
+func tagCanInline(tag *TagNode) bool {
+	for _, child := range tag.Children {
+		if !childCanInline(child) {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// childCanInline classifies a single child node for tagCanInline's
+// recursive content check. A nested Tag or TagInterpolation child counts as
+// inline purely by its OWN name (tagIsInline) — not by recursively asking
+// whether ITS content can also inline — matching pug.js 3.0.4 exactly: an
+// inline-named tag wrapping block-level content (e.g. an <a> wrapping a
+// <div>) still counts as an inline CHILD of whatever tag it is nested
+// under, even though the wrapping tag's own content cannot inline.
+func childCanInline(n Node) bool {
+	switch v := n.(type) {
+	case *TextNode:
+		return !strings.Contains(v.Content, "\n")
+	case *TextRunNode:
+		// A TextRunNode that spans more than one source line — consecutive
+		// piped `|` lines — always forces block layout, matching pug.js's
+		// own synthetic newline-only Text node inserted between piped
+		// lines, which fails its own "no embedded newline" inline test.
+		if textRunSpansMultipleLines(v) {
+			return false
+		}
+		for _, member := range v.Nodes {
+			if !childCanInline(member) {
+				return false
+			}
+		}
+		return true
+	case *InterpolationNode:
+		return true
+	case *CodeNode:
+		// A code statement on its own indented child line is not inline;
+		// the same code written as tag-shorthand on the tag's own source
+		// line (e.g. "title= pageTitle") is.
+		return v.TagShorthand
+	case *TagNode:
+		return tagIsInline(v)
+	case *TagInterpolationNode:
+		return tagIsInline(v.Tag)
+	case *BlockExpansionNode:
+		return tagIsInline(v.Parent)
+	case *BlockTextNode:
+		return !strings.Contains(v.Content, "\n")
+	case *PipeNode:
+		return true
+	default:
+		return false
+	}
 }
 
 // textRunNodeLine returns the source line a text-run member node came from.
@@ -717,8 +768,18 @@ func mergeSpreadClass(existing, spreadVal string) string {
 }
 
 func (r *Runtime) renderTag(tag *TagNode) error {
-	if r.pretty() && !prettyInline(tag) {
+	pretty := r.pretty()
+	isInline := pretty && tagIsInline(tag)
+	if pretty && !isInline {
 		r.prettyNewline()
+	}
+	// The nesting-depth counter used to compute indentation increases for
+	// EVERY tag entered, inline-named or not — matching pug.js's own
+	// unconditional this.indents++ — so that a block-level descendant
+	// nested inside an inline-named wrapper (e.g. a <div> inside an <a>)
+	// still lands at the correct indentation depth.
+	if pretty {
+		r.prettyIndent++
 	}
 
 	r.htmlBuf.WriteString("<")
@@ -1028,20 +1089,21 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 
 	if tag.SelfClose {
 		r.htmlBuf.WriteString(" />")
+		if pretty {
+			r.prettyIndent--
+		}
 		return nil
 	}
 
 	if isVoidElement(tag.Name) {
 		r.htmlBuf.WriteString(">")
+		if pretty {
+			r.prettyIndent--
+		}
 		return nil
 	}
 
 	r.htmlBuf.WriteString(">")
-
-	isInline := r.pretty() && prettyInline(tag)
-	if r.pretty() && !isInline {
-		r.prettyIndent++
-	}
 
 	if isRawTextElement(tag.Name) {
 		r.inRawTextElement = true
@@ -1057,8 +1119,10 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		r.inRawTextElement = false
 	}
 
-	if r.pretty() && !isInline {
+	if pretty {
 		r.prettyIndent--
+	}
+	if pretty && !isInline && !tagCanInline(tag) {
 		r.prettyNewline()
 	}
 
@@ -2307,13 +2371,15 @@ func (r *Runtime) renderCase(c *CaseNode) error {
 	return nil
 }
 
+// renderDoctype writes the doctype declaration. It deliberately does not
+// write its own trailing newline in pretty mode: matching pug.js 3.0.4,
+// the separating newline comes entirely from whatever follows (a
+// non-inline-named tag supplies its own leading newline; an inline-named
+// tag, plain text, or nothing at all supplies none).
 func (r *Runtime) renderDoctype(dt *DoctypeNode) error {
 	doctype := r.formatDoctype(dt.Value)
 	r.htmlBuf.WriteString(doctype)
 	r.doctype = dt.Value
-	if r.pretty() {
-		r.htmlBuf.WriteByte('\n')
-	}
 	return nil
 }
 
@@ -2326,8 +2392,23 @@ func (r *Runtime) renderPipe(pipe *PipeNode) error {
 // renderBlockText renders dot-block text. Content may contain #{...}, !{...},
 // and #[...] interpolations, which are processed by re-using the lexer's
 // emitTextWithInterpolations helper rather than running the full parser.
+//
+// A single-line block gets no newline of its own at all — it is left
+// entirely to the enclosing tag's own leading/closing newline decision
+// (childCanInline treats it exactly like a single-line TextNode). A
+// multi-line block, in pretty mode, gets a leading newline before its first
+// line and a further one at each embedded line break within its own
+// literal text content — matching pug.js 3.0.4's own per-line indentation
+// of a multi-line Text node — so that every line lands at the same
+// indentation as its sibling content, not just the first. It never writes
+// its own trailing newline: that comes from the enclosing tag's own closing
+// logic, which childCanInline correctly forces into block layout for
+// multi-line content.
 func (r *Runtime) renderBlockText(block *BlockTextNode) error {
-	r.prettyNewline()
+	pretty := r.pretty()
+	if pretty && strings.Contains(block.Content, "\n") {
+		r.prettyNewline()
+	}
 
 	lx := NewLexer("")
 	lx.emitTextWithInterpolations(block.Content, 0)
@@ -2335,11 +2416,7 @@ func (r *Runtime) renderBlockText(block *BlockTextNode) error {
 	for _, tok := range lx.tokens {
 		switch tok.Type {
 		case TokenText:
-			if r.inRawTextElement {
-				r.htmlBuf.WriteString(tok.Value)
-			} else {
-				r.htmlBuf.WriteString(htmlEscapeText(tok.Value))
-			}
+			r.writeBlockTextLiteral(tok.Value, pretty)
 
 		case TokenInterpolation:
 			val, err := r.evaluateExpr(tok.Value)
@@ -2382,6 +2459,36 @@ func (r *Runtime) renderBlockText(block *BlockTextNode) error {
 	}
 
 	return nil
+}
+
+// writeBlockTextLiteral writes one literal (non-interpolated) text fragment
+// of a block-text node's own source content. In pretty mode, each embedded
+// newline WITHIN this fragment gets its own indentation, matching how
+// prettyNewline() already indents every other pretty-mode line break —
+// otherwise a multi-line block-text's second and later lines would carry no
+// indentation at all, even though the first line (and the enclosing tag's
+// own children) do. In compact mode, or when the fragment has no embedded
+// newline, the fragment is escaped and written whole, unchanged from before.
+func (r *Runtime) writeBlockTextLiteral(s string, pretty bool) {
+	if !pretty || !strings.Contains(s, "\n") {
+		if r.inRawTextElement {
+			r.htmlBuf.WriteString(s)
+		} else {
+			r.htmlBuf.WriteString(htmlEscapeText(s))
+		}
+		return
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if i > 0 {
+			r.prettyNewline()
+		}
+		if r.inRawTextElement {
+			r.htmlBuf.WriteString(line)
+		} else {
+			r.htmlBuf.WriteString(htmlEscapeText(line))
+		}
+	}
 }
 
 func (r *Runtime) renderLiteralHTML(lit *LiteralHTMLNode) error {

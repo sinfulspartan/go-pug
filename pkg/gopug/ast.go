@@ -101,6 +101,15 @@ type CodeNode struct {
 	Line       int
 	Col        int
 
+	// TagShorthand is true when this code was written immediately after a
+	// tag on the tag's own source line (e.g. "title= pageTitle"), as opposed
+	// to being its own indented child statement (e.g. "title" on one line,
+	// "  = pageTitle" on the next). pug.js's own parser makes exactly this
+	// grammatical distinction: tag-shorthand code is inline (it can never
+	// start a new pretty-print line of its own), while the same code parsed
+	// as a standalone child statement is not.
+	TagShorthand bool
+
 	// compiled holds a closure-compiled version of Expression for the
 	// buffered/unescaped output shapes classifyExpr recognizes as safe to
 	// precompute at Compile time (see expr_compile.go). It is nil for any
