@@ -506,6 +506,147 @@ func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
 	return evaluated
 }
 
+// splitClassTokensTopLevel splits s on whitespace runs that sit at depth 0 —
+// outside any quoted string and outside any parenthesis/bracket/brace group —
+// so a token that itself contains spaces (a quoted literal, or a
+// parenthesized expression) survives as a single element instead of being
+// torn apart the way strings.Fields would tear it apart. It is the splitter
+// resolveClassExprMerge needs to recognize the shape parser.go's class-merge
+// branch produces for a shorthand class merged with an operator/ternary/
+// concatenation expression: zero or more quoted literal tokens followed by
+// one parenthesized expression token, e.g. `"btn" ("btn-" + style)`.
+func splitClassTokensTopLevel(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	depth := 0
+	inDouble := false
+	inSingle := false
+
+	flush := func() {
+		if cur.Len() > 0 {
+			tokens = append(tokens, cur.String())
+			cur.Reset()
+		}
+	}
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' && (inDouble || inSingle) {
+			cur.WriteByte(ch)
+			if i+1 < len(s) {
+				i++
+				cur.WriteByte(s[i])
+			}
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			cur.WriteByte(ch)
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			cur.WriteByte(ch)
+			continue
+		}
+		if inDouble || inSingle {
+			cur.WriteByte(ch)
+			continue
+		}
+		switch ch {
+		case '(', '[', '{':
+			depth++
+			cur.WriteByte(ch)
+			continue
+		case ')', ']', '}':
+			depth--
+			cur.WriteByte(ch)
+			continue
+		}
+		if depth == 0 && (ch == ' ' || ch == '\t') {
+			flush()
+			continue
+		}
+		cur.WriteByte(ch)
+	}
+	flush()
+	return tokens
+}
+
+// classExprMergeShape reports whether rawValExpr matches the shape
+// parser.go's class-merge branch produces when a shorthand/static class list
+// is combined with a class= value that carries a top-level operator
+// (ternary, comparison, logical, or string concatenation): one or more
+// top-level double- or single-quoted literal tokens followed by exactly one
+// parenthesized expression token, e.g. `"btn" ("btn-" + style)`. On a match
+// it returns the literal tokens already unquoted (an empty literal is
+// dropped, never returned) and the expression's own text with its one layer
+// of wrapping parens stripped; any other shape reports ok=false.
+//
+// This is the single source of truth both Runtime.renderTag (which
+// evaluates the expression and merges the result) and the codegen backend
+// (which defers this shape rather than guessing at its output) use to
+// recognize the merge, so the two can never silently disagree about which
+// values are this shape.
+func classExprMergeShape(rawValExpr string) (literals []string, exprInner string, ok bool) {
+	tokens := splitClassTokensTopLevel(rawValExpr)
+	if len(tokens) < 2 {
+		return nil, "", false
+	}
+
+	last := tokens[len(tokens)-1]
+	if len(last) < 2 || last[0] != '(' || last[len(last)-1] != ')' {
+		return nil, "", false
+	}
+
+	for _, tok := range tokens[:len(tokens)-1] {
+		if len(tok) < 2 {
+			return nil, "", false
+		}
+		quote := tok[0]
+		if (quote != '"' && quote != '\'') || tok[len(tok)-1] != quote {
+			return nil, "", false
+		}
+		if lit := tok[1 : len(tok)-1]; lit != "" {
+			literals = append(literals, lit)
+		}
+	}
+
+	return literals, last[1 : len(last)-1], true
+}
+
+// resolveClassExprMerge evaluates a class= value in the classExprMergeShape
+// shape (see its doc comment for what that shape is and where it comes
+// from). It reports ok=false for any other shape so the caller falls back
+// to its existing handling.
+//
+// Matching pug.js: the quoted tokens always render as literal class names —
+// they are never evaluated, even if their text collides with an in-scope
+// variable name. The parenthesized expression is evaluated exactly once, as
+// a single unit, and contributes at most one entry to the class list; its
+// raw result is never re-split on whitespace, so any interior spacing the
+// expression itself produces (e.g. from string concatenation) is preserved
+// verbatim, matching pug.js's own array-join behavior. The expression's
+// entry is dropped entirely when it evaluates to the empty string or to the
+// literal string "false" — the same falsy-drop pug.js applies to a real
+// boolean false result (e.g. `a && "on"` when a is false). go-pug's
+// evaluator is stringly typed and cannot distinguish that from a class value
+// an author genuinely wrote as the text "false"; pug.js keeps a genuine
+// string "false" and only drops a real boolean false, so this is a narrow,
+// deliberate divergence rather than an oversight.
+func (r *Runtime) resolveClassExprMerge(rawValExpr string) (string, bool) {
+	parts, exprInner, ok := classExprMergeShape(rawValExpr)
+	if !ok {
+		return "", false
+	}
+
+	evaluated, _ := r.evaluateExpr(exprInner)
+	if evaluated != "" && evaluated != "false" {
+		parts = append(parts, evaluated)
+	}
+	return strings.Join(parts, " "), true
+}
+
 // mergeSpreadClass computes the "class" merge rule a `&attributes(<expr>)`
 // spread uses: an EMPTY spread class value contributes nothing at all (the
 // existing/base class, if any, is left completely untouched, matching real
@@ -682,6 +823,8 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 							}
 						}
 					}
+				} else if merged, ok := r.resolveClassExprMerge(rawValExpr); ok {
+					evaluated = merged
 				} else {
 					if isOperatorExpr(rawValExpr) {
 						evaluated, _ = r.evaluateExpr(rawValExpr)

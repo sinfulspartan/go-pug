@@ -294,15 +294,41 @@ func (p *Parser) parseAttributes(tag *TagNode) (int, error) {
 								newInner = newInner[1 : len(newInner)-1]
 							}
 							isExprValue := len(newInner) > 0 && (newInner[0] == '!' || newInner[0] == '(' || newInner[0] == '[' || newInner[0] == '{')
-							// Also treat the value as an expression if it contains
-							// a top-level operator (ternary, comparison, logical,
-							// concatenation).  This catches cases like
-							//   .card(class=isActive ? "active" : "")
-							// where the value doesn't start with a special char.
+							// hasTopLevelOperator is computed independently of
+							// isExprValue's leading-character check (a value can
+							// start with one of those characters AND still carry
+							// a top-level operator, e.g. `!flag && "on"`) so the
+							// merge below can tell an operator/ternary/logical/
+							// concatenation expression apart from a class-object,
+							// negation, or array-literal value, which need
+							// different merge handling.
+							hasTopLevelOperator := isOperatorExprParser(newInner)
 							if !isExprValue {
-								isExprValue = isOperatorExprParser(newInner)
+								isExprValue = hasTopLevelOperator
 							}
 							switch {
+							case isExprValue && hasTopLevelOperator:
+								// The value carries a top-level operator (ternary,
+								// comparison, logical, or string concatenation) and
+								// must be evaluated as ONE unit at render time — it
+								// cannot be flattened into a space-separated word
+								// list the way a plain static merge can, because its
+								// own interior spaces are part of the expression, not
+								// class-name separators. Quote each existing
+								// shorthand/static token individually so it renders
+								// as a literal class name, and wrap the new
+								// expression in parens so the runtime can identify it
+								// as a single opaque unit to evaluate, e.g.
+								//   .btn(class="btn-" + style) -> `"btn" ("btn-" + style)`
+								quotedExisting := quoteClassTokens(existingInner)
+								merged := "(" + newInner + ")"
+								if quotedExisting != "" {
+									merged = quotedExisting + " (" + newInner + ")"
+								}
+								tag.Attributes["class"] = &AttributeValue{
+									Value:     merged,
+									Unescaped: unescaped,
+								}
 							case isExprValue:
 								tag.Attributes["class"] = &AttributeValue{
 									Value:     existingInner + " " + newInner,

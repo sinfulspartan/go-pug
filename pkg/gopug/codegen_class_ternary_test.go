@@ -281,6 +281,38 @@ func TestCodegenClassParenDeferralsAreDistinct(t *testing.T) {
 	}
 }
 
+// TestCodegenClassShorthandPlusOperatorMergeDefers proves codegen stays in
+// lockstep with the interpreter fix for a shorthand class merged with an
+// unparenthesized operator/concatenation expression
+// (`button.btn(class="btn-" + style)`, the shape 38-mixins-nested.pug
+// exercises): the interpreter now renders this correctly, but codegen still
+// explicitly defers it rather than guessing at output, so the two backends
+// never silently disagree.
+func TestCodegenClassShorthandPlusOperatorMergeDefers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "shorthand + unparenthesized concat", src: `button.btn(class="btn-" + style)` + "\n"},
+		{name: "shorthand + unparenthesized ternary", src: `.card(class=cond ? "x y" : "")` + "\n"},
+		{name: "shorthand + unparenthesized logical and", src: `.x(class=a && "on")` + "\n"},
+		{name: "multiple shorthands + concat", src: `.a.b(class="c-" + s)` + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := genClassTernaryErr(t, tc.src, false)
+			if err == nil {
+				t.Fatalf("GenerateGo(%q): expected a deferral error, got nil", tc.src)
+			}
+			const want = "unsupported dynamic class attribute in codegen (a ternary/operator class expression is not yet supported)"
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("GenerateGo(%q): error %q does not describe the expected deferral", tc.src, err.Error())
+			}
+		})
+	}
+}
+
 // TestCodegenClassParenRegressionUnchangedPaths proves the pre-existing
 // class-value paths this increment must leave untouched still work exactly
 // as before: the class-object literal path, and the Fields-split

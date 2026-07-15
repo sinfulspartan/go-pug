@@ -1942,6 +1942,22 @@ func (g *generator) genDynamicClass(trimmed string) error {
 		return fmt.Errorf("unsupported dynamic class attribute in codegen (a ternary/operator class expression is not yet supported)")
 	}
 
+	// A shorthand/static class list merged with an operator/ternary/logical/
+	// concatenation expression (parser.go's class-merge branch quotes the
+	// static tokens and wraps the expression in parens, e.g.
+	// `"btn" ("btn-" + style)`) is the same unsupported shape isOperatorExpr
+	// catches above for the un-merged case — its top-level operator just
+	// sits inside the trailing parens instead of at depth 0, so isOperatorExpr
+	// alone would miss it. Defer explicitly here rather than falling through
+	// to the strings.Fields tokenizer below, which would tear the
+	// parenthesized expression token apart and either error on an
+	// unrecognizable fragment or, if a future change to its token
+	// classification ever became more permissive, silently emit wrong output
+	// instead of deferring.
+	if _, _, ok := classExprMergeShape(trimmed); ok {
+		return fmt.Errorf("unsupported dynamic class attribute in codegen (a ternary/operator class expression is not yet supported)")
+	}
+
 	if classObjStart := strings.IndexByte(trimmed, '{'); classObjStart >= 0 && strings.HasSuffix(trimmed, "}") {
 		return g.genDynamicClassObject(trimmed, classObjStart)
 	}
