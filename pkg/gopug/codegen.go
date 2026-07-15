@@ -1750,32 +1750,59 @@ func staticCallAttrValue(v *AttributeValue) (string, bool) {
 // parseAttributes's merge contract (parser.go's class-merge branch) means
 // that value is either a bare dynamic token on its own (`div(class=cls)`),
 // shorthand class tokens, individually quoted, followed by one bare
-// dynamic token (`"text-end" cls`, `"btn" "large" variant`), or a class
+// dynamic token (`"text-end" cls`, `"btn" "large" variant`), a class
 // object literal optionally preceded by a static shorthand prefix
 // (`div.card(class={active: isActive})` -> trimmed `card {active: isActive}`
-// — see genDynamicClassObject). The object-literal form is detected the
-// same way Runtime.renderTag's own class branch detects it: the first `{`
-// in trimmed, provided trimmed's last byte is `}`, marking everything from
-// that `{` onward as the object and everything before it (trimmed) as a
-// static prefix. Anything else is tokenised with strings.Fields and each
-// token classified as a static quoted literal or a bare identifier/dot-path
-// resolving to a string field, then emitted as a single runtime write
-// joining every token's Go expression through the exported JoinClasses
-// (dropping an empty token, matching Runtime.renderTag's empty-token rule
-// exactly) and escaping the joined result through EscapeAttr. A
-// ternary/operator class expression, a class array-literal value, or a
-// token that isn't a static literal or a string-field reference is out of
-// scope for this increment and returns an error instead of guessing at
-// output the interpreter might not produce; so does a nil
-// Config.DataReflectType, since without type information a bare class token
-// can't be confirmed to resolve to a string field (nor a class-object
-// entry's value, which is compiled by genCondition — see
-// genDynamicClassObject — and genCondition itself requires type
-// information for most of its own supported shapes).
+// — see genDynamicClassObject), or a fully-parenthesized whole-value
+// ternary/operator expression (`div(class=(isActive ? "active" : ""))`,
+// `div(class=(prefix + "-btn"))` — see the isFullyParenthesizedExpr branch
+// below). The object-literal form is detected the same way Runtime.renderTag's
+// own class branch detects it: the first `{` in trimmed, provided trimmed's
+// last byte is `}`, marking everything from that `{` onward as the object
+// and everything before it (trimmed) as a static prefix. The
+// fully-parenthesized form is detected the same way, structurally: trimmed's
+// first byte is `(` and the `)` that closes it sits at trimmed's very last
+// byte — a shape that can never carry a leading static-class prefix (a
+// prefix would put a non-`(` byte first), which is what makes it safe to
+// hand the whole value straight to genValueExpr rather than reproducing the
+// interpreter's static-prefix-mixed heuristic (runtime.go's
+// containsParenExpr/isOperatorExpr word-splitting fallback) — that mixed
+// form stays deferred. Anything else is tokenised with strings.Fields and
+// each token classified as a static quoted literal or a bare
+// identifier/dot-path resolving to a string field, then emitted as a single
+// runtime write joining every token's Go expression through the exported
+// JoinClasses (dropping an empty token, matching Runtime.renderTag's
+// empty-token rule exactly) and escaping the joined result through
+// EscapeAttr. An UNparenthesized ternary/operator class expression (caught
+// by isOperatorExpr, since a fully-parenthesized value's operators sit at
+// depth>0 and never trip it), a class array-literal value, or a token that
+// isn't a static literal or a string-field reference is out of scope for
+// this increment and returns an error instead of guessing at output the
+// interpreter might not produce; so does a nil Config.DataReflectType, since
+// without type information neither a bare class token nor a parenthesized
+// expression can be resolved (nor a class-object entry's value, which is
+// compiled by genCondition — see genDynamicClassObject — and genCondition
+// itself requires type information for most of its own supported shapes).
 func (g *generator) genDynamicClass(trimmed string) error {
 	if g.rootType == nil {
 		return fmt.Errorf("unsupported dynamic class attribute in codegen (only static quoted values are supported without type information)")
 	}
+
+	if isFullyParenthesizedExpr(trimmed) {
+		goExpr, fallible, err := g.genValueExpr(trimmed)
+		if err != nil {
+			return fmt.Errorf("unsupported dynamic class attribute in codegen (a parenthesized class expression genValueExpr cannot build: %w)", err)
+		}
+		if fallible {
+			return fmt.Errorf("unsupported dynamic class attribute in codegen (a parenthesized class expression with a fallible inner value is not supported)")
+		}
+		g.needsGopug = true
+		g.writeStatic(` class="`)
+		g.writeExprWrite("gopug.EscapeAttr(" + goExpr + ")")
+		g.writeStatic(`"`)
+		return nil
+	}
+
 	if isOperatorExpr(trimmed) {
 		return fmt.Errorf("unsupported dynamic class attribute in codegen (a ternary/operator class expression is not yet supported)")
 	}
@@ -4164,6 +4191,34 @@ func (g *generator) genCase(n *CaseNode) error {
 // (runtime.go's own literal op list), so a top-level operator is identified
 // the same way in both places.
 var conditionComparisonOps = []string{"===", "!==", "==", "!=", "<=", ">=", "<", ">"}
+
+// isFullyParenthesizedExpr reports whether expr is a single, whole-value
+// parenthesized expression: expr's first byte is `(`, and the `)` that
+// closes it (by depth, at the same single-layer check stripBalancedOuterParens's
+// own loop body performs) is expr's very last byte. This is a structural,
+// content-blind test — it says nothing about what is inside the parens,
+// only that nothing precedes or follows them — which is exactly why a value
+// satisfying it can never carry a leading static-class prefix (`card (...)`
+// has a non-`(` first byte) or a trailing top-level operator (`(a) + (b)`
+// has the first `)` close before the last byte, at index 2, not the end).
+func isFullyParenthesizedExpr(expr string) bool {
+	if len(expr) < 2 || expr[0] != '(' {
+		return false
+	}
+	depth := 0
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i == len(expr)-1
+			}
+		}
+	}
+	return false
+}
 
 // stripBalancedOuterParens strips one or more layers of a fully-balanced
 // enclosing `(...)` pair from expr, mirroring the paren-unwrap loop at the
