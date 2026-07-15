@@ -1218,14 +1218,43 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 			if val.Unescaped {
 				return fmt.Errorf("unsupported unescaped attribute %q in codegen (an unescaped HTML boolean attribute is not supported in this increment)", name)
 			}
-			goExpr, typ, err := g.resolveFieldExpr(trimmed)
-			if err != nil {
-				return fmt.Errorf("attribute %q: %w", name, err)
+
+			// The interpreter's boolean-attribute omit rule (Runtime.renderTag)
+			// only suppresses the omit-on-false when the RAW attribute value
+			// text itself both starts and ends with a matching quote
+			// character — a crude, syntactic check that also fires for a
+			// comparison whose own first and last operand happen to be
+			// quoted string literals (e.g. `checked="a" == "b"`, whose raw
+			// text starts with `"` and ends with the `"` closing `"b"`),
+			// even though that raw text is not a single quoted literal
+			// value. A parenthesized form (`checked=("a" == "b")`) does NOT
+			// start with a quote, so the interpreter's check does not fire
+			// for it. To stay byte-identical, an un-parenthesized
+			// quote-to-quote comparison must NOT take the comparison path
+			// here — it falls through to resolveFieldExpr, which rejects it
+			// (it is not a bare field), deferring generation so the
+			// interpreter's own (correct) output is used instead.
+			rawStartsEndsWithMatchingQuote := len(trimmed) >= 2 &&
+				((trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"') ||
+					(trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\''))
+
+			var boolExpr string
+			if !rawStartsEndsWithMatchingQuote && isComparisonAttrValueExpr(trimmed) {
+				condExpr, err := g.genCondition(trimmed)
+				if err != nil {
+					return fmt.Errorf("attribute %q: %w", name, err)
+				}
+				boolExpr = condExpr
+			} else {
+				goExpr, typ, err := g.resolveFieldExpr(trimmed)
+				if err != nil {
+					return fmt.Errorf("attribute %q: %w", name, err)
+				}
+				if typ.Kind() != reflect.Bool {
+					return fmt.Errorf("unsupported dynamic attribute %q in codegen (only a bool-typed value is supported for an HTML boolean attribute name in this increment)", name)
+				}
+				boolExpr = convertExpr(goExpr, typ, reflectTypeBool, "bool")
 			}
-			if typ.Kind() != reflect.Bool {
-				return fmt.Errorf("unsupported dynamic attribute %q in codegen (only a bool-typed value is supported for an HTML boolean attribute name in this increment)", name)
-			}
-			boolExpr := convertExpr(goExpr, typ, reflectTypeBool, "bool")
 			g.writeRaw(fmt.Sprintf("if %s {\n", boolExpr))
 			g.body.WriteString("io.WriteString(w, " + strconv.Quote(" "+name+`="true"`) + ")\n")
 			g.body.WriteString("}\n")
@@ -4583,6 +4612,37 @@ func stripBalancedOuterParens(expr string) string {
 		expr = strings.TrimSpace(expr[1 : len(expr)-1])
 	}
 	return expr
+}
+
+// isComparisonAttrValueExpr reports whether trimmed — a dynamic HTML
+// boolean-attribute value (e.g. the "(Count == 0)" in
+// `checked=(Count == 0)`) — is a plain comparison expression: after
+// stripping one layer of balanced outer parentheses, it has no top-level
+// ternary `?`, no top-level `||`, no top-level `&&`, and exactly one
+// top-level operator from conditionComparisonOps. This mirrors the operator
+// precedence genCondition itself walks (ternary, then `||`, then `&&`, then
+// comparison) so ONLY the exact shape genCondition's comparison branch alone
+// would produce is classified as a comparison; a ternary or a logical
+// compound is deliberately left false here so it falls through to whatever
+// the existing (untouched) code path already does with it, rather than
+// being folded into this narrower comparison-only slice.
+func isComparisonAttrValueExpr(trimmed string) bool {
+	expr := stripBalancedOuterParens(strings.TrimSpace(trimmed))
+	if findTernary(expr) >= 0 {
+		return false
+	}
+	if findBinaryOp(expr, "||") >= 0 {
+		return false
+	}
+	if findBinaryOp(expr, "&&") >= 0 {
+		return false
+	}
+	for _, op := range conditionComparisonOps {
+		if findBinaryOp(expr, op) >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // genCondition translates a Pug `if`/`else` condition expression into a Go
