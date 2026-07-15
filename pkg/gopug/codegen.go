@@ -800,22 +800,40 @@ func derefType(t reflect.Type) reflect.Type {
 // message. An empty segments slice returns typ unchanged and an empty
 // goPath (the path is exactly the starting type itself, e.g. a bound
 // each-loop scalar used bare).
-func resolveFieldPath(typ reflect.Type, path string, segments []string) (reflect.Type, string, error) {
+//
+// It also returns ptrIntermediates: the ordered list of RELATIVE Go
+// sub-paths (dot-joined resolved field names, e.g. "User" then
+// "User.Profile") at which a NON-FINAL segment's own field type is itself a
+// pointer — the exact set of points along the path where Go's implicit
+// auto-deref of the NEXT segment's selector would panic if that pointer is
+// nil at render time. A segment's incoming type being a pointer is not
+// itself flagged (derefType already looks through it to find the struct to
+// resolve the CURRENT segment against); only a RESOLVED segment's own field
+// type being a pointer, with at least one more segment still to resolve
+// through it, is. The leaf segment's own type is deliberately excluded even
+// when it is itself a pointer (a "pointer leaf", e.g. "a.bPtr") — the
+// interpreter dereferences a pointer LEAF too, but that is a distinct,
+// separately-scoped concern from a pointer INTERMEDIATE, left to the caller
+// to detect from the returned leaf reflect.Type's own Kind.
+func resolveFieldPath(typ reflect.Type, path string, segments []string) (leafType reflect.Type, goPath string, ptrIntermediates []string, err error) {
 	cur := typ
 	var goSegs []string
-	for _, seg := range segments {
+	for i, seg := range segments {
 		cur = derefType(cur)
 		if cur == nil || cur.Kind() != reflect.Struct {
-			return nil, "", fmt.Errorf("unsupported field path %q: %s is not a field of a struct", path, seg)
+			return nil, "", nil, fmt.Errorf("unsupported field path %q: %s is not a field of a struct", path, seg)
 		}
 		f, ok := resolveStructField(cur, seg)
 		if !ok {
-			return nil, "", fmt.Errorf("unsupported field path %q: %q is not a field of %s", path, seg, cur)
+			return nil, "", nil, fmt.Errorf("unsupported field path %q: %q is not a field of %s", path, seg, cur)
 		}
 		goSegs = append(goSegs, f.Name)
 		cur = f.Type
+		if i < len(segments)-1 && cur.Kind() == reflect.Ptr {
+			ptrIntermediates = append(ptrIntermediates, strings.Join(goSegs, "."))
+		}
 	}
-	return cur, strings.Join(goSegs, "."), nil
+	return cur, strings.Join(goSegs, "."), ptrIntermediates, nil
 }
 
 // Basic (unnamed) reflect.Types for the scalar kinds resolveFieldExpr's
@@ -4187,6 +4205,37 @@ func (g *generator) genScalarStringify(goExpr string, typ reflect.Type) (string,
 	}
 }
 
+// buildNilSafeScalarClosure emits a Go `func() string { ... }()` immediately-
+// invoked function literal that reproduces getField's nil-intermediate
+// propagation plus lookupAndStringify's nil-collapses-to-"" rule for a
+// dot-path whose leaf is a SCALAR reached through one or more pointer
+// intermediates: rootPrefix is the Go expression prefix ("d." or
+// "<scopeVarGoName>.") every relative sub-path in ptrIntermediates and
+// leafGoExpr itself is already rooted at, ptrIntermediates is
+// resolveFieldPath's own ordered list of relative Go sub-paths needing a nil
+// check (checked in order, so a later, deeper check is never reached once an
+// earlier, shallower one has already found nil — mirroring getField's own
+// left-to-right short-circuit), leafGoExpr is the full (already-prefixed)
+// Go selector for the leaf field itself, and leafType is the leaf's
+// reflect.Type. If leafType is not one genScalarStringify has a case for
+// (a non-scalar leaf — slice/map/struct — or a pointer leaf), that error is
+// returned unchanged so the caller can defer instead of guessing.
+func (g *generator) buildNilSafeScalarClosure(rootPrefix string, ptrIntermediates []string, leafGoExpr string, leafType reflect.Type) (string, error) {
+	stringifyExpr, err := g.genScalarStringify(leafGoExpr, leafType)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	b.WriteString("func() string {\n")
+	for _, sub := range ptrIntermediates {
+		fmt.Fprintf(&b, "if %s%s == nil {\nreturn \"\"\n}\n", rootPrefix, sub)
+	}
+	fmt.Fprintf(&b, "return %s\n", stringifyExpr)
+	b.WriteString("}()")
+	return b.String(), nil
+}
+
 // resolveFieldExpr translates a Pug bare identifier or dot-path into the
 // equivalent Go expression against the data parameter d, taking any
 // currently bound each-loop variables/`- var` locals into account, and —
@@ -4216,6 +4265,27 @@ func (g *generator) genScalarStringify(goExpr string, typ reflect.Type) (string,
 // static block content the only admitted shape — either way, falling
 // through would silently disagree with the interpreter's own isolated
 // mixin scope (Runtime.renderMixinCall/renderMixinBlockSlot).
+//
+// When resolveFieldPath reports one or more pointer intermediates along the
+// path (a non-final segment whose own field type is a pointer — the exact
+// point where Go's implicit auto-deref of the next segment would panic on a
+// nil value at render time, unlike getField, which short-circuits to nil
+// instead), the plain selector is only ever returned when the leaf is a
+// SCALAR: it is instead wrapped in a guarded closure (buildNilSafeScalarClosure)
+// that returns "" the moment any pointer intermediate is nil — matching
+// lookupAndStringify(nil) — or the leaf's own genScalarStringify text
+// otherwise, and the returned reflect.Type is reflectTypeString regardless
+// of the leaf's own underlying kind: the interpreter itself collapses a
+// nil-intermediate path to the string "" no matter what the leaf's static
+// type is, so every caller of resolveFieldExpr reduces to the interpreter's
+// own stringify-then-Truthy/compare model for this shape, the same way it
+// already does for a genuine string field. A pointer intermediate with a
+// non-scalar leaf (slice/map/struct) or a pointer LEAF (the final segment
+// itself a pointer) is out of scope for this increment and returns an error
+// instead of guessing at a closure shape that might not agree with the
+// interpreter. A path with NO pointer intermediate is entirely unaffected by
+// any of this — the plain selector and its resolved reflect.Type are
+// returned exactly as before.
 func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -4235,13 +4305,20 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 		if g.rootType == nil {
 			return val, nil, nil
 		}
-		typ, goPath, err := resolveFieldPath(sv.typ, expr, segments[1:])
+		typ, goPath, ptrIntermediates, err := resolveFieldPath(sv.typ, expr, segments[1:])
 		if err != nil {
 			return "", nil, err
 		}
 		goExpr := sv.goName
 		if goPath != "" {
 			goExpr += "." + goPath
+		}
+		if len(ptrIntermediates) > 0 {
+			closure, cerr := g.buildNilSafeScalarClosure(sv.goName+".", ptrIntermediates, goExpr, typ)
+			if cerr != nil {
+				return "", nil, fmt.Errorf("unsupported field path %q in codegen: a dot-path through a nil-able pointer intermediate is only supported for a scalar leaf in this increment: %w", expr, cerr)
+			}
+			return closure, reflectTypeString, nil
 		}
 		return goExpr, typ, nil
 	}
@@ -4257,11 +4334,19 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 	if g.rootType == nil {
 		return "d." + val, nil, nil
 	}
-	typ, goPath, err := resolveFieldPath(g.rootType, expr, segments)
+	typ, goPath, ptrIntermediates, err := resolveFieldPath(g.rootType, expr, segments)
 	if err != nil {
 		return "", nil, err
 	}
-	return "d." + goPath, typ, nil
+	goExpr := "d." + goPath
+	if len(ptrIntermediates) > 0 {
+		closure, cerr := g.buildNilSafeScalarClosure("d.", ptrIntermediates, goExpr, typ)
+		if cerr != nil {
+			return "", nil, fmt.Errorf("unsupported field path %q in codegen: a dot-path through a nil-able pointer intermediate is only supported for a scalar leaf in this increment: %w", expr, cerr)
+		}
+		return closure, reflectTypeString, nil
+	}
+	return goExpr, typ, nil
 }
 
 // genEach emits a for-range loop over a slice field, or — the other
