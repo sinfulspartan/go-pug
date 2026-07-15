@@ -3,6 +3,67 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.0
+
+### Added
+
+- **Go source-code generation** (`GenerateGo`/`Config`) — compiles a Pug template
+  directly into a standalone Go render function for a bounded but growing subset
+  of the language: conditions and comparisons (including struct/pointer-path
+  truthiness), ternaries, string/numeric/boolean interpolation, `each` over
+  slices (and string/numeric array literals), `unless` and `case`/`when`,
+  mixins (positional and default parameters, rest parameters, block content
+  limited to markup and the callee's own parameter references, `&attributes`
+  forwarding), spread attributes (`&attributes(map)`), dynamic and boolean HTML
+  attributes, class objects and array/slice/map-valued class attributes,
+  nil-safe dot-paths through pointer intermediates, `extends`/`block`/`include`
+  resolved at generate time, and unbuffered numeric/string/bool locals with
+  reassignment and compound operators. Every template in the differential test
+  suite renders byte-identical output between the interpreter and the
+  generated code; templates outside the supported subset — including dynamic
+  `style=` objects — fall back to the interpreter rather than generating
+  incorrect code.
+- Six exported runtime helpers used by generated code and usable directly:
+  `EscapeAttr`, `EscapeText`, `Truthy`, `CompareValues`, `WriteSpreadAttrs`,
+  `WriteSpreadAttrsAny`.
+- A public, reproducible three-way render-throughput benchmark suite under
+  [`benchmark/`](benchmark/), comparing pug.js, the go-pug interpreter, and
+  go-pug codegen across 8 templates, with committed results
+  (`benchmark/results.json`) and a chart (`benchmark/chart.svg`). See the new
+  results table in the README's [Benchmarks](README.md#benchmarks) section.
+
+### Fixed
+
+- **Pretty-print mode** (`Options.Pretty`) now matches pug.js 3.0.4: the
+  indentation algorithm correctly separates a tag's own leading/closing newline
+  (name-based "inline" classification) from its children's indentation and
+  trailing newline (content-based "can inline" classification); `pre` and
+  `textarea` subtrees preserve significant whitespace instead of being
+  indented; and the inline-tag set matches pug-parser's list exactly (removing
+  several block-level tags that were wrongly treated as inline, such as
+  `button`, `label`, `select`, and `input`).
+- A **shorthand class combined with an operator/concatenation `class=`
+  expression** (`button.btn(class="btn-" + style)`) no longer drops the
+  shorthand token — the shorthand and the expression's classes now both merge,
+  matching pug.js.
+- **HTML comment serialization** (`// text`) no longer pads or trims the
+  comment body, and block comments join their lines with a newline, matching
+  pug.js verbatim.
+- The **doctype table** matches pug.js: `doctype plist` now emits the full
+  Apple PLIST DTD instead of a bare tag.
+- **Consecutive piped (`|`) text lines** now join with a newline instead of
+  being concatenated directly, and a piped line following an inline tag renders
+  as that tag's sibling rather than being absorbed into it, matching pug.js.
+
+### Changed
+
+- `doctype 5` **no longer aliases to `<!DOCTYPE html>`**. pug.js has no such
+  shortcut and emits the literal `<!DOCTYPE 5>`; a template relying on the old
+  alias for HTML5 output should use `doctype html` instead.
+
+Escaping behavior is unchanged throughout this release — all output remains
+HTML-escaped by default, in both the interpreter and generated code.
+
 ## v0.3.4
 
 ### Fixed

@@ -102,7 +102,20 @@ A public, reproducible 3-way render-throughput comparison lives in [`benchmark/`
 
 ![Render throughput chart](benchmark/chart.svg)
 
-Codegen is the fastest engine on 7 of the 8 templates in the corpus, typically 1.3–2.7x pug.js's throughput (one template, `mixin_attrs`, reaches roughly 19x); on the remaining template, `card_list`, it comes in a few percent behind pug.js, reported as measured. Both pug.js and codegen render one to two orders of magnitude faster than the go-pug interpreter, the tree-walking default path. See [`benchmark/README.md`](benchmark/README.md) for the full methodology, machine details, and the exact reproduce command (`go run ./benchmark`).
+Renders per second per template (higher is better); see [`benchmark/README.md`](benchmark/README.md) for the full methodology, machine details (Ryzen 9 5900HX, go1.26, node v24.14, pug 3.0.4), and the exact reproduce command (`go run ./benchmark`).
+
+| Template          | pug.js     | go-pug interpreter | go-pug codegen |
+| ----------------- | ---------- | ------------------- | --------------- |
+| mixin_data_args   | 12,296,866 | 457,640              | 32,472,663      |
+| mixin_default     | 7,758,841  | 483,968              | 16,205,083      |
+| mixin_attrs       | 2,500,809  | 375,189              | 48,386,394      |
+| nil_pointer_path  | 21,318,694 | 1,250,487            | 57,116,855      |
+| card_list         | 497,855    | 11,518               | 471,520         |
+| table             | 207,768    | 18,362               | 307,558         |
+| form              | 601,837    | 42,587               | 872,884         |
+| blog              | 1,221,725  | 41,505               | 1,635,820       |
+
+Codegen is the fastest engine on 7 of the 8 templates in the corpus, typically 1.3–2.7x pug.js's throughput (one template, `mixin_attrs`, reaches roughly 19x); on the remaining template, `card_list`, it comes in a few percent behind pug.js, reported as measured. Both pug.js and codegen render one to two orders of magnitude faster than the go-pug interpreter, the tree-walking default path.
 
 ---
 
