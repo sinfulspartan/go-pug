@@ -4498,13 +4498,15 @@ func (g *generator) genEachLoopBody(n *EachNode, collExpr string, elemTyp reflec
 }
 
 // genComment emits a buffered (`//`) comment's rendered form as static text
-// matching renderComment exactly: "<!-- " + Content + " -->", written RAW
+// matching renderComment exactly: "<!--" + Content + "-->", written RAW
 // (never HTML-escaped — renderComment writes Content straight into the
-// output buffer). An unbuffered (`//-`) comment emits nothing, matching
-// renderComment's no-op branch for it.
+// output buffer) with no padding around Content, which already carries
+// whatever leading/trailing whitespace the source had after "//". An
+// unbuffered (`//-`) comment emits nothing, matching renderComment's no-op
+// branch for it.
 func (g *generator) genComment(n *CommentNode) error {
 	if n.Buffered {
-		g.writeStatic("<!-- " + n.Content + " -->")
+		g.writeStatic("<!--" + n.Content + "-->")
 	}
 	return nil
 }

@@ -1824,9 +1824,9 @@ func (r *Runtime) renderInterpolation(interp *InterpolationNode) error {
 func (r *Runtime) renderComment(comment *CommentNode) error {
 	if comment.Buffered {
 		r.prettyNewline()
-		r.htmlBuf.WriteString("<!-- ")
+		r.htmlBuf.WriteString("<!--")
 		r.htmlBuf.WriteString(comment.Content)
-		r.htmlBuf.WriteString(" -->")
+		r.htmlBuf.WriteString("-->")
 	}
 	return nil
 }
@@ -4358,7 +4358,7 @@ func isBooleanAttribute(name string) bool {
 
 func (r *Runtime) formatDoctype(dt string) string {
 	switch strings.ToLower(dt) {
-	case "", "html", "5", "doctype":
+	case "", "html", "doctype":
 		return "<!DOCTYPE html>"
 	case "xml":
 		return `<?xml version="1.0" encoding="utf-8" ?>`
@@ -4374,6 +4374,8 @@ func (r *Runtime) formatDoctype(dt string) string {
 		return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML Basic 1.1//EN" "http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd">`
 	case "mobile":
 		return `<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.2//EN" "http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd">`
+	case "plist":
+		return `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`
 	default:
 		return fmt.Sprintf("<!DOCTYPE %s>", dt)
 	}

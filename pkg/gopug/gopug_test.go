@@ -429,9 +429,12 @@ func TestDotNotationLookup(t *testing.T) {
 // Doctype variants
 // ---------------------------------------------------------------------------
 
+// TestDoctypeHtml5 pins pug.js 3.0.4's behavior for "doctype 5": pug.js has
+// no "5" shortcut, so the value is emitted as a literal doctype name rather
+// than aliased to the HTML5 declaration.
 func TestDoctypeHtml5(t *testing.T) {
 	out := renderTest(t, "doctype 5", nil)
-	assertEqual(t, out, "<!DOCTYPE html>")
+	assertEqual(t, out, "<!DOCTYPE 5>")
 }
 
 func TestDoctypeTransitional(t *testing.T) {
@@ -3292,11 +3295,14 @@ func TestUnbufferedCommentMultiline(t *testing.T) {
 	assertContains(t, out, "visible")
 }
 
-// TestInlineComment verifies a single-line buffered comment.
+// TestInlineComment verifies a single-line buffered comment. Per pug.js
+// 3.0.4, the content after "//" is rendered verbatim (the single space
+// after "//" is the source's own space, not added padding), with no
+// trailing padding space before "-->".
 func TestInlineComment(t *testing.T) {
 	src := "// just a comment"
 	out := renderTest(t, src, nil)
-	assertContains(t, out, "<!-- just a comment -->")
+	assertContains(t, out, "<!-- just a comment-->")
 }
 
 // ── Doctype variants ──────────────────────────────────────────────────────────

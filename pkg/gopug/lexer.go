@@ -288,7 +288,11 @@ func (l *Lexer) scanComment() error {
 	for l.pos < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		l.advanceInto(&textB)
 	}
-	text := strings.TrimSpace(textB.String())
+	// The header text is kept verbatim (no trim): pug.js renders a buffered
+	// comment's content exactly as written after "//", so a leading or
+	// trailing space in the source is part of the rendered HTML comment, not
+	// padding to be stripped.
+	text := textB.String()
 
 	if unbuffered {
 		l.addToken(TokenCommentUnbuffered, text)
