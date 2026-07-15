@@ -81,16 +81,17 @@ func (r *Runtime) prettyNewline() {
 }
 
 // inlineTagNames is the set of HTML tag names treated as inline for pretty
-// printing (suppressing the tag's own leading/closing newline). Built once
-// at package init so tagIsInline doesn't allocate a fresh map on every call.
+// printing (suppressing the tag's own leading/closing newline). It mirrors
+// pug-parser's own inline-tags.js exactly — that list is the sole source
+// pug-parser uses to set a Tag node's isInline flag, and pug-code-gen reads
+// that same flag both for the tag's own newline and, recursively, for
+// whether a parent tag containing it can inline. Built once at package init
+// so tagIsInline doesn't allocate a fresh map on every call.
 var inlineTagNames = map[string]bool{
-	"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
-	"big": true, "br": true, "button": true, "cite": true, "code": true,
-	"dfn": true, "em": true, "i": true, "img": true, "input": true,
-	"kbd": true, "label": true, "map": true, "object": true, "output": true,
-	"q": true, "samp": true, "select": true, "small": true, "span": true,
-	"strong": true, "sub": true, "sup": true, "time": true,
-	"tt": true, "var": true,
+	"a": true, "abbr": true, "acronym": true, "b": true, "br": true,
+	"code": true, "em": true, "font": true, "i": true, "img": true,
+	"ins": true, "kbd": true, "map": true, "samp": true, "small": true,
+	"span": true, "strong": true, "sub": true, "sup": true,
 }
 
 // whiteSpaceSensitiveTagNames is the set of HTML tag names whose content is
