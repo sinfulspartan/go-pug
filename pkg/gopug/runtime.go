@@ -93,16 +93,57 @@ var inlineTagNames = map[string]bool{
 }
 
 // prettyInline returns true when the tag should be rendered without child
-// indentation (inline elements and tags whose only child is a text node).
+// indentation (inline elements and tags whose only child is a text node). A
+// TextRunNode child that spans more than one source line — consecutive
+// piped `|` lines — is the one exception: Pug renders that as an indented,
+// multi-line block even when it is the tag's sole child, so it does not
+// count as inline.
 func prettyInline(tag *TagNode) bool {
 	if inlineTagNames[tag.Name] {
 		return true
 	}
 	// Single text-only child — keep on one line
 	if len(tag.Children) == 1 {
-		switch tag.Children[0].(type) {
-		case *TextNode, *PipeNode, *BlockTextNode, *TextRunNode,
+		switch child := tag.Children[0].(type) {
+		case *TextRunNode:
+			return !textRunSpansMultipleLines(child)
+		case *TextNode, *PipeNode, *BlockTextNode,
 			*InterpolationNode, *CodeNode:
+			return true
+		}
+	}
+	return false
+}
+
+// textRunNodeLine returns the source line a text-run member node came from.
+// TextRunNode.Nodes only ever holds the leaf node types collectTextRun
+// produces, so the switch is exhaustive for that slice's actual contents.
+func textRunNodeLine(n Node) int {
+	switch v := n.(type) {
+	case *TextNode:
+		return v.Line
+	case *InterpolationNode:
+		return v.Line
+	case *TagInterpolationNode:
+		return v.Line
+	case *PipeNode:
+		return v.Line
+	default:
+		return 0
+	}
+}
+
+// textRunSpansMultipleLines reports whether run's member nodes originated
+// from more than one source line — i.e. it is the product of two or more
+// consecutive piped `|` lines rather than a single line mixing plain text
+// with interpolations.
+func textRunSpansMultipleLines(run *TextRunNode) bool {
+	if len(run.Nodes) == 0 {
+		return false
+	}
+	first := textRunNodeLine(run.Nodes[0])
+	for _, n := range run.Nodes[1:] {
+		if textRunNodeLine(n) != first {
 			return true
 		}
 	}
@@ -2517,8 +2558,28 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 	return nil
 }
 
+// renderTextRun renders a run of text-producing nodes collected from one or
+// more source lines. Consecutive piped `|` lines are joined with a newline
+// (Pug's own line-join semantics), while nodes sharing a single source line
+// — e.g. plain text mixed with a #{} interpolation — render back-to-back
+// with no separator. In pretty mode a multi-line run additionally gets its
+// own leading/interior indentation, matching how any other non-inline node
+// self-initiates its line break.
 func (r *Runtime) renderTextRun(run *TextRunNode) error {
-	for _, node := range run.Nodes {
+	multiline := textRunSpansMultipleLines(run)
+	for i, node := range run.Nodes {
+		switch {
+		case i == 0:
+			if multiline && r.pretty() {
+				r.prettyNewline()
+			}
+		case textRunNodeLine(node) != textRunNodeLine(run.Nodes[i-1]):
+			if r.pretty() {
+				r.prettyNewline()
+			} else {
+				r.htmlBuf.WriteByte('\n')
+			}
+		}
 		if err := r.renderNode(node); err != nil {
 			return err
 		}

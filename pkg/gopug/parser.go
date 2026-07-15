@@ -70,16 +70,8 @@ func (p *Parser) parseNode(expectedDepth int) (Node, error) {
 		return p.parseBufferedCode()
 	case TokenCodeUnescaped:
 		return p.parseUnescapedCode()
-	case TokenPipe:
-		return p.parsePipedText()
-	case TokenText:
-		return p.parseTextNode()
-	case TokenInterpolation:
-		return p.parseInterpolationNode(false)
-	case TokenInterpolationUnescape:
-		return p.parseInterpolationNode(true)
-	case TokenTagInterpolationStart:
-		return p.parseTagInterpolation()
+	case TokenPipe, TokenText, TokenInterpolation, TokenInterpolationUnescape, TokenTagInterpolationStart:
+		return p.parseTextRun()
 	case TokenHTMLLiteral:
 		return p.parseLiteralHTML()
 	case TokenTag, TokenClass, TokenID:
@@ -216,7 +208,12 @@ func (p *Parser) parseTag() (Node, error) {
 	if (p.cur.Type == TokenText || p.cur.Type == TokenInterpolation || p.cur.Type == TokenInterpolationUnescape) && p.cur.IndentDepth == currentDepth && p.cur.Line == attrEndLine {
 		line := p.cur.Line
 		col := p.cur.Col
-		nodes := p.collectTextRun(currentDepth)
+		// Text directly after a tag name lives on the tag's own line only —
+		// collectTextRun must not cross onto the next line here, or it would
+		// swallow what is actually the tag's next SIBLING statement (e.g. a
+		// following piped `|` line at the same depth) as if it were more of
+		// this tag's own inline text.
+		nodes := p.collectTextRun(currentDepth, true)
 		p.skipNewlines()
 		if len(nodes) == 1 {
 			tag.Children = append(tag.Children, nodes[0])
@@ -452,27 +449,43 @@ func (p *Parser) parseUnescapedCode() (*CodeNode, error) {
 	return &CodeNode{Expression: expr, Type: CodeUnescaped, Line: line, Col: col}, nil
 }
 
-func (p *Parser) parsePipedText() (Node, error) {
+// parseTextRun collects one or more consecutive text-producing tokens (plain
+// text, an interpolation, or a tag interpolation) at the current indentation
+// depth into a single node. A run that spans more than one source line —
+// e.g. two or more consecutive piped `|` lines — is wrapped in a
+// TextRunNode so the renderer can reproduce Pug's line-join semantics
+// (consecutive piped lines are joined with a newline); a run that collapses
+// to exactly one node is returned directly, unwrapped.
+func (p *Parser) parseTextRun() (Node, error) {
 	line := p.cur.Line
 	col := p.cur.Col
 	depth := p.cur.IndentDepth
 
-	nodes := p.collectTextRun(depth)
+	nodes := p.collectTextRun(depth, false)
 	p.skipNewlines()
 
 	if len(nodes) == 1 {
-		if pipe, ok := nodes[0].(*PipeNode); ok {
-			return pipe, nil
-		}
+		return nodes[0], nil
 	}
 
 	return &TextRunNode{Nodes: nodes, Line: line, Col: col}, nil
 }
 
-func (p *Parser) collectTextRun(depth int) []Node {
+// collectTextRun greedily collects consecutive text-producing tokens (plain
+// text, an interpolation, or a tag interpolation) at the given indentation
+// depth. When singleLine is true the run stops the moment the source line
+// changes — used for text immediately following a tag name, which may only
+// ever extend across that one line. When singleLine is false the run may
+// span any number of consecutive lines at depth, which is how consecutive
+// piped `|` lines become one run for the renderer's line-join handling.
+func (p *Parser) collectTextRun(depth int, singleLine bool) []Node {
 	var nodes []Node
+	firstLine := p.cur.Line
 	for {
 		if p.cur.IndentDepth != depth {
+			break
+		}
+		if singleLine && p.cur.Line != firstLine {
 			break
 		}
 		switch p.cur.Type {
@@ -547,27 +560,6 @@ func (p *Parser) parseTagInterpolation() (*TagInterpolationNode, error) {
 	}
 
 	return &TagInterpolationNode{Tag: tag, Line: line, Col: col}, nil
-}
-
-func (p *Parser) parseInterpolationNode(unescaped bool) (*InterpolationNode, error) {
-	node := &InterpolationNode{
-		Expression: p.cur.Value,
-		Unescaped:  unescaped,
-		Line:       p.cur.Line,
-		Col:        p.cur.Col,
-	}
-	p.advance()
-	p.skipNewlines()
-	return node, nil
-}
-
-func (p *Parser) parseTextNode() (*TextNode, error) {
-	content := p.cur.Value
-	line := p.cur.Line
-	col := p.cur.Col
-	p.advance()
-	p.skipNewlines()
-	return &TextNode{Content: content, Line: line, Col: col}, nil
 }
 
 func (p *Parser) parseLiteralHTML() (*LiteralHTMLNode, error) {

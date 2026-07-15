@@ -930,7 +930,15 @@ func (g *generator) genNode(n Node) error {
 	case *BlockTextNode:
 		return g.genBlockText(node)
 	case *TextRunNode:
-		for _, child := range node.Nodes {
+		// Consecutive piped `|` lines join with a newline, mirroring
+		// Runtime.renderTextRun's compact-mode line-join rule exactly so
+		// generated code stays byte-identical to the interpreter's output.
+		// Nodes sharing one source line (plain text next to a #{}
+		// interpolation) get no separator.
+		for i, child := range node.Nodes {
+			if i > 0 && textRunNodeLine(child) != textRunNodeLine(node.Nodes[i-1]) {
+				g.writeStatic("\n")
+			}
 			if err := g.genNode(child); err != nil {
 				return err
 			}

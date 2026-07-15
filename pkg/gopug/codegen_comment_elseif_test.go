@@ -6,8 +6,9 @@ import (
 )
 
 // TestCodegenCommentBuffered proves a buffered (`//`) comment is emitted
-// through genNode's *CommentNode case as the same "<!-- " + Content + " -->"
-// static text renderComment writes, matching the interpreter byte for byte.
+// through genNode's *CommentNode case as the same "<!--" + Content + "-->"
+// static text renderComment writes (no padding around Content), matching the
+// interpreter byte for byte.
 func TestCodegenCommentBuffered(t *testing.T) {
 	t.Parallel()
 	runCodegenArithDifferential(t, codegenArithCase{
