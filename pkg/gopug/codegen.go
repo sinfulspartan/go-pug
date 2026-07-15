@@ -49,6 +49,16 @@ type Config struct {
 // one level of `each item in <slice field>`, and `if <field>` with an
 // optional `else`.
 //
+// That byte-identity guarantee is against the interpreter's COMPACT output —
+// Options.Pretty's default zero value, false. Codegen is compact-only: the
+// interpreter's Options.Pretty indented rendering has no codegen equivalent,
+// and the generated <FuncName> function always writes compact HTML
+// regardless of how the source .pug file would render if it were instead
+// executed by the interpreter. A generated function's signature carries no
+// options parameter to request otherwise. Pretty-printed output remains
+// available only through the interpreter, by calling Template.Render with
+// Options{Pretty: true}.
+//
 // When cfg.DataReflectType is set, GenerateGo is type-aware: it resolves
 // every field expression's Go type and emits per-type stringify for
 // interpolation (string, bool, every sized int/uint kind, and float64 — see
