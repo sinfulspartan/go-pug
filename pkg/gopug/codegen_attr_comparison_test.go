@@ -305,27 +305,38 @@ func TestCodegenAttrComparisonOrderingAndNotEqual(t *testing.T) {
 	}
 }
 
-// TestCodegenAttrComparisonTernaryDefers proves the ternary/comparison
-// boundary this slice draws: a ternary-valued boolean attribute
-// (`checked=(Count == 0 ? "x" : false)`) is NOT reclassified as a
-// comparison — the top-level `?` makes it a ternary, a separate,
-// still-unsupported gap — so GenerateGo still returns an error, exactly as
-// it did before this slice existed (the boolean-attribute branch only ever
-// accepted a bare bool field).
-func TestCodegenAttrComparisonTernaryDefers(t *testing.T) {
-	src := `input(checked=(Count == 0 ? "x" : false))`
-	ast, err := Parse(src, nil)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", src, err)
-	}
-	_, err = GenerateGo(ast, Config{
-		PackageName:     "gopug",
-		FuncName:        "RenderAc",
-		DataType:        "acData",
-		DataReflectType: acDataReflectType,
+// TestCodegenAttrComparisonTernaryConditionRendersCorrectly proves the
+// ternary/comparison boundary this slice draws: a ternary-valued boolean
+// attribute (`checked=(Count == 0 ? "x" : false)`) is NOT reclassified as a
+// comparison — the top-level `?` makes it a ternary, a distinct shape that
+// this comparison-detection branch itself leaves alone — but a dedicated
+// ternary-valued-boolean-attribute code path renders it correctly (byte-for-
+// byte against the interpreter, true-branch renders / exact-"false"
+// omits), reusing the comparison this ternary's own condition happens to
+// contain via the ordinary genCondition path.
+func TestCodegenAttrComparisonTernaryConditionRendersCorrectly(t *testing.T) {
+	t.Parallel()
+	results := runAcDifferentialBatch(t, []acDiffCase{
+		{
+			name:        `checked=(Count == 0 ? "x" : false), Count 0 (renders)`,
+			src:         `input(checked=(Count == 0 ? "x" : false))`,
+			data:        map[string]any{"Count": 0},
+			dataLiteral: "acData{Count: 0}",
+		},
+		{
+			name:        `checked=(Count == 0 ? "x" : false), Count 5 (omitted)`,
+			src:         `input(checked=(Count == 0 ? "x" : false))`,
+			data:        map[string]any{"Count": 5},
+			dataLiteral: "acData{Count: 5}",
+		},
 	})
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected a deferral error for a ternary-valued boolean attribute, got nil", src)
+	got0 := assertAcDiffResult(t, `input(checked=(Count == 0 ? "x" : false))`, "acData{Count: 0}", results[0])
+	if got0 != `<input checked="x">` {
+		t.Errorf("got %q, want %q", got0, `<input checked="x">`)
+	}
+	got1 := assertAcDiffResult(t, `input(checked=(Count == 0 ? "x" : false))`, "acData{Count: 5}", results[1])
+	if got1 != `<input>` {
+		t.Errorf("got %q, want %q", got1, `<input>`)
 	}
 }
 

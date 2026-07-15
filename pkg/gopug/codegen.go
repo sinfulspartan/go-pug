@@ -1238,6 +1238,45 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 				((trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"') ||
 					(trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\''))
 
+			// A ternary value on a boolean attribute (`checked=(Enabled ?
+			// "checked" : false)`) is a different shape again from a
+			// comparison: unlike a comparison, whose stringified result is
+			// always exactly "true" or "false", a ternary's chosen branch is
+			// an arbitrary string, and the interpreter renders that actual
+			// string (escaped), omitting the attribute only when it equals
+			// exactly "false" — not on general falsiness, so an empty string
+			// or "0" branch still renders. This is handled as its own
+			// emission below rather than folded into boolExpr, since the
+			// comparison/bare-field shapes above always emit a fixed `="true"`
+			// literal on a bare boolean test, while a ternary needs its
+			// actual (escaped) evaluated value written out. The same
+			// quote-wrapped-raw guard applies here as for the comparison
+			// case above: an un-parenthesized ternary whose raw text starts
+			// and ends with a matching quote (e.g. `checked="x" ? "y" :
+			// "z"`) makes the interpreter's isQuoted check fire and suppress
+			// the omit-on-false rule entirely, so that shape must fall
+			// through to resolveFieldExpr and defer, letting the
+			// interpreter's own fallback produce the correct output.
+			if !rawStartsEndsWithMatchingQuote && findTernary(stripBalancedOuterParens(trimmed)) >= 0 {
+				valExpr, fallible, err := g.genValueExpr(trimmed)
+				if err != nil {
+					return fmt.Errorf("attribute %q: %w", name, err)
+				}
+				if fallible {
+					return fmt.Errorf("unsupported dynamic attribute %q in codegen (a fallible ternary branch — a division or modulo operator — on an HTML boolean attribute is not supported in this increment, since the interpreter's raw-source fallback inside the boolean-omit test is not reproduced here)", name)
+				}
+				n := g.nextTmp()
+				tmp := fmt.Sprintf("__v%d", n)
+				g.writeRaw(tmp + " := " + valExpr + "\n")
+				g.writeRaw(fmt.Sprintf("if %s != %q {\n", tmp, "false"))
+				g.body.WriteString("io.WriteString(w, " + strconv.Quote(" "+name+`="`) + ")\n")
+				g.needsGopug = true
+				g.body.WriteString("io.WriteString(w, gopug.EscapeAttr(" + tmp + "))\n")
+				g.body.WriteString("io.WriteString(w, " + strconv.Quote(`"`) + ")\n")
+				g.body.WriteString("}\n")
+				continue
+			}
+
 			var boolExpr string
 			if !rawStartsEndsWithMatchingQuote && isComparisonAttrValueExpr(trimmed) {
 				condExpr, err := g.genCondition(trimmed)
