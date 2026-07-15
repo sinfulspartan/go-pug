@@ -463,6 +463,31 @@ func (g *generator) genFallibleExtraction(goExpr string) string {
 	return valVar
 }
 
+// genFallibleExtractionWithFallback is genFallibleExtraction's
+// attribute-only analogue: instead of aborting the render when the fallible
+// value expression's evaluation fails, it substitutes rawSourceLiteral — a
+// strconv.Quote'd Go string literal of the attribute's raw, un-evaluated
+// source text (val.Value) — into the value local, mirroring
+// Runtime.renderTag's own dynamic-attribute fallback exactly: `evaluated,
+// err := r.evaluateExpr(val.Value); if err != nil { evaluated = val.Value }`
+// — the interpreter does NOT abort the render on a fallible attribute
+// value's evaluation error, it falls back to the attribute's raw source text
+// instead, which the caller then still runs through EscapeAttr like any
+// other value. This is used ONLY at the escaped dynamic-attribute write site
+// in genAttributes; genFallibleExtraction itself, used by genInterpolation
+// and genCode (the interpreter DOES abort on a fallible `#{}`/`=` text
+// expression), keeps its abort unchanged, and the unescaped attribute path
+// has no equivalent since a fallible unescaped attribute value is refused
+// outright before reaching either helper.
+func (g *generator) genFallibleExtractionWithFallback(goExpr, rawSourceLiteral string) string {
+	n := g.nextTmp()
+	valVar := fmt.Sprintf("__v%d", n)
+	errVar := fmt.Sprintf("__err%d", n)
+	g.writeRaw(fmt.Sprintf("%s, %s := %s\n", valVar, errVar, goExpr))
+	g.body.WriteString(fmt.Sprintf("if %s != nil {\n\t%s = %s\n}\n", errVar, valVar, rawSourceLiteral))
+	return valVar
+}
+
 // genFallibleExtractionInline is genFallibleExtraction's composition-site
 // analogue: instead of the enclosing generated function's own bare error
 // (used at the three top-level write sites — genInterpolation, genCode,
@@ -1223,7 +1248,7 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 		}
 
 		if fallible {
-			valExpr = g.genFallibleExtraction(valExpr)
+			valExpr = g.genFallibleExtractionWithFallback(valExpr, strconv.Quote(val.Value))
 		}
 		g.needsGopug = true
 		g.writeStatic(" " + name + `="`)

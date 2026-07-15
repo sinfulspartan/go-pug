@@ -192,6 +192,37 @@ func TestCodegenFallibleAttrValue(t *testing.T) {
 	})
 }
 
+// TestCodegenFallibleAttrValueZeroDivisorFallback proves the ESCAPED dynamic
+// attribute path's error case matches the interpreter's own behavior: on a
+// runtime-erroring fallible value (a zero divisor), Runtime.renderTag does
+// NOT abort the render — it falls back to the attribute's raw, un-evaluated
+// source text (escaped) and keeps going. The generated code must reproduce
+// that fallback byte-for-byte rather than aborting.
+func TestCodegenFallibleAttrValueZeroDivisorFallback(t *testing.T) {
+	t.Parallel()
+	runCodegenArithDifferential(t, codegenArithCase{
+		name:        "zero-divisor attribute value falls back to raw source instead of aborting",
+		src:         "a(data-r=Count / Zero)\n",
+		data:        map[string]any{"Count": 10, "Zero": 0},
+		dataLiteral: "opsData{Count: 10, Zero: 0}",
+	})
+}
+
+// TestCodegenFallibleAttrValueZeroDivisorFallbackWithSpecials mirrors
+// TestCodegenFallibleAttrValueZeroDivisorFallback with a raw source
+// containing HTML-special characters (via a quoted string operand),
+// proving the fallback's raw source text is run back through EscapeAttr
+// exactly like the interpreter's own fallback is, not emitted unescaped.
+func TestCodegenFallibleAttrValueZeroDivisorFallbackWithSpecials(t *testing.T) {
+	t.Parallel()
+	runCodegenArithDifferential(t, codegenArithCase{
+		name:        "zero-divisor attribute value with specials in its raw source falls back escaped",
+		src:         "div(data-x= '<a>&\"' + Count / Zero)\n",
+		data:        map[string]any{"Count": 10, "Zero": 0},
+		dataLiteral: "opsData{Count: 10, Zero: 0}",
+	})
+}
+
 // TestCodegenFallibleNonNumericIsEmptyNoError proves the OTHER branch of
 // gopug.Div/Mod's contract: non-numeric operands produce the empty string
 // with NO error (matching evaluateExpr's own "not both numeric -> return "",
