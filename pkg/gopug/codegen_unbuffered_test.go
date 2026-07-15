@@ -505,22 +505,27 @@ func TestCodegenUnbufferedAssignTopLevelSurvivesFieldCollision(t *testing.T) {
 }
 
 // TestCodegenUnbufferedAssignRedeclareDeferred asserts that re-declaring an
-// already-bound name — an inner `- var x` where x is already bound, whether
-// from an outer `- var` or an each-loop item variable — is rejected with a
-// clear, distinct error. Runtime.setVar does not create a fresh, shadowed
-// binding in this case: it MUTATES the existing one wherever in the
-// interpreter's scopeStack it lives, which does not, in general, correspond
-// to Go's own block-scoped `:=` shadowing — so this shape is deferred rather
-// than risk emitting code whose visible-value semantics silently disagree
-// with the interpreter's.
+// already-bound name is still rejected with a clear, distinct error in the
+// cases genUnbufferedReassign itself does not lift the deferral for: an
+// inner `- var x` targeting an each-loop item variable (never reassignable —
+// each iteration rebinds it fresh in the interpreter's own model too), and
+// an inner `- var x` whose right-hand side classifies to a DIFFERENT type
+// than the outer var it targets (a Go validity requirement, not merely a
+// byte-identity precaution — see genUnbufferedReassign's own doc comment).
+// The SAME-type case — an inner `- var x` re-declaring an outer `- var` with
+// a value of the SAME classified type — is no longer deferred: see
+// TestCodegenUnbufferedReassignSelfConcatInIf (codegen_unbuffered_reassign_test.go),
+// which proves that shape byte-identical instead, since Runtime.setVar's
+// in-place, frame-walking overwrite is exactly what a plain Go `=` to the
+// existing enclosing-block local reproduces.
 func TestCodegenUnbufferedAssignRedeclareDeferred(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
 		{
-			name: "re-declaring an outer var inside an if branch",
-			src:  "- var x = \"outer\"\nif Flag\n  - var x = \"inner\"\np=x\n",
+			name: "re-declaring an outer var inside an if branch with a different type",
+			src:  "- var x = \"outer\"\nif Flag\n  - var x = 5\np=x\n",
 		},
 		{
 			name: "re-declaring an each-loop item variable",

@@ -401,17 +401,18 @@ func TestCodegenUnbufferedMutationNilReflectTypeDeferred(t *testing.T) {
 // --- Regression ---
 
 // TestCodegenUnbufferedMutationAssignPathUnaffected proves genUnbufferedAssign
-// (the `- var x = <rhs>` binding path) is completely unaffected by this
-// slice: a plain assignment, including the already-bound re-assignment
-// deferral, behaves exactly as before.
+// (the `- var x = <rhs>` binding/reassignment path) is completely unaffected
+// by this numeric MUTATION slice: this is a same-name, same-type
+// reassignment (`- var x = 6` re-declaring x, not a `++`/`--`/`+=`/`-=`
+// mutation at all), handled by the reassignment path as a plain Go `=` to
+// the existing local — a separate mechanism the mutation slice above never
+// touches.
 func TestCodegenUnbufferedMutationAssignPathUnaffected(t *testing.T) {
 	t.Parallel()
 	src := "- var x = 5\n- var x = 6\np=x\n"
-	err := genUnbufferedErr(t, src)
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an already-bound re-assignment error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "already-bound") {
-		t.Errorf("GenerateGo(%q): error %q does not describe an already-bound re-assignment", src, err.Error())
-	}
+	runCodegenUnbufferedDifferential(t, codegenUnbufferedCase{
+		src:         src,
+		data:        map[string]any{},
+		dataLiteral: "opsData{}",
+	})
 }

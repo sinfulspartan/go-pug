@@ -2383,14 +2383,16 @@ func validGoIdentifier(name string) bool {
 // only special-cases a bare identifier/dot-path, never an operator
 // expression, as a raw un-stringified value).
 //
-// A `- var` re-declaring a name already bound in scope (whether from an
-// outer `- var`, an each-loop item variable, or an outer var of the same
-// name) is also deferred: Runtime.setVar does not create a fresh binding in
-// that case — it MUTATES the existing one in place, wherever in the
-// interpreter's scopeStack it lives, which does not (in general) correspond
-// to Go's own block-scoped shadowing that a nested `:=` would produce. A nil
-// Config.DataReflectType (type-blind mode) is also deferred: there is no
-// type information to prove the RHS is string- or bool-shaped at all.
+// A `- var` re-declaring/re-assigning a name already bound in scope is
+// handled by genUnbufferedReassign below when the bound entry is a `- var`
+// local whose type matches the right-hand side's classified type — see that
+// function's own doc comment for the full reasoning (in short: a Go `=` to
+// the existing local is exactly as safe as Runtime.setVar's own in-place,
+// frame-walking overwrite). Every OTHER already-bound case (an each-loop
+// item/index variable, or a same-type proof that fails) is deferred there
+// instead, with its own distinct error. A nil Config.DataReflectType
+// (type-blind mode) is also deferred: there is no type information to prove
+// the RHS is string- or bool-shaped at all.
 func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 	if g.rootType == nil {
 		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (Config.DataReflectType is required to type-check a `- var` right-hand side)", varName)
@@ -2398,8 +2400,8 @@ func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 	if !validGoIdentifier(varName) {
 		return fmt.Errorf("unsupported unbuffered assignment target %q in codegen (only a bare identifier is supported as a `- var` left-hand side)", varName)
 	}
-	if g.isBound(varName) {
-		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (re-declaring or re-assigning an already-bound variable is not supported yet)", varName)
+	if sv, found := g.lookupScope(varName); found {
+		return g.genUnbufferedReassign(varName, rhsExpr, sv)
 	}
 
 	if boolExpr, ok, err := g.genBoolExpr(rhsExpr); err != nil {
@@ -2442,6 +2444,90 @@ func (g *generator) genUnbufferedAssign(varName, rhsExpr string) error {
 	g.body.WriteString(fmt.Sprintf("_ = %s\n", goName))
 
 	g.pushScope(varName, goName, reflectTypeString, true)
+	return nil
+}
+
+// genUnbufferedReassign emits `- x = <rhs>` for the case genUnbufferedAssign
+// already confirmed is a REASSIGNMENT: varName is already bound in scope
+// (sv is that binding). This is the SAFE subset proven byte-identical to
+// Runtime.setVar's own in-place overwrite (runtime.go's unbufferedAssign
+// case: `rawVal := r.evaluateExprRaw(rhs); r.setVar(varName, rawVal)`,
+// which mutates the innermost frame already holding varName rather than
+// creating a fresh one) — a plain Go `=` assignment to the existing local,
+// gated on the reassignment being provably the SAME Go type as the existing
+// local, since a fixed-type Go local cannot otherwise take the assignment at
+// all:
+//
+//   - sv must be a `- var` local (sv.isVarLocal), never an each-loop
+//     item/index variable — those are rebound fresh every iteration in the
+//     interpreter's own model too, so "reassigning" one is out of scope.
+//   - the right-hand side is classified by the SAME trio the fresh-binding
+//     path above uses, in the same order (genBoolExpr, then genNumericExpr,
+//     then genAssignRHS) — deliberately duplicated rather than factored into
+//     a shared helper, so the fresh-binding path above stays untouched by
+//     this addition.
+//   - the classified type must equal sv.typ exactly (reflect.Type is
+//     comparable) — a mismatch means either a genuine dynamic type change
+//     (`- x = 5` then `- x = "hi"`, a shape the interpreter's untyped scope
+//     map allows but a fixed-type `__v_x` Go local cannot) or simply a
+//     different literal shape that happens to classify differently, and
+//     either way is deferred rather than guessed at.
+//
+// Once these hold, `sv.goName = <classified goExpr>` is exactly as safe as
+// Runtime.setVar's own frame-walk, regardless of which Go block originally
+// declared sv.goName (the current one or an ENCLOSING one): reassigning an
+// OUTER var from inside an `if` (Runtime's renderConditional pushes no new
+// scope frame, so setVar mutates the outer binding directly) or from inside
+// an `each` (renderEach pushes a frame, but setVar walks outward past it to
+// the pre-loop binding, so the mutation persists across iterations) both
+// match Go's own lexical scoping: assigning to a `:=` local declared in an
+// enclosing block from inside a nested block/loop mutates that same
+// variable, visible to every subsequent read in every sibling/nested scope,
+// with no case where the declaring block's depth changes which Go statement
+// gets emitted here. No new scope entry is pushed (sv already IS the
+// binding) and no fresh `_ = sv.goName` is emitted (the original binding
+// already has one, and this reassignment is itself a use).
+//
+// The dangerous cross-BRANCH case — `- var x` declared in one `if` branch,
+// then a same-named `- x = …` in a SIBLING branch — never reaches this
+// function at all: scopeRestore pops x when that branch's body finishes and
+// records it in leakedVarNames, so genUnbufferedAssign's lookupScope call
+// MISSES for the sibling branch's `- x = …`, routing it through the ORDINARY
+// fresh-binding path (a `:=`) instead of here.
+func (g *generator) genUnbufferedReassign(varName, rhsExpr string, sv scopeVar) error {
+	if !sv.isVarLocal {
+		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (reassigning %q, an each-loop item/index variable rather than a `- var` local, is not supported yet)", varName, varName)
+	}
+	if sv.typ == nil {
+		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (re-declaring or re-assigning an already-bound variable is not supported yet)", varName)
+	}
+
+	if boolExpr, ok, err := g.genBoolExpr(rhsExpr); err != nil {
+		return fmt.Errorf("unbuffered assignment to %q: %w", varName, err)
+	} else if ok {
+		if sv.typ != reflectTypeBool {
+			return fmt.Errorf("unsupported unbuffered assignment %q in codegen (reassigning %q from %s to bool is a type change, not supported yet)", varName, varName, sv.typ)
+		}
+		g.writeRaw(fmt.Sprintf("%s = %s\n", sv.goName, boolExpr))
+		return nil
+	}
+
+	if numExpr, numTyp, ok := g.genNumericExpr(rhsExpr); ok {
+		if sv.typ != numTyp {
+			return fmt.Errorf("unsupported unbuffered assignment %q in codegen (reassigning %q from %s to %s is a type change, not supported yet)", varName, varName, sv.typ, numTyp)
+		}
+		g.writeRaw(fmt.Sprintf("%s = %s\n", sv.goName, numExpr))
+		return nil
+	}
+
+	goExpr, err := g.genAssignRHS(rhsExpr)
+	if err != nil {
+		return fmt.Errorf("unbuffered assignment to %q: %w", varName, err)
+	}
+	if sv.typ != reflectTypeString {
+		return fmt.Errorf("unsupported unbuffered assignment %q in codegen (reassigning %q from %s to string is a type change, not supported yet)", varName, varName, sv.typ)
+	}
+	g.writeRaw(fmt.Sprintf("%s = %s\n", sv.goName, goExpr))
 	return nil
 }
 
