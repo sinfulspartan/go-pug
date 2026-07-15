@@ -61,7 +61,11 @@ import (
 // dynamic-class-from-map-field differential tests: ClassFlags exercises the
 // truthy-value-filter/sort/escaping/empty-string-key shapes, and IntFlags
 // exercises a non-string key type sorting by its stringified form rather
-// than its underlying numeric order.
+// than its underlying numeric order. Rows is a slice of a nested struct with
+// its own string field, used by the general-string-comparison differential
+// tests to prove a dot-path each-loop item field (`row.Cat`) compared
+// against a `- var` string local drives the same dedup-consecutive-equal-
+// values pattern the interpreter renders.
 type opsData struct {
 	Name       string
 	Count      int
@@ -93,11 +97,17 @@ type opsData struct {
 	BoolItems  []bool
 	ClassFlags map[string]bool
 	IntFlags   map[int]bool
+	Rows       []opsRow
 }
 
 // opsFirm is opsData.Firms's element type.
 type opsFirm struct {
 	ID int
+}
+
+// opsRow is opsData.Rows's element type.
+type opsRow struct {
+	Cat string
 }
 
 // opsUser is opsData.User's type. Tags is a nested string slice, used by the
@@ -138,6 +148,10 @@ type opsOffer struct {
 	ID int
 }
 
+type opsRow struct {
+	Cat string
+}
+
 type opsNamedCount int
 
 type opsData struct {
@@ -171,6 +185,7 @@ type opsData struct {
 	BoolItems  []bool
 	ClassFlags map[string]bool
 	IntFlags   map[int]bool
+	Rows       []opsRow
 }
 `
 
@@ -290,12 +305,15 @@ func runGeneratedGo(t *testing.T, generated []byte, dataLiteral string) string {
 }
 
 // TestCodegenConditionOperatorUnsupported asserts that every condition
-// construct outside the bounded-agreement subset — arithmetic, ternary,
-// string ordering compares, a numeric-looking string literal compared to a
-// string field, and an incompatible numeric-field-vs-numeric-field comparison
-// — returns an error instead of emitting a comparison that might not agree
-// with the interpreter's compareValues. The `&&`/`||`/`!` combinators are NOT
-// in this list: they are supported in CONDITION position (see
+// construct outside the bounded-agreement subset — arithmetic, ternary, and
+// an incompatible numeric-field-vs-numeric-field comparison — returns an
+// error instead of emitting a comparison that might not agree with the
+// interpreter's compareValues. A numeric-looking string literal compared to
+// a string field, and a string ordering compare, are NOT in this list: they
+// are both routed through the exported gopug.CompareValues (see
+// codegen_string_compare_test.go), which resolves the numeric-looking-ness
+// at run time exactly like compareValues does. The `&&`/`||`/`!` combinators
+// are NOT in this list either: they are supported in CONDITION position (see
 // TestCodegenConditionLogicTruthTable, TestCodegenConditionLogicMixedOperands,
 // TestCodegenConditionLogicNegation, TestCodegenConditionLogicStringTruthiness,
 // and TestCodegenConditionLogicPrecedence in codegen_condition_logic_test.go)
@@ -319,14 +337,6 @@ func TestCodegenConditionOperatorUnsupported(t *testing.T) {
 		{
 			name: "ternary condition",
 			src:  "if Count > 0 ? true : false\n  p yes\n",
-		},
-		{
-			name: "numeric-looking string literal compared to a string field",
-			src:  `if Name == "5"` + "\n  p yes\n",
-		},
-		{
-			name: "string ordering comparison",
-			src:  `if Name > "m"` + "\n  p yes\n",
 		},
 		{
 			name: "int field compared to a float64 field",

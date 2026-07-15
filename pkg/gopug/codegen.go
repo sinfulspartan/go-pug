@@ -4757,10 +4757,12 @@ const (
 // numeric literal — genOperand emits the literal's canonical decimal text
 // (never the original Pug token), so numLiteralVal is the single source of
 // truth checkLiteralAgainstFieldKind range-checks against — and whether a
-// string literal's text itself looks numeric (parseNumber), since the
-// interpreter's compareValues numeric-compares a numeric-looking string
-// operand rather than string-comparing it. indexRawGoExpr is set only when
-// this operand is a bare reference to an each-loop INDEX variable (see
+// string literal's text itself looks numeric (parseNumber), which
+// genComparison's stringish-vs-literal fast path uses to decide whether a
+// raw Go `==`/`!=` is still safe (a numeric-looking literal must instead go
+// through gopug.CompareValues, since compareValues numeric-compares it
+// rather than string-comparing it). indexRawGoExpr is set only when this
+// operand is a bare reference to an each-loop INDEX variable (see
 // scopeVar.indexRawGoName): it carries the underlying raw `int` range-index
 // Go expression, letting genComparison compile a numeric-literal comparison
 // against the index directly against that int rather than the string.
@@ -4907,11 +4909,29 @@ func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind
 //     — a fractional literal against an integer-kind field, or a negative
 //     literal against an unsigned field, doesn't compile as a direct Go
 //     comparison and is rejected instead of silently truncating/converting.
-//   - a string field compared, with `==`/`!=` (or the `===`/`!==` aliases)
-//     only, to a string literal that is NOT itself numeric-looking: a
-//     numeric-looking string literal would numeric-compare in compareValues
-//     (both operands would parse as numbers), not string-compare, so
-//     emitting a Go string `==` there would diverge.
+//   - both operands stringish (a string field, a string `- var` local, or a
+//     string literal, in any combination): a string field/`- var` local
+//     compared, with `==`/`!=` (or the `===`/`!==` aliases) only, to a
+//     string literal that is NOT itself numeric-looking still takes the raw
+//     Go `==`/`!=` fast path an earlier increment introduced (kept
+//     unchanged, byte-for-byte, so a checked-in golden-source expectation
+//     pinning that exact generated code stays pinned) — a numeric-looking
+//     string literal would numeric-compare in compareValues (both operands
+//     would parse as numbers), not string-compare, so a raw Go `==` there
+//     would diverge, and is excluded from the fast path accordingly. Every
+//     other stringish combination — an ordering compare, a numeric-looking
+//     string literal, two string literals, two string fields/`- var`
+//     locals, or a field/local compared against another field/local — is
+//     emitted as a call to the exported gopug.CompareValues instead, the
+//     same function compareValues itself now delegates to. Whether either
+//     operand's runtime value is numeric-looking (so the comparison numeric-
+//     compares) or not (so it string-compares, including ordering) can't
+//     always be proven at generation time for these combinations — a field
+//     or `- var` local's VALUE isn't known until render — so this defers
+//     that decision to CompareValues at run time instead of guessing, which
+//     is exactly what keeps it byte-identical to compareValues for every
+//     stringish combination the earlier field-vs-literal-only increment
+//     deferred.
 //   - an each-loop INDEX variable (genOperand sets operandKind.indexRawGoExpr
 //     for one — see scopeVar.indexRawGoName) compared, with ANY of the
 //     eight operators, to a numeric literal: the index is always a decimal
@@ -4923,11 +4943,10 @@ func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind
 //     int-kind field, so the same safe-integer/representability guarantees
 //     apply.
 //
-// Every other combination — an ordering compare (`< > <= >=`) between
-// strings, two string literals, two string fields, a string operand against
-// a numeric operand (other than the index-variable case above), or any
-// operand genOperand itself rejected — returns an error instead of emitting
-// a comparison that might not agree with the interpreter.
+// Every other combination — a string operand against a numeric operand
+// (other than the index-variable case above), or any operand genOperand
+// itself rejected — returns an error instead of emitting a comparison that
+// might not agree with the interpreter.
 func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) {
 	leftRaw = strings.TrimSpace(leftRaw)
 	rightRaw = strings.TrimSpace(rightRaw)
@@ -4969,22 +4988,21 @@ func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) 
 		return leftExpr + " " + goOp + " " + rightExpr, nil
 
 	case leftKind.isStringish() && rightKind.isStringish():
-		if goOp != "==" && goOp != "!=" {
-			return "", fmt.Errorf("unsupported string ordering comparison %q in codegen condition (%q %s %q)", op, leftRaw, op, rightRaw)
+		if goOp == "==" || goOp == "!=" {
+			var litKind operandKind
+			var isFieldVsLiteral bool
+			switch {
+			case leftKind.shape == shapeOperandStringField && rightKind.shape == shapeOperandStringLiteral:
+				litKind, isFieldVsLiteral = rightKind, true
+			case rightKind.shape == shapeOperandStringField && leftKind.shape == shapeOperandStringLiteral:
+				litKind, isFieldVsLiteral = leftKind, true
+			}
+			if isFieldVsLiteral && !litKind.numericLiteral {
+				return leftExpr + " " + goOp + " " + rightExpr, nil
+			}
 		}
-		var litKind operandKind
-		switch {
-		case leftKind.shape == shapeOperandStringField && rightKind.shape == shapeOperandStringLiteral:
-			litKind = rightKind
-		case rightKind.shape == shapeOperandStringField && leftKind.shape == shapeOperandStringLiteral:
-			litKind = leftKind
-		default:
-			return "", fmt.Errorf("unsupported string comparison %q %s %q in codegen condition (only a string field compared to a string literal is supported in this increment)", leftRaw, op, rightRaw)
-		}
-		if litKind.numericLiteral {
-			return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition (a numeric-looking string literal compares numerically in the interpreter, not as a string)", leftRaw, op, rightRaw)
-		}
-		return leftExpr + " " + goOp + " " + rightExpr, nil
+		g.needsGopug = true
+		return "gopug.CompareValues(" + leftExpr + ", " + rightExpr + ", " + strconv.Quote(op) + ")", nil
 
 	default:
 		return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition (these operand types are not comparable in this increment)", leftRaw, op, rightRaw)

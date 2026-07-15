@@ -3690,9 +3690,16 @@ func findTopLevelDot(expr string) int {
 	return result
 }
 
-// compareValues compares left and right with op. Numeric comparison is used
-// when both sides parse as float64; otherwise string comparison is used.
-func (r *Runtime) compareValues(left, right, op string) bool {
+// CompareValues compares left and right with op. Numeric comparison is used
+// when both sides parse as float64 (so, for example, "3" and "3.0" compare
+// equal, and "10" is greater than "9"); otherwise Go string comparison is
+// used. op is one of ==, ===, !=, !==, <, >, <=, >= — === and !== compare
+// the same as == and != respectively. It is exported so codegen-generated
+// code can call it directly for a string-typed comparison whose operand
+// numericness can't be proven at generation time, keeping that comparison
+// logic single-sourced in one place rather than duplicated (and risking
+// diverging) in generated code.
+func CompareValues(left, right, op string) bool {
 	leftF, leftIsNum := parseNumber(left)
 	rightF, rightIsNum := parseNumber(right)
 
@@ -3728,6 +3735,12 @@ func (r *Runtime) compareValues(left, right, op string) bool {
 		return left >= right
 	}
 	return false
+}
+
+// compareValues compares left and right with op, using the interpreter's
+// value-comparison rules. See CompareValues for the exact semantics.
+func (r *Runtime) compareValues(left, right, op string) bool {
+	return CompareValues(left, right, op)
 }
 
 func parseNumber(s string) (float64, bool) {
