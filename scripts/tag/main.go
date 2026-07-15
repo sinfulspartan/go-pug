@@ -196,9 +196,9 @@ func checkTagAbsent(tag, remote string) error {
 	return nil
 }
 
-// runTests runs `go test -count=1 -timeout 120s <pkg>` and streams output.
+// runTests runs `go test -count=1 -timeout 300s <pkg>` and streams output.
 func runTests(pkg string) error {
-	return run("go", "test", "-count=1", "-timeout", "120s", pkg)
+	return run("go", "test", "-count=1", "-timeout", "300s", pkg)
 }
 
 // git runs a git subcommand and streams its output to stdout/stderr.

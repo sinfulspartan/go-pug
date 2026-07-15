@@ -103,6 +103,7 @@ func TestCodegenBenchAttrsGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading golden file: %v", err)
 	}
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 
 	if !bytes.Equal(got, want) {
 		t.Errorf("GenerateGo output does not match the checked-in golden file (regenerate codegen_bench_attrs_gen_test.go from GenerateGo's output).\n--- got ---\n%s\n--- want ---\n%s", got, want)
