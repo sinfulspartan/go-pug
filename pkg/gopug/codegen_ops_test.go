@@ -56,7 +56,12 @@ import (
 // a plain bool slice, used by the dynamic-class-from-slice-field
 // differential tests to prove a bool element stringifies through bare
 // fmt.Sprintf's "%v" ("true"/"false") exactly like the interpreter's own
-// reflect-driven per-element stringify.
+// reflect-driven per-element stringify. ClassFlags is a string-keyed bool
+// map and IntFlags an int-keyed bool map, both used by the
+// dynamic-class-from-map-field differential tests: ClassFlags exercises the
+// truthy-value-filter/sort/escaping/empty-string-key shapes, and IntFlags
+// exercises a non-string key type sorting by its stringified form rather
+// than its underlying numeric order.
 type opsData struct {
 	Name       string
 	Count      int
@@ -86,6 +91,8 @@ type opsData struct {
 	NamedCount opsNamedCount
 	Float32Val float32
 	BoolItems  []bool
+	ClassFlags map[string]bool
+	IntFlags   map[int]bool
 }
 
 // opsFirm is opsData.Firms's element type.
@@ -162,6 +169,8 @@ type opsData struct {
 	NamedCount opsNamedCount
 	Float32Val float32
 	BoolItems  []bool
+	ClassFlags map[string]bool
+	IntFlags   map[int]bool
 }
 `
 

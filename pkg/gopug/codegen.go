@@ -246,6 +246,9 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if g.needsStrconv {
 		src.WriteString("\t\"strconv\"\n")
 	}
+	if g.needsSort {
+		src.WriteString("\t\"sort\"\n")
+	}
 	if g.needsStrings {
 		src.WriteString("\t\"strings\"\n")
 	}
@@ -321,6 +324,12 @@ type generator struct {
 	// emit the stdlib call inline rather than through a gopug helper), so
 	// GenerateGo only imports "strings" when it is actually used.
 	needsStrings bool
+	// needsSort tracks whether the generated body calls sort.Strings directly
+	// (only a map-valued class attribute does this, since the active class
+	// keys are unknown until runtime and must be sorted the same way
+	// Runtime.renderTag's own reflect.Map branch does), so GenerateGo only
+	// imports "sort" when it is actually used.
+	needsSort bool
 	// tmpCounter is the next unused index nextTmp will hand out, so every
 	// fallible value-expression extracted at a write site (genInterpolation,
 	// genCode, genAttributes) gets its own uniquely named __vN/__errN locals
@@ -1773,24 +1782,26 @@ func staticCallAttrValue(v *AttributeValue) (string, bool) {
 // a slice/array field, the whole value is handed to genDynamicClassSlice
 // instead, reproducing the interpreter's own reflect.Slice/reflect.Array
 // branch (Runtime.renderTag, the containsParenExpr/isOperatorExpr-false
-// evaluateExprRaw switch) rather than its resolveClassTokenList string-only
-// fallback. A multi-token value (a shorthand prefix merged with a dynamic
-// slice field, e.g. `div.card(class=tags)` -> trimmed `card tags`) is NOT
-// reproduced here even though the interpreter itself resolves it (through
-// resolveClassTokenList's own per-token flatten, a different code path) —
-// that stays deferred, since this increment only proves the single-token
-// evaluateExprRaw branch byte-identical, not resolveClassTokenList's. Every
-// other token is classified as a static quoted literal or a bare
-// identifier/dot-path resolving to a string field, then emitted as a single
-// runtime write joining every token's Go expression through the exported
-// JoinClasses (dropping an empty token, matching Runtime.renderTag's
-// empty-token rule exactly) and escaping the joined result through
-// EscapeAttr. An UNparenthesized ternary/operator class expression (caught
-// by isOperatorExpr, since a fully-parenthesized value's operators sit at
-// depth>0 and never trip it), a class array-literal value, a map-valued
-// field, or a token that isn't a static literal, a string-field reference,
-// or (single-token only) a slice/array-field reference is out of scope for
-// this increment and returns an error instead of guessing at output the
+// evaluateExprRaw switch) byte for byte; when it resolves to a map field
+// instead, the whole value is handed to genDynamicClassMap, reproducing that
+// same switch's reflect.Map branch — rather than its resolveClassTokenList
+// string-only fallback. A multi-token value (a shorthand prefix merged with
+// a dynamic slice/map field, e.g. `div.card(class=tags)` -> trimmed
+// `card tags`) is NOT reproduced here even though the interpreter itself
+// resolves it (through resolveClassTokenList's own per-token flatten, a
+// different code path) — that stays deferred, since this increment only
+// proves the single-token evaluateExprRaw branch byte-identical, not
+// resolveClassTokenList's. Every other token is classified as a static
+// quoted literal or a bare identifier/dot-path resolving to a string field,
+// then emitted as a single runtime write joining every token's Go
+// expression through the exported JoinClasses (dropping an empty token,
+// matching Runtime.renderTag's empty-token rule exactly) and escaping the
+// joined result through EscapeAttr. An UNparenthesized ternary/operator
+// class expression (caught by isOperatorExpr, since a fully-parenthesized
+// value's operators sit at depth>0 and never trip it), a class array-literal
+// value, or a token that isn't a static literal, a string-field reference,
+// or (single-token only) a slice/array/map-field reference is out of scope
+// for this increment and returns an error instead of guessing at output the
 // interpreter might not produce; so does a nil Config.DataReflectType, since
 // without type information neither a bare class token nor a parenthesized
 // expression can be resolved (nor a class-object entry's value, which is
@@ -1834,9 +1845,13 @@ func (g *generator) genDynamicClass(trimmed string) error {
 	if len(words) == 1 {
 		if _, ok := unwrapQuotedLiteral(words[0]); !ok {
 			if shape, _ := classifySimpleShape(words[0]); shape == shapeIdentifier || shape == shapeDotPath {
-				if goExpr, typ, err := g.resolveFieldExpr(words[0]); err == nil && typ != nil &&
-					(typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array) {
-					return g.genDynamicClassSlice(goExpr)
+				if goExpr, typ, err := g.resolveFieldExpr(words[0]); err == nil && typ != nil {
+					switch typ.Kind() {
+					case reflect.Slice, reflect.Array:
+						return g.genDynamicClassSlice(goExpr)
+					case reflect.Map:
+						return g.genDynamicClassMap(goExpr)
+					}
 				}
 			}
 		}
@@ -1905,6 +1920,65 @@ func (g *generator) genDynamicClassSlice(goExpr string) error {
 	fmt.Fprintf(&b, "for _, %s := range %s {\n", elemVar, goExpr)
 	fmt.Fprintf(&b, "%s = append(%s, fmt.Sprintf(\"%%v\", %s))\n", partsVar, partsVar, elemVar)
 	b.WriteString("}\n")
+	g.writeRaw(b.String())
+
+	g.writeStatic(` class="`)
+	g.writeExprWrite("gopug.EscapeAttr(strings.Join(" + partsVar + `, " "))`)
+	g.writeStatic(`"`)
+	return nil
+}
+
+// genDynamicClassMap emits a dynamic class="..." attribute for the single-
+// token case genDynamicClass hands off when the whole class value is one
+// bare field resolving to a map (`div(class=classMap)`), reproducing
+// Runtime.renderTag's own reflect.Map branch (runtime.go, the
+// evaluateExprRaw switch) byte for byte: goExpr is the Go expression
+// (already resolved by resolveFieldExpr) for the map field itself, of its
+// own concrete key/value types. A range loop visits every entry, keeping
+// only those whose VALUE's fmt.Sprintf("%v", …) form is truthy under
+// gopug.Truthy — the exported twin of the interpreter's own isTruthy, so the
+// filter is identical bit for bit — and, for each kept entry, appending its
+// KEY's fmt.Sprintf("%v", …) form to a []string. This mirrors the
+// interpreter's own mvStr := fmt.Sprintf("%v", mv); if r.isTruthy(mvStr) {
+// activeClasses = append(activeClasses, fmt.Sprintf("%v", mk.Interface())) }
+// exactly, because both apply the identical %v verb to the identical
+// concrete key/value types. Map iteration order is unspecified, and a Go
+// map's key order isn't known until runtime regardless of key type, so the
+// collected keys are sorted with a genuine runtime sort.Strings call (the
+// first one generated code ever needs — see the needsSort field), matching
+// the interpreter's own sort.Strings(activeClasses) exactly, including for
+// a non-string key type: both sort the keys' STRING form, not their
+// underlying numeric/other order (so int keys 1, 2, 10 sort as "1", "10",
+// "2", not 1, 2, 10). The sorted parts are joined with strings.Join, NOT the
+// exported gopug.JoinClasses helper used by the multi-token path above:
+// Runtime.renderTag's map branch calls strings.Join directly, which does
+// not drop an empty-string element, so a truthy key that stringifies to ""
+// must still contribute an empty token — surfacing as a leading space once
+// joined with any other kept key — to match; JoinClasses would wrongly drop
+// it. A nil or empty map produces an empty parts slice, so sort.Strings is a
+// no-op and strings.Join yields "", rendering `class=""`, matching the
+// interpreter's own empty rv.MapKeys() case. The joined string is escaped
+// through gopug.EscapeAttr, mirroring htmlEscapeAttr at the interpreter's
+// own class-attribute write site.
+func (g *generator) genDynamicClassMap(goExpr string) error {
+	g.needsGopug = true
+	g.needsStrings = true
+	g.needsFmt = true
+	g.needsSort = true
+
+	n := g.nextTmp()
+	partsVar := fmt.Sprintf("__clsMapKeys%d", n)
+	keyVar := fmt.Sprintf("__clsMapKey%d", n)
+	valVar := fmt.Sprintf("__clsMapVal%d", n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "var %s []string\n", partsVar)
+	fmt.Fprintf(&b, "for %s, %s := range %s {\n", keyVar, valVar, goExpr)
+	fmt.Fprintf(&b, "if gopug.Truthy(fmt.Sprintf(\"%%v\", %s)) {\n", valVar)
+	fmt.Fprintf(&b, "%s = append(%s, fmt.Sprintf(\"%%v\", %s))\n", partsVar, partsVar, keyVar)
+	b.WriteString("}\n")
+	b.WriteString("}\n")
+	fmt.Fprintf(&b, "sort.Strings(%s)\n", partsVar)
 	g.writeRaw(b.String())
 
 	g.writeStatic(` class="`)

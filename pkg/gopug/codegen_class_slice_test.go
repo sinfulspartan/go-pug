@@ -164,9 +164,10 @@ func genClassSliceErr(t *testing.T, src string, noType bool) error {
 // by merging a shorthand class prefix with a dynamic slice field
 // (`div.card(class=Items)` -> trimmed `card Items`, which the interpreter
 // resolves through its own resolveClassTokenList flatten path — a different
-// code path this increment does not reproduce), a map-valued field
-// (deferred to a later increment), and a nil Config.DataReflectType (no type
-// information to resolve the bare field against at all).
+// code path this increment does not reproduce), and a nil
+// Config.DataReflectType (no type information to resolve the bare field
+// against at all). A map-valued field is a separate, later increment's
+// supported shape (see codegen_class_map_test.go), not a deferral anymore.
 func TestCodegenClassSliceDeferrals(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -175,7 +176,6 @@ func TestCodegenClassSliceDeferrals(t *testing.T) {
 		noType bool
 	}{
 		{name: "multi-token shorthand-prefix + slice field", src: `div.card(class=Items)` + "\n"},
-		{name: "map-valued field", src: `div(class=Meta)` + "\n"},
 		{name: "nil rootType", src: `div(class=Items)` + "\n", noType: true},
 	}
 
@@ -197,12 +197,10 @@ func TestCodegenClassSliceDeferrals(t *testing.T) {
 func TestCodegenClassSliceDeferralsAreDistinct(t *testing.T) {
 	t.Parallel()
 	multiToken := genClassSliceErr(t, `div.card(class=Items)`+"\n", false)
-	mapField := genClassSliceErr(t, `div(class=Meta)`+"\n", false)
 	nilType := genClassSliceErr(t, `div(class=Items)`+"\n", true)
 
 	msgs := map[string]error{
 		"multi-token shorthand + slice": multiToken,
-		"map-valued field":              mapField,
 		"nil rootType":                  nilType,
 	}
 	seen := map[string]string{}
