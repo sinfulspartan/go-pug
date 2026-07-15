@@ -52,7 +52,11 @@ import (
 // `int`), each used to prove genScalarStringify's exact supported-kind set
 // carries over unchanged to a numeric local. Float32Val is a float32 field —
 // a kind genScalarStringify has no case for — used to prove that kind still
-// defers cleanly rather than being silently accepted as numeric.
+// defers cleanly rather than being silently accepted as numeric. BoolItems is
+// a plain bool slice, used by the dynamic-class-from-slice-field
+// differential tests to prove a bool element stringifies through bare
+// fmt.Sprintf's "%v" ("true"/"false") exactly like the interpreter's own
+// reflect-driven per-element stringify.
 type opsData struct {
 	Name       string
 	Count      int
@@ -81,6 +85,7 @@ type opsData struct {
 	UintVal    uint
 	NamedCount opsNamedCount
 	Float32Val float32
+	BoolItems  []bool
 }
 
 // opsFirm is opsData.Firms's element type.
@@ -88,9 +93,13 @@ type opsFirm struct {
 	ID int
 }
 
-// opsUser is opsData.User's type.
+// opsUser is opsData.User's type. Tags is a nested string slice, used by the
+// dynamic-class-from-slice-field differential tests to prove a dot-path
+// bare field (`div(class=User.Tags)`) resolves through resolveFieldExpr to a
+// slice type exactly like a top-level slice field does.
 type opsUser struct {
 	Name string
+	Tags []string
 }
 
 // opsOffer is opsData.Offer's type.
@@ -115,6 +124,7 @@ const opsDataStructSrc = `type opsFirm struct {
 
 type opsUser struct {
 	Name string
+	Tags []string
 }
 
 type opsOffer struct {
@@ -151,6 +161,7 @@ type opsData struct {
 	UintVal    uint
 	NamedCount opsNamedCount
 	Float32Val float32
+	BoolItems  []bool
 }
 `
 

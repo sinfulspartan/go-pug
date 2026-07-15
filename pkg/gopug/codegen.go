@@ -1767,16 +1767,29 @@ func staticCallAttrValue(v *AttributeValue) (string, bool) {
 // hand the whole value straight to genValueExpr rather than reproducing the
 // interpreter's static-prefix-mixed heuristic (runtime.go's
 // containsParenExpr/isOperatorExpr word-splitting fallback) — that mixed
-// form stays deferred. Anything else is tokenised with strings.Fields and
-// each token classified as a static quoted literal or a bare
+// form stays deferred. Anything else is tokenised with strings.Fields. When
+// that leaves exactly one token — a bare dynamic value with no shorthand
+// prefix, e.g. `div(class=tags)` — and it resolves (via resolveFieldExpr) to
+// a slice/array field, the whole value is handed to genDynamicClassSlice
+// instead, reproducing the interpreter's own reflect.Slice/reflect.Array
+// branch (Runtime.renderTag, the containsParenExpr/isOperatorExpr-false
+// evaluateExprRaw switch) rather than its resolveClassTokenList string-only
+// fallback. A multi-token value (a shorthand prefix merged with a dynamic
+// slice field, e.g. `div.card(class=tags)` -> trimmed `card tags`) is NOT
+// reproduced here even though the interpreter itself resolves it (through
+// resolveClassTokenList's own per-token flatten, a different code path) —
+// that stays deferred, since this increment only proves the single-token
+// evaluateExprRaw branch byte-identical, not resolveClassTokenList's. Every
+// other token is classified as a static quoted literal or a bare
 // identifier/dot-path resolving to a string field, then emitted as a single
 // runtime write joining every token's Go expression through the exported
 // JoinClasses (dropping an empty token, matching Runtime.renderTag's
 // empty-token rule exactly) and escaping the joined result through
 // EscapeAttr. An UNparenthesized ternary/operator class expression (caught
 // by isOperatorExpr, since a fully-parenthesized value's operators sit at
-// depth>0 and never trip it), a class array-literal value, or a token that
-// isn't a static literal or a string-field reference is out of scope for
+// depth>0 and never trip it), a class array-literal value, a map-valued
+// field, or a token that isn't a static literal, a string-field reference,
+// or (single-token only) a slice/array-field reference is out of scope for
 // this increment and returns an error instead of guessing at output the
 // interpreter might not produce; so does a nil Config.DataReflectType, since
 // without type information neither a bare class token nor a parenthesized
@@ -1818,6 +1831,17 @@ func (g *generator) genDynamicClass(trimmed string) error {
 		}
 	}
 
+	if len(words) == 1 {
+		if _, ok := unwrapQuotedLiteral(words[0]); !ok {
+			if shape, _ := classifySimpleShape(words[0]); shape == shapeIdentifier || shape == shapeDotPath {
+				if goExpr, typ, err := g.resolveFieldExpr(words[0]); err == nil && typ != nil &&
+					(typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array) {
+					return g.genDynamicClassSlice(goExpr)
+				}
+			}
+		}
+	}
+
 	args := make([]string, 0, len(words))
 	for _, w := range words {
 		if lit, ok := unwrapQuotedLiteral(w); ok {
@@ -1842,6 +1866,49 @@ func (g *generator) genDynamicClass(trimmed string) error {
 	g.needsGopug = true
 	g.writeStatic(` class="`)
 	g.writeExprWrite("gopug.EscapeAttr(gopug.JoinClasses(" + strings.Join(args, ", ") + "))")
+	g.writeStatic(`"`)
+	return nil
+}
+
+// genDynamicClassSlice emits a dynamic class="..." attribute for the single-
+// token case genDynamicClass hands off when the whole class value is one
+// bare field resolving to a slice/array (`div(class=tags)`), reproducing
+// Runtime.renderTag's own reflect.Slice/reflect.Array branch
+// (runtime.go, the evaluateExprRaw switch) byte for byte: goExpr is the Go
+// expression (already resolved by resolveFieldExpr) for the slice/array
+// field itself, of its own concrete element type. A range loop builds a
+// []string of each element's fmt.Sprintf("%v", …) form — the same
+// per-element stringify genJoinValueExpr already uses for `.join`, which
+// matches the interpreter's own fmt.Sprintf("%v", rv.Index(i).Interface())
+// exactly because both apply the identical %v verb to the identical
+// concrete element type. The parts are joined with strings.Join, NOT the
+// exported gopug.JoinClasses helper used by the multi-token path above:
+// Runtime.renderTag's slice branch calls strings.Join directly, which does
+// not drop an empty-string element, so a `["a", "", "b"]` slice must render
+// as `class="a  b"` (a doubled interior space) to match — JoinClasses would
+// wrongly collapse it. A nil or empty slice/array produces an empty parts
+// slice, so strings.Join yields "" and the attribute renders as `class=""`,
+// matching the interpreter's rv.Len()==0 case. The joined string is escaped
+// through gopug.EscapeAttr, mirroring htmlEscapeAttr at the interpreter's
+// own class-attribute write site.
+func (g *generator) genDynamicClassSlice(goExpr string) error {
+	g.needsGopug = true
+	g.needsStrings = true
+	g.needsFmt = true
+
+	n := g.nextTmp()
+	partsVar := fmt.Sprintf("__clsParts%d", n)
+	elemVar := fmt.Sprintf("__clsElem%d", n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "var %s []string\n", partsVar)
+	fmt.Fprintf(&b, "for _, %s := range %s {\n", elemVar, goExpr)
+	fmt.Fprintf(&b, "%s = append(%s, fmt.Sprintf(\"%%v\", %s))\n", partsVar, partsVar, elemVar)
+	b.WriteString("}\n")
+	g.writeRaw(b.String())
+
+	g.writeStatic(` class="`)
+	g.writeExprWrite("gopug.EscapeAttr(strings.Join(" + partsVar + `, " "))`)
 	g.writeStatic(`"`)
 	return nil
 }
