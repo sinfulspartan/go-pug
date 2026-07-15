@@ -282,14 +282,19 @@ func TestCodegenStringCompareStrictEquality(t *testing.T) {
 	}
 }
 
-// TestCodegenStringCompareMixedTypeStillDeferred asserts a string operand
-// compared against a numeric operand is NOT routed through
-// gopug.CompareValues: genComparison's stringish branch only fires when
-// BOTH operands are stringish, so this still falls through to the default
-// "not comparable" deferral, unchanged by this generalization.
-func TestCodegenStringCompareMixedTypeStillDeferred(t *testing.T) {
+// TestCodegenStringCompareNonScalarOperandStillDeferred asserts a
+// non-scalar operand (a slice field) compared against anything is NOT
+// routed through gopug.CompareValues: genOperand itself rejects a
+// slice/map/struct/pointer field before genComparison's stringify-both
+// fallback (see codegen_mixed_compare_test.go) is ever reached, since the
+// interpreter would fmt-stringify such a value instead of stringifying it
+// the way genScalarStringify's per-Kind switch does — a footgun this
+// package does not attempt to reproduce. A string operand compared against
+// a numeric operand, previously deferred here too, is now supported; see
+// TestCodegenMixedCompareStringFieldVsNumericLiteral and its siblings.
+func TestCodegenStringCompareNonScalarOperandStillDeferred(t *testing.T) {
 	t.Parallel()
-	src := "if Name == Count\n  p yes\n"
+	src := "if Items == Name\n  p yes\n"
 	ast, err := Parse(src, nil)
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", src, err)

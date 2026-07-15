@@ -4909,6 +4909,7 @@ func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind
 //     — a fractional literal against an integer-kind field, or a negative
 //     literal against an unsigned field, doesn't compile as a direct Go
 //     comparison and is rejected instead of silently truncating/converting.
+//
 //   - both operands stringish (a string field, a string `- var` local, or a
 //     string literal, in any combination): a string field/`- var` local
 //     compared, with `==`/`!=` (or the `===`/`!==` aliases) only, to a
@@ -4932,6 +4933,7 @@ func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind
 //     is exactly what keeps it byte-identical to compareValues for every
 //     stringish combination the earlier field-vs-literal-only increment
 //     deferred.
+//
 //   - an each-loop INDEX variable (genOperand sets operandKind.indexRawGoExpr
 //     for one — see scopeVar.indexRawGoName) compared, with ANY of the
 //     eight operators, to a numeric literal: the index is always a decimal
@@ -4943,10 +4945,30 @@ func (g *generator) genLengthOperand(base, fullExpr string) (string, operandKind
 //     int-kind field, so the same safe-integer/representability guarantees
 //     apply.
 //
-// Every other combination — a string operand against a numeric operand
-// (other than the index-variable case above), or any operand genOperand
-// itself rejected — returns an error instead of emitting a comparison that
-// might not agree with the interpreter.
+//   - every other combination genOperand accepted (a bool field against a
+//     bool field, a numeric field/literal, or a string field/literal; a
+//     numeric field/literal against a string field/literal not already
+//     covered by the two fast paths above): stringified via
+//     genScalarStringify (the same per-Kind stringify genInterpolation and a
+//     numeric `- var` local already share, extended here to a bool operand
+//     too) and compared with gopug.CompareValues, exactly reproducing
+//     Runtime.evaluateExpr's own universal model — EVERY comparison
+//     stringifies both operands first, then compareValues numeric-coerces
+//     if both stringified forms parse as numbers, else string-compares. A
+//     numeric literal's stringified form is its own canonical decimal text
+//     (formatCanonicalLiteral), matching evaluateExpr's
+//     strconv.FormatFloat(n, 'f', -1, 64) for a bare numeric token exactly.
+//     No precision guard is needed for this fallback (unlike the numeric
+//     fast path's checkNumericComparable): CompareValues re-parses the
+//     stringified operands with strconv.ParseFloat, the SAME lossy round
+//     trip the interpreter's own compareValues performs, so this fallback
+//     agrees with the interpreter by construction even where a raw,
+//     unrounded Go numeric comparison would not.
+//
+// Every other combination — any operand genOperand itself rejected (a
+// slice/map/struct/pointer field, or an unsupported non-scalar kind) —
+// returns an error instead of emitting a comparison that might not agree
+// with the interpreter.
 func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) {
 	leftRaw = strings.TrimSpace(leftRaw)
 	rightRaw = strings.TrimSpace(rightRaw)
@@ -5005,7 +5027,44 @@ func (g *generator) genComparison(leftRaw, op, rightRaw string) (string, error) 
 		return "gopug.CompareValues(" + leftExpr + ", " + rightExpr + ", " + strconv.Quote(op) + ")", nil
 
 	default:
+		if leftStr, lerr := g.genComparisonStringifyOperand(leftExpr, leftKind); lerr == nil {
+			if rightStr, rerr := g.genComparisonStringifyOperand(rightExpr, rightKind); rerr == nil {
+				g.needsGopug = true
+				return "gopug.CompareValues(" + leftStr + ", " + rightStr + ", " + strconv.Quote(op) + ")", nil
+			}
+		}
 		return "", fmt.Errorf("unsupported comparison %q %s %q in codegen condition (these operand types are not comparable in this increment)", leftRaw, op, rightRaw)
+	}
+}
+
+// genComparisonStringifyOperand returns a Go expression of type string that
+// stringifies goExpr — already resolved and typed by genOperand, per kind —
+// the way Runtime.evaluateExpr would stringify the same operand, for
+// genComparison's default-branch fallback to hand to gopug.CompareValues. A
+// bool or numeric-field operand delegates to genScalarStringify (a bool
+// case genScalarStringify already has for the numeric-local codegen path,
+// reused here); a string field or string literal is already the right Go
+// string expression as-is; a numeric literal's stringified form is its own
+// canonical decimal text, the same text formatCanonicalLiteral already
+// derived for the raw-literal shape, matching evaluateExpr's
+// strconv.FormatFloat(n, 'f', -1, 64) for a bare numeric token exactly. Any
+// operand shape genOperand itself would already have rejected before
+// reaching here (a slice/map/struct/pointer field) falls through to the
+// error case — the interpreter would fmt-stringify such a value instead
+// (e.g. an empty slice stringifies to "[]"), a footgun this fallback does
+// not attempt to reproduce.
+func (g *generator) genComparisonStringifyOperand(goExpr string, kind operandKind) (string, error) {
+	switch kind.shape {
+	case shapeOperandBool:
+		return g.genScalarStringify(goExpr, reflectTypeBool)
+	case shapeOperandStringField, shapeOperandStringLiteral:
+		return g.genScalarStringify(goExpr, reflectTypeString)
+	case shapeOperandNumericField:
+		return g.genScalarStringify(goExpr, kind.numType)
+	case shapeOperandNumericLiteral:
+		return strconv.Quote(formatCanonicalLiteral(kind.numLiteralVal)), nil
+	default:
+		return "", fmt.Errorf("operand %q cannot be stringified for comparison in codegen", goExpr)
 	}
 }
 
