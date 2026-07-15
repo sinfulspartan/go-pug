@@ -1748,26 +1748,40 @@ func staticCallAttrValue(v *AttributeValue) (string, bool) {
 // genDynamicClass emits a dynamic class="..." attribute for a value
 // genAttributes has already determined is not a pure static literal —
 // parseAttributes's merge contract (parser.go's class-merge branch) means
-// that value is either a bare dynamic token on its own (`div(class=cls)`)
-// or shorthand class tokens, individually quoted, followed by one bare
-// dynamic token (`"text-end" cls`, `"btn" "large" variant`). It tokenises
-// the value with strings.Fields and classifies each token as a static
-// quoted literal or a bare identifier/dot-path resolving to a string field,
-// then emits a single runtime write joining every token's Go expression
-// through the exported JoinClasses (dropping an empty token, matching
-// Runtime.renderTag's empty-token rule exactly) and escaping the joined
-// result through EscapeAttr. A ternary/operator class expression, a class
-// object/array value, or a token that isn't a static literal or a
-// string-field reference is out of scope for this increment and returns an
-// error instead of guessing at output the interpreter might not produce;
-// so does a nil Config.DataReflectType, since without type information a
-// bare class token can't be confirmed to resolve to a string field.
+// that value is either a bare dynamic token on its own (`div(class=cls)`),
+// shorthand class tokens, individually quoted, followed by one bare
+// dynamic token (`"text-end" cls`, `"btn" "large" variant`), or a class
+// object literal optionally preceded by a static shorthand prefix
+// (`div.card(class={active: isActive})` -> trimmed `card {active: isActive}`
+// — see genDynamicClassObject). The object-literal form is detected the
+// same way Runtime.renderTag's own class branch detects it: the first `{`
+// in trimmed, provided trimmed's last byte is `}`, marking everything from
+// that `{` onward as the object and everything before it (trimmed) as a
+// static prefix. Anything else is tokenised with strings.Fields and each
+// token classified as a static quoted literal or a bare identifier/dot-path
+// resolving to a string field, then emitted as a single runtime write
+// joining every token's Go expression through the exported JoinClasses
+// (dropping an empty token, matching Runtime.renderTag's empty-token rule
+// exactly) and escaping the joined result through EscapeAttr. A
+// ternary/operator class expression, a class array-literal value, or a
+// token that isn't a static literal or a string-field reference is out of
+// scope for this increment and returns an error instead of guessing at
+// output the interpreter might not produce; so does a nil
+// Config.DataReflectType, since without type information a bare class token
+// can't be confirmed to resolve to a string field (nor a class-object
+// entry's value, which is compiled by genCondition — see
+// genDynamicClassObject — and genCondition itself requires type
+// information for most of its own supported shapes).
 func (g *generator) genDynamicClass(trimmed string) error {
 	if g.rootType == nil {
 		return fmt.Errorf("unsupported dynamic class attribute in codegen (only static quoted values are supported without type information)")
 	}
 	if isOperatorExpr(trimmed) {
 		return fmt.Errorf("unsupported dynamic class attribute in codegen (a ternary/operator class expression is not yet supported)")
+	}
+
+	if classObjStart := strings.IndexByte(trimmed, '{'); classObjStart >= 0 && strings.HasSuffix(trimmed, "}") {
+		return g.genDynamicClassObject(trimmed, classObjStart)
 	}
 
 	words := strings.Fields(trimmed)
@@ -1801,6 +1815,97 @@ func (g *generator) genDynamicClass(trimmed string) error {
 	g.needsGopug = true
 	g.writeStatic(` class="`)
 	g.writeExprWrite("gopug.EscapeAttr(gopug.JoinClasses(" + strings.Join(args, ", ") + "))")
+	g.writeStatic(`"`)
+	return nil
+}
+
+// genDynamicClassObject emits a dynamic class="..." attribute for a class
+// value containing an object literal (`div.card(class={active: isActive})`),
+// reproducing Runtime.renderTag's own class-object branch (runtime.go, the
+// `classObjStart` block) byte for byte. trimmed is genDynamicClass's whole
+// class value; classObjStart is the index of trimmed's first `{`, already
+// confirmed (by the caller) to start an object literal running through
+// trimmed's last byte, `}` — exactly the same detection the interpreter's
+// own loop-and-check performs on rawValExpr at render time.
+//
+// parseInlineObject never evaluates anything — it only splits the object's
+// source text on top-level commas and colons and strips a matching pair of
+// surrounding quotes from each key/value — so calling it here, at GENERATE
+// time, on trimmed[classObjStart:] yields the exact same map[string]string
+// Runtime.renderTag's own runtime call would build for the identical source
+// text: there is no template data involved in the parse itself, only in
+// each entry's VALUE once it's handed to evaluateExpr. That per-value
+// evaluation is where genCondition comes in: the interpreter's per-entry
+// test is `isTruthy(evaluateExpr(v))`, which is exactly what genCondition
+// already reproduces as a native Go bool for every condition shape it
+// supports (see genCondition's own doc comment) — the identical machinery
+// `if`/`unless`/`case` conditions already compile through, so an object
+// entry's truthiness is byte-identical to the interpreter's by
+// construction, not by a second, separately-proven implementation. Any
+// entry value genCondition can't compile (a fallible expression like `a/b`,
+// an unresolvable bare word, a nested object/array, …) defers the WHOLE
+// class-object attribute instead of guessing: the interpreter drops such an
+// entry's key silently (evaluateExpr errors, evaled=="", isTruthy("")==
+// false) and keeps rendering, a fallback a generated function that must
+// either compile the value or refuse to compile at all cannot reproduce.
+//
+// Every key is fixed template source text, known at GENERATE time, so the
+// keys are sorted with slices.Sort here — at generate time — and their `if`
+// checks are emitted in that sorted order; the []string a passing entry's
+// key is appended to is therefore built already in sorted order, matching
+// Runtime.renderTag's own sort.Strings(activeClasses) exactly, with no
+// runtime sort needed. The appended keys are joined with strings.Join (NOT
+// the exported JoinClasses, which drops empty elements and would erase the
+// interpreter's own trailing-space-when-empty quirk below), and a static
+// prefix (trimmed[:classObjStart], then, if non-empty, a literal space) is
+// prepended exactly the way Runtime.renderTag's own
+// `evaluated = prefix + " " + evaluated` does, INCLUDING when the object
+// itself evaluates to no active classes at all (yielding a lone trailing
+// space after the prefix, e.g. `class="card "`, not `class="card"`). The
+// joined-and-prefixed result is escaped through the exported EscapeAttr —
+// the class-object form is not exempt from attribute escaping, mirroring
+// runtime.go's own htmlEscapeAttr(evaluated) call applied to this same
+// value.
+func (g *generator) genDynamicClassObject(trimmed string, classObjStart int) error {
+	objStr := trimmed[classObjStart:]
+	obj := parseInlineObject(objStr)
+
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	conds := make([]string, len(keys))
+	for i, k := range keys {
+		cond, err := g.genCondition(obj[k])
+		if err != nil {
+			return fmt.Errorf("unsupported dynamic class object entry %q in codegen: %w", k, err)
+		}
+		conds[i] = cond
+	}
+
+	prefix := ""
+	if classObjStart > 0 {
+		prefix = strings.TrimSpace(trimmed[:classObjStart])
+	}
+
+	clsTmp := fmt.Sprintf("__cls%d", g.nextTmp())
+	strTmp := fmt.Sprintf("__clsStr%d", g.nextTmp())
+
+	g.writeRaw(fmt.Sprintf("var %s []string\n", clsTmp))
+	for i, k := range keys {
+		g.body.WriteString(fmt.Sprintf("if %s {\n%s = append(%s, %s)\n}\n", conds[i], clsTmp, clsTmp, strconv.Quote(k)))
+	}
+	g.needsStrings = true
+	g.body.WriteString(fmt.Sprintf("%s := strings.Join(%s, \" \")\n", strTmp, clsTmp))
+	if prefix != "" {
+		g.body.WriteString(fmt.Sprintf("%s = %s + %s\n", strTmp, strconv.Quote(prefix+" "), strTmp))
+	}
+
+	g.needsGopug = true
+	g.writeStatic(` class="`)
+	g.writeExprWrite("gopug.EscapeAttr(" + strTmp + ")")
 	g.writeStatic(`"`)
 	return nil
 }

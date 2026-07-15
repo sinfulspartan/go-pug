@@ -11,9 +11,10 @@ import (
 // unescaped dynamic class attribute, an unescaped boolean attribute, a
 // deferred-method-call-valued attribute and a ternary-valued attribute whose
 // condition is a shape genCondition can't yet compile (still outside
-// genValueExpr's ternary-condition grammar), and the dynamic-class
-// shapes still deferred past the shorthand+bare-string-field merge (a
-// ternary/operator class expression, a class object, a class array, and a
+// genValueExpr's ternary-condition grammar), and the dynamic-class shapes
+// still deferred past the shorthand+bare-string-field merge and the
+// class-object literal (a ternary/operator class expression, a class object
+// entry whose value genCondition can't compile, a class array, and a
 // non-string dynamic class token) — all return a descriptive "unsupported"
 // error rather than emitting output that might not match the interpreter's
 // renderTag. (An unescaped attribute on any OTHER name — static or dynamic,
@@ -21,9 +22,11 @@ import (
 // codegen_unescaped_attr_test.go.) Only the tractable slice (a dynamic value
 // built by genValueExpr on a non-class attribute, including a ternary whose
 // condition and branches genValueExpr/genCondition both support — see
-// codegen_ternary_test.go — a boolean attribute driven by a bool field, and a
-// dynamic class merging shorthand tokens with bare string-field tokens) is
-// supported; everything here is a later increment.
+// codegen_ternary_test.go — a boolean attribute driven by a bool field, a
+// dynamic class merging shorthand tokens with bare string-field tokens, and
+// a class-object literal whose every entry value genCondition can compile —
+// see codegen_class_object_test.go) is supported; everything here is a
+// later increment.
 func TestCodegenAttrUnsupported(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -36,8 +39,8 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 			wantMessage: "unsupported",
 		},
 		{
-			name:        "class object",
-			src:         "div(class={active: Flag})",
+			name:        "class object entry with a non-scalar field value",
+			src:         "div(class={active: Author})",
 			wantMessage: "unsupported",
 		},
 		{
