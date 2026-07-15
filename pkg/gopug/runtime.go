@@ -38,6 +38,7 @@ type Runtime struct {
 	includeStack     []string
 	entryFile        string
 	prettyIndent     int
+	wsSensitive      bool
 }
 
 func NewRuntime(ast *DocumentNode, data map[string]any) *Runtime {
@@ -88,8 +89,24 @@ var inlineTagNames = map[string]bool{
 	"dfn": true, "em": true, "i": true, "img": true, "input": true,
 	"kbd": true, "label": true, "map": true, "object": true, "output": true,
 	"q": true, "samp": true, "select": true, "small": true, "span": true,
-	"strong": true, "sub": true, "sup": true, "textarea": true, "time": true,
+	"strong": true, "sub": true, "sup": true, "time": true,
 	"tt": true, "var": true,
+}
+
+// whiteSpaceSensitiveTagNames is the set of HTML tag names whose content is
+// significant whitespace, matching pug-code-gen's own
+// WHITE_SPACE_SENSITIVE_TAGS. Rendering one of these tags forces its own
+// closing tag to never gain a trailing pretty-print newline (regardless of
+// tagCanInline), and suppresses the added indentation — but not the bare
+// line-separating newline itself — that pretty mode would otherwise insert
+// between consecutive text lines anywhere within its subtree.
+var whiteSpaceSensitiveTagNames = map[string]bool{
+	"pre": true, "textarea": true,
+}
+
+// isWhitespaceSensitiveTagName reports whether name is pre or textarea.
+func isWhitespaceSensitiveTagName(name string) bool {
+	return whiteSpaceSensitiveTagNames[name]
 }
 
 // tagIsInline reports whether a tag suppresses its own pretty-print leading
@@ -1109,11 +1126,24 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		r.inRawTextElement = true
 	}
 
+	// pre/textarea's content is significant whitespace: suppress the added
+	// indentation pretty mode would otherwise insert between text lines
+	// anywhere within this tag's subtree (matching pug-code-gen's
+	// WHITE_SPACE_SENSITIVE_TAGS/escapePrettyMode). This does NOT affect a
+	// nested tag's own leading/closing newline, which stays governed
+	// entirely by that tag's own isInline/tagCanInline classification.
+	savedWS := r.wsSensitive
+	if isWhitespaceSensitiveTagName(tag.Name) {
+		r.wsSensitive = true
+	}
+
 	for _, child := range tag.Children {
 		if err := r.renderNode(child); err != nil {
 			return err
 		}
 	}
+
+	r.wsSensitive = savedWS
 
 	if isRawTextElement(tag.Name) {
 		r.inRawTextElement = false
@@ -1122,7 +1152,11 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	if pretty {
 		r.prettyIndent--
 	}
-	if pretty && !isInline && !tagCanInline(tag) {
+	// A pre/textarea's OWN closing tag never gets a trailing newline,
+	// regardless of tagCanInline — matching pug-code-gen's direct
+	// WHITE_SPACE_SENSITIVE_TAGS[tag.name] check on the tag itself (not a
+	// subtree-wide flag).
+	if pretty && !isInline && !tagCanInline(tag) && !isWhitespaceSensitiveTagName(tag.Name) {
 		r.prettyNewline()
 	}
 
@@ -2403,9 +2437,13 @@ func (r *Runtime) renderPipe(pipe *PipeNode) error {
 // indentation as its sibling content, not just the first. It never writes
 // its own trailing newline: that comes from the enclosing tag's own closing
 // logic, which childCanInline correctly forces into block layout for
-// multi-line content.
+// multi-line content. Inside a pre/textarea subtree the leading newline and
+// the per-line indentation are both suppressed — the embedded newlines in
+// block.Content are still written verbatim, just without any added
+// indentation, since that whitespace is part of the element's significant
+// content.
 func (r *Runtime) renderBlockText(block *BlockTextNode) error {
-	pretty := r.pretty()
+	pretty := r.pretty() && !r.wsSensitive
 	if pretty && strings.Contains(block.Content, "\n") {
 		r.prettyNewline()
 	}
@@ -2671,17 +2709,21 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 // — e.g. plain text mixed with a #{} interpolation — render back-to-back
 // with no separator. In pretty mode a multi-line run additionally gets its
 // own leading/interior indentation, matching how any other non-inline node
-// self-initiates its line break.
+// self-initiates its line break — except inside a pre/textarea subtree,
+// where the added indentation is suppressed but the bare newline between
+// lines is kept, since that whitespace is part of the element's significant
+// content.
 func (r *Runtime) renderTextRun(run *TextRunNode) error {
 	multiline := textRunSpansMultipleLines(run)
+	pretty := r.pretty() && !r.wsSensitive
 	for i, node := range run.Nodes {
 		switch {
 		case i == 0:
-			if multiline && r.pretty() {
+			if multiline && pretty {
 				r.prettyNewline()
 			}
 		case textRunNodeLine(node) != textRunNodeLine(run.Nodes[i-1]):
-			if r.pretty() {
+			if pretty {
 				r.prettyNewline()
 			} else {
 				r.htmlBuf.WriteByte('\n')
