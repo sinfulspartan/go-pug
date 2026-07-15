@@ -271,7 +271,7 @@ func TestCodegenClassObjectSupportedValueForms(t *testing.T) {
 // fallible entry value (`Count/Zero`, mirroring the interpreter's own
 // evaluateExpr-errors-so-the-key-is-silently-dropped fallback, which a
 // generated function that either compiles or refuses cannot reproduce), an
-// entry value genCondition rejects outright (a non-scalar struct field), the
+// entry value genCondition rejects outright (a non-scalar slice field), the
 // still-deferred array-literal class form (`class=[...]`, unaffected by this
 // increment), and a nil Config.DataReflectType (type-blind mode, checked
 // before the object is even inspected) — each returns a distinct descriptive
@@ -284,7 +284,7 @@ func TestCodegenClassObjectDeferrals(t *testing.T) {
 		noType bool
 	}{
 		{name: "fallible entry value", src: "div(class={active: Count/Zero})\n"},
-		{name: "condition-generator-unsupported entry value (non-scalar field)", src: "div(class={active: User})\n"},
+		{name: "condition-generator-unsupported entry value (non-scalar field)", src: "div(class={active: Items})\n"},
 		{name: "array-literal class value (unchanged defer)", src: "div(class=[Name, Name])\n"},
 		{name: "nil rootType", src: "div(class={active: Flag})\n", noType: true},
 	}
@@ -310,7 +310,7 @@ func TestCodegenClassObjectDeferrals(t *testing.T) {
 func TestCodegenClassObjectDeferralsAreDistinct(t *testing.T) {
 	t.Parallel()
 	fallible := genClassObjectErr(t, "div(class={active: Count/Zero})\n", false)
-	unsupportedField := genClassObjectErr(t, "div(class={active: User})\n", false)
+	unsupportedField := genClassObjectErr(t, "div(class={active: Items})\n", false)
 	arrayLit := genClassObjectErr(t, "div(class=[Name, Name])\n", false)
 	nilType := genClassObjectErr(t, "div(class={active: Flag})\n", true)
 

@@ -40,7 +40,7 @@ func TestCodegenAttrUnsupported(t *testing.T) {
 		},
 		{
 			name:        "class object entry with a non-scalar field value",
-			src:         "div(class={active: Author})",
+			src:         "div(class={active: Tags})",
 			wantMessage: "unsupported",
 		},
 		{

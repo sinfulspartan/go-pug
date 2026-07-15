@@ -4696,11 +4696,51 @@ func (g *generator) genCondition(expr string) (string, error) {
 // isTruthy's falsy strings other than by being exactly zero). A string field
 // routes through the exported gopug.Truthy, reproducing isTruthy's exact
 // falsy set ("", "false", "0", "null", "undefined", "nil") for a value that,
-// unlike bool/numeric, can actually contain one of those strings. Any other
-// field type (slice/map/struct/pointer/…) is an error rather than guessing
-// at its stringify-based truthiness — the interpreter would stringify it
-// with fmt and isTruthy-test that (e.g. an empty slice stringifies to "[]",
-// which is truthy, a footgun this increment doesn't try to reproduce).
+// unlike bool/numeric, can actually contain one of those strings.
+//
+// A struct-kind field (whose type does not implement fmt.Stringer or error —
+// see implementsStringerOrError) is always truthy: getField returns the
+// struct value itself unchanged, and stringifying it falls all the way
+// through lookupAndStringify's scalar fast-paths to the Sprintf("%v", ...)
+// default, which for a plain struct always produces a "{...}"-shaped,
+// non-empty string that can never land in isTruthy's falsy set. A
+// pointer-to-struct field reached through a genuine dot-path (a field of
+// some other already-resolved value, at least two identifier segments) gets
+// the corresponding nil check instead: walking a second-or-later path
+// segment always resolves through Runtime.getField, which special-cases a
+// pointer-typed field by returning nil for a nil pointer (making the whole
+// lookup fail closed to the empty string, i.e. falsy) and the dereferenced
+// value for a non-nil one — so "!= nil" on the pointer itself reproduces
+// that exactly, PROVIDED the pointed-to struct type doesn't implement
+// Stringer/error either (dereferencing then routes through the same
+// struct-is-always-truthy argument above).
+//
+// A BARE pointer-to-struct identifier — the field itself is the entire
+// operand, with no leading dot-path segment — does NOT get this treatment,
+// even though its reflect.Kind is identical: Runtime.lookup resolves the
+// FIRST segment of any lookup key directly off the scope stack / data map,
+// with no call to getField at all, so a raw *T value (nil or not) reaches
+// lookupAndStringify completely unprocessed and stringifies via the same
+// Sprintf("%v", ...) fallback a struct does — "<nil>" for a nil pointer,
+// "&{...}" for a non-nil one, BOTH non-empty and outside the falsy set. A
+// bare pointer condition is therefore truthy unconditionally, regardless of
+// nilness; there is no safe Go translation for that shape that composes
+// correctly with a `||`-adjacent dot-path dereferencing the SAME variable
+// (a nil check would make `!p` true for a nil p and let a "||" right operand
+// like `p.Field` never even run in Go, which is right, but a *correct*
+// "always truthy" translation would make `!p` false and force `p.Field` to
+// evaluate, which panics on a nil p — Go has no equivalent of getField's
+// per-segment nil short-circuit). So a bare pointer-to-struct identifier is
+// left to the same deferral every other unsupported shape gets.
+//
+// Any other field type (slice/map/pointer-to-non-struct/interface/…) is an
+// error rather than guessing at its stringify-based truthiness — the
+// interpreter would stringify it with fmt and isTruthy-test that (e.g. an
+// empty slice stringifies to "[]", which is truthy, a footgun this
+// increment doesn't try to reproduce), and a pointer to a non-struct
+// scalar dereferences (via getField) to a content-dependent value rather
+// than a nil check, which is exactly as unprovable at generate time as the
+// scalar itself would be bare.
 func (g *generator) genOperandTruthiness(expr string) (string, error) {
 	switch expr {
 	case "true":
@@ -4750,9 +4790,54 @@ func (g *generator) genOperandTruthiness(expr string) (string, error) {
 	case reflect.String:
 		g.needsGopug = true
 		return "gopug.Truthy(" + convertExpr(condExpr, condTyp, reflectTypeString, "string") + ")", nil
+	case reflect.Struct:
+		if implementsStringerOrError(condTyp) {
+			return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (a type implementing fmt.Stringer or error stringifies at render time, so its truthiness cannot be proven at generate time)", condTyp, expr)
+		}
+		return "true", nil
+	case reflect.Ptr:
+		elem := condTyp.Elem()
+		if elem.Kind() != reflect.Struct {
+			return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (a pointer to a non-struct type dereferences to a content-dependent value rather than a nil check, so its truthiness cannot be proven at generate time)", condTyp, expr)
+		}
+		if implementsStringerOrError(condTyp) || implementsStringerOrError(elem) {
+			return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (a type implementing fmt.Stringer or error stringifies at render time, so its truthiness cannot be proven at generate time)", condTyp, expr)
+		}
+		if shape, _ := classifySimpleShape(strings.TrimSpace(expr)); shape != shapeDotPath {
+			return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (a bare pointer identifier is resolved without the dot-path field lookup's nil check, so even a nil pointer is truthy here — only a pointer field reached through a dot-path is a safe nil check)", condTyp, expr)
+		}
+		return condExpr + " != nil", nil
 	default:
-		return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool, numeric, and string fields are supported in this increment)", condTyp, expr)
+		return "", fmt.Errorf("unsupported condition field type %s in codegen if %q (only bool, numeric, string, struct, and dot-path pointer-to-struct fields are supported in this increment)", condTyp, expr)
 	}
+}
+
+// stringerType and errorType are the two interfaces lookupAndStringify's
+// Sprintf("%v", ...) fallback honors — a struct or pointer-to-struct type
+// implementing either has runtime-dependent stringification (its
+// String()/Error() method could return any string, including one in
+// isTruthy's falsy set), so implementsStringerOrError gates every "always
+// truthy" or "!= nil" admission genOperandTruthiness's struct/pointer cases
+// make.
+var (
+	stringerType = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
+	errorType    = reflect.TypeOf((*error)(nil)).Elem()
+)
+
+// implementsStringerOrError reports whether t, or a pointer to t, satisfies
+// fmt.Stringer or error. Both receiver forms are checked because a
+// pointer-receiver String()/Error() method is only in *t's method set, not
+// t's own — and fmt.Sprintf("%v", val) honors whichever of the two the
+// concrete value passed to it (a T or a *T) actually has, which
+// genOperandTruthiness cannot distinguish here from t's reflect.Type alone.
+// Checking both is conservative — it may defer a couple of cases that would
+// actually have been provably safe if the receiver form happened to line up
+// with how the value flows into Sprintf — but a false deferral is failing
+// closed, not incorrect.
+func implementsStringerOrError(t reflect.Type) bool {
+	pt := reflect.PointerTo(t)
+	return t.Implements(stringerType) || t.Implements(errorType) ||
+		pt.Implements(stringerType) || pt.Implements(errorType)
 }
 
 // operandShape classifies a condition operand genOperand resolved, for
