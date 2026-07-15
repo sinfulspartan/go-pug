@@ -3241,11 +3241,15 @@ func (g *generator) genFloat64ArrayLiteral(arrayExpr, fullExpr string) (string, 
 // as a Go float64 and stringifying it through genScalarStringify's Float64
 // case (strconv.FormatFloat with the same 'f', -1, 64 formatting) reproduces
 // that canonical form exactly — elemTyp = float64. Either classification then
-// pushes the item variable onto scope with its elemTyp exactly like the
-// field-collection path, so the loop body's existing scalar handling (a
-// dynamic attribute value, `#{}`/`= expr` buffered code, a template literal
-// `${...}` part, `if` truthiness) needs no new code at all to read it back
-// correctly. The numeric-literal classification additionally requires
+// hands collExpr and elemTyp to genEachLoopBody, the same loop-emission
+// helper genEach's field-collection path uses, so the item variable (and,
+// when n.IndexVar is set, the index variable too — modeled identically to
+// the field-collection path, see genEachLoopBody's own doc comment) is
+// scoped exactly like the field-collection path, and the loop body's
+// existing scalar handling (a dynamic attribute value, `#{}`/`= expr`
+// buffered code, a template literal `${...}` part, `if` truthiness) needs no
+// new code at all to read either one back correctly. The numeric-literal
+// classification additionally requires
 // type-aware mode (a non-nil Config.DataReflectType): resolveFieldExpr only
 // stringifies a scope var through its genuine reflect.Type in that mode, so
 // a numeric item variable read back in type-blind mode would otherwise be
@@ -3308,19 +3312,7 @@ func (g *generator) genEachArrayLiteral(n *EachNode, expr string) error {
 		return err
 	}
 
-	g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
-	mark := g.scopeMark()
-	g.pushScope(n.ItemVar, n.ItemVar, elemTyp, false)
-	for _, child := range n.Body {
-		if err := g.genNode(child); err != nil {
-			g.scopeRestore(mark)
-			return err
-		}
-	}
-	g.scopeRestore(mark)
-	g.flushStatic()
-	g.body.WriteString("}\n")
-	return nil
+	return g.genEachLoopBody(n, collExpr, elemTyp)
 }
 
 // genArrayIndexOfValueExpr emits genMethodCall's handling of
@@ -3747,11 +3739,10 @@ func (g *generator) resolveFieldExpr(expr string) (string, reflect.Type, error) 
 // whole-bracket-wrapped array literal collection (`each x in ["a", "b"]` /
 // `each x in [1, 2, 3]`), delegated to genEachArrayLiteral. The
 // single-variable form (`each x in <field>`) and the two-variable
-// INDEX-variable form (`each x, i in <field>`) are both supported for a
-// slice/array field; an each-index over an array-literal collection is not
-// (see genEachArrayLiteral's dispatch below). An `each`/`else` empty-
-// collection body is not supported in this increment, with or without an
-// index variable. In type-aware mode, the loop item variable is scoped to
+// INDEX-variable form (`each x, i in <field>`) are both supported for both a
+// slice/array field and an array-literal collection. An `each`/`else`
+// empty-collection body is not supported in this increment, with or without
+// an index variable. In type-aware mode, the loop item variable is scoped to
 // the collection field's element type (dereferencing pointers on the
 // collection and/or its element), so a dot-path rooted at the item
 // variable inside the loop body resolves correctly too.
@@ -3780,9 +3771,6 @@ func (g *generator) genEach(n *EachNode) error {
 
 	collTrim := strings.TrimSpace(n.CollectionExpr)
 	if strings.HasPrefix(collTrim, "[") && findMatchingCloseBracket(collTrim) == len(collTrim)-1 {
-		if n.IndexVar != "" {
-			return fmt.Errorf("unsupported each index variable %q over an array-literal collection in codegen", n.IndexVar)
-		}
 		return g.genEachArrayLiteral(n, collTrim)
 	}
 
@@ -3800,6 +3788,33 @@ func (g *generator) genEach(n *EachNode) error {
 		elemTyp = derefType(ct.Elem())
 	}
 
+	return g.genEachLoopBody(n, collExpr, elemTyp)
+}
+
+// genEachLoopBody emits the for-range loop itself — the single-variable
+// `for _, ItemVar := range collExpr` form when n.IndexVar is empty, or the
+// two-variable index form otherwise — plus the item/index scope pushes and
+// the body walk. It is the single source both genEach's field-collection
+// path and genEachArrayLiteral's array-literal-collection path call, so an
+// each loop with an index variable emits pattern-identical Go regardless of
+// which kind of collection it ranges over — one implementation, not two
+// hand-maintained copies that could drift apart.
+//
+// The index variable is modeled as a STRING scope var holding
+// `strconv.Itoa(<rawIntLocal>)`, mirroring Runtime.renderEach's own
+// `scope[IndexVar] = strconv.Itoa(i)` (runtime.go) exactly — NOT as a raw Go
+// int. This is load-bearing, not a style choice: it's what makes every
+// downstream use of the index variable agree with the interpreter by
+// construction — `#{i}`/a template literal stringifies to the same decimal
+// text the interpreter stored, `if i` truthiness routes through
+// gopug.Truthy (whose falsy set includes exactly "0", so the FIRST loop
+// iteration's index is falsy, matching the interpreter precisely), and a
+// numeric-literal comparison (`i == 0`, `i > 1`) is handled by a dedicated
+// genComparison case keyed off scopeVar.indexRawGoName that compiles
+// against the underlying raw int local instead of the string — see that
+// case's own comment for why that's still exactly equivalent to
+// compareValues' numeric-string coercion, not a shortcut around it.
+func (g *generator) genEachLoopBody(n *EachNode, collExpr string, elemTyp reflect.Type) error {
 	if n.IndexVar == "" {
 		g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
 		mark := g.scopeMark()

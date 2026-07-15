@@ -155,21 +155,6 @@ func TestCodegenEachIndexTruthinessFaultInjection(t *testing.T) {
 
 // --- Deferrals (each a clean, distinct error) ---
 
-// TestCodegenEachIndexArrayLiteralDeferred asserts an each-index over an
-// array-literal collection is rejected with a clean, distinct error: only
-// the field/slice-var collection path is supported for an index variable
-// in this increment.
-func TestCodegenEachIndexArrayLiteralDeferred(t *testing.T) {
-	src := "each v, i in [1, 2, 3]\n  p=v\n"
-	err := genUnbufferedErr(t, src)
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an array-literal-index error, got nil", src)
-	}
-	if !strings.Contains(err.Error(), "array-literal") {
-		t.Errorf("GenerateGo(%q): error %q does not describe the array-literal-index restriction", src, err.Error())
-	}
-}
-
 // TestCodegenEachIndexElseDeferred asserts each/else with an index
 // variable is still rejected exactly like each/else without one — the
 // pre-existing EmptyBody guard fires unconditionally, before the index

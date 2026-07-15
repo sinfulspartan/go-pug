@@ -185,18 +185,6 @@ func TestCodegenEachArrayLiteralNestedArrayElementDeferred(t *testing.T) {
 	}
 }
 
-// TestCodegenEachArrayLiteralIndexVarDeferred asserts the pre-existing
-// index-variable guard still applies unchanged to an array-literal
-// collection: `each x, i in [...]` is rejected exactly as it is for a
-// field-collection each.
-func TestCodegenEachArrayLiteralIndexVarDeferred(t *testing.T) {
-	src := "each x, i in [1, 2, 3]\n  p=x\n"
-	err := genUnbufferedErr(t, src)
-	if err == nil {
-		t.Fatalf("GenerateGo(%q): expected an index-variable error, got nil", src)
-	}
-}
-
 // TestCodegenEachArrayLiteralEmptyDeferred asserts an empty array-literal
 // each collection is rejected: with no element to infer a Go element type
 // from, codegen declines to guess (see
