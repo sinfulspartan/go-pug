@@ -37,6 +37,7 @@ func RenderSkel(w io.Writer, d SkelData) error {
 	io.WriteString(w, gopug.EscapeAttr(gopug.JoinClasses(d.Extra)))
 	io.WriteString(w, "\">Extra</span><br><ul>")
 	for _, item := range d.Items {
+		_ = item
 		io.WriteString(w, "<li>")
 		io.WriteString(w, html.EscapeString(item.Label))
 		io.WriteString(w, "</li>")

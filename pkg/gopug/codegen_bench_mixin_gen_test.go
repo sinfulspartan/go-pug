@@ -8,6 +8,7 @@ import (
 
 func RenderBenchMixin(w io.Writer, d BenchMixinData) error {
 	for _, item := range d.Items {
+		_ = item
 		__marg0_0 := item.Title
 		__marg0_1 := item.Kind
 		if err := pugMixin_card(w, __marg0_0, __marg0_1, func(w io.Writer) error {

@@ -2176,12 +2176,15 @@ func (g *generator) genCode(n *CodeNode) error {
 // genUnbufferedStatement emits an unbuffered code statement (`- stmt`),
 // classified by classifyUnbufferedStmt — the SAME classifier
 // Runtime.executeStatement itself uses, so codegen and the interpreter agree
-// character-for-character on where a statement's operator sits. Only a plain
-// assignment (`- var x = <rhs>`, dispatched to genUnbufferedAssign) is
-// supported in this increment; a mutation (`x++`/`x--`/`x += e`/`x -= e`) and
-// a bare expression statement (evaluated and discarded by the interpreter,
-// possibly for a side effect or an error genValueExpr has no model for) each
-// return their own clear, distinct unsupported error instead of guessing.
+// character-for-character on where a statement's operator sits. A plain
+// assignment (`- var x = <rhs>`) is dispatched to genUnbufferedAssign; a
+// mutation (`x++`/`x--`/`x += e`/`x -= e`) is dispatched to
+// genUnbufferedMutation, which supports only the SAFE subset documented
+// there (a float64 `- var` local already bound in scope, with a numeric
+// `+=`/`-=` right-hand side) and defers every other shape; a bare expression
+// statement (evaluated and discarded by the interpreter, possibly for a side
+// effect or an error genValueExpr has no model for) returns its own clear,
+// distinct unsupported error instead of guessing.
 //
 // While g.insideBlockClosure is set (generating a call site's block-content
 // closure — see genMixinBlockClosure), EVERY unbuffered statement is refused
@@ -2206,13 +2209,88 @@ func (g *generator) genUnbufferedStatement(stmt string) error {
 	switch kind {
 	case unbufferedAssign:
 		return g.genUnbufferedAssign(varName, rhsExpr)
-	case unbufferedIncrement, unbufferedDecrement:
-		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (increment/decrement is not supported yet)", stmt)
-	case unbufferedAddAssign, unbufferedSubAssign:
-		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (+=/-= is not supported yet)", stmt)
+	case unbufferedIncrement, unbufferedDecrement, unbufferedAddAssign, unbufferedSubAssign:
+		return g.genUnbufferedMutation(kind, varName, rhsExpr, stmt)
 	default:
 		return fmt.Errorf("unsupported unbuffered code - %s in codegen (a bare expression statement is not supported yet)", stmt)
 	}
+}
+
+// genUnbufferedMutation emits `x++`/`x--`/`x += rhs`/`x -= rhs` for the one
+// SAFE subset this slice proves byte-identical to Runtime.executeStatement:
+// varName already bound in scope as a float64 `- var` local (isVarLocal,
+// scopeVar.typ == reflectTypeFloat64), with — for `+=`/`-=` — a numeric
+// right-hand side genNumericExpr itself accepts (a bare numeric literal or a
+// bare numeric field/local, never an arithmetic expression). Everything
+// else is deferred with a clean, distinct error rather than guessed at:
+//
+//   - varName not found in scope at all (lookupScope misses): this covers
+//     both a genuinely undefined variable and a bare struct-field name
+//     (neither is ever pushed onto the scope stack). Runtime.executeStatement
+//     itself does something surprising here — its increment/decrement case
+//     calls setVar unconditionally, which silently CREATES the variable at 0
+//     in the top scope frame rather than erroring (confirmed empirically: `-
+//     y++` with no prior `- y =` renders "1", no error) — so deferring on a
+//     scope miss is not merely conservative, it is the ONLY choice that
+//     avoids either an invalid Go reference to an undeclared identifier or a
+//     silent mis-render that disagrees with this surprising create-on-miss
+//     behavior.
+//   - varName found but not a `- var` local (an each-loop item/index
+//     variable): those are never reassignable in the interpreter's own
+//     model either (each iteration rebinds them fresh), so mutating one is
+//     out of scope for this slice.
+//   - varName found as a `- var` local of any type OTHER than float64
+//     (string, bool, or — in type-blind mode — untyped): a Go string/bool
+//     local has no `++`/`+=`, and type-blind mode has no type information to
+//     even prove the local is numeric.
+//   - `+=`/`-=` whose right-hand side genNumericExpr does not accept: the
+//     interpreter's own executeStatement branches into STRING CONCATENATION
+//     for a non-numeric `+=` right-hand side, and into a hard ERROR for a
+//     non-numeric `-=` right-hand side — two different behaviors, neither of
+//     which this numeric-only slice attempts to replicate.
+//
+// A found float64 `- var` local, regardless of which scope frame pushed it
+// (the current block or an ENCLOSING one), is exactly as safe to mutate as
+// Runtime.setVar's own frame-walk: Go's lexical scoping mutating an outer
+// `:=` local from inside a nested block/loop produces the identical
+// observable effect (every subsequent read, in every sibling/nested scope,
+// sees the mutated value) as setVar updating the innermost frame that
+// actually holds the variable — there is no case where a found local's
+// scope depth changes which Go statement gets emitted.
+func (g *generator) genUnbufferedMutation(kind unbufferedStmtKind, varName, rhsExpr, stmt string) error {
+	sv, ok := g.lookupScope(varName)
+	if !ok {
+		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (mutating %q, which is not a variable bound in codegen scope, is not supported yet)", stmt, varName)
+	}
+	if !sv.isVarLocal {
+		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (mutating %q, an each-loop item/index variable rather than a `- var` local, is not supported yet)", stmt, varName)
+	}
+	if sv.typ == nil || sv.typ != reflectTypeFloat64 {
+		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (mutation is only supported for a float64 `- var` local in this increment)", stmt)
+	}
+
+	switch kind {
+	case unbufferedIncrement:
+		g.writeRaw(sv.goName + "++\n")
+		return nil
+	case unbufferedDecrement:
+		g.writeRaw(sv.goName + "--\n")
+		return nil
+	}
+
+	numExpr, numTyp, numOK := g.genNumericExpr(rhsExpr)
+	if !numOK {
+		return fmt.Errorf("unsupported unbuffered mutation %q in codegen (a `+=`/`-=` with a non-numeric or non-bare right-hand side is not supported in this increment)", stmt)
+	}
+	rhsFloat := convertExpr(numExpr, numTyp, reflectTypeFloat64, "float64")
+
+	switch kind {
+	case unbufferedAddAssign:
+		g.writeRaw(sv.goName + " += " + rhsFloat + "\n")
+	case unbufferedSubAssign:
+		g.writeRaw(sv.goName + " -= " + rhsFloat + "\n")
+	}
+	return nil
 }
 
 // goLocalNameForVar derives the Go local variable name a `- var name = rhs`
@@ -4115,6 +4193,13 @@ func (g *generator) genEach(n *EachNode) error {
 func (g *generator) genEachLoopBody(n *EachNode, collExpr string, elemTyp reflect.Type) error {
 	if n.IndexVar == "" {
 		g.writeRaw(fmt.Sprintf("for _, %s := range %s {\n", n.ItemVar, collExpr))
+		// The body may not reference the item variable at all — a counting
+		// loop whose body is only `- n++` never reads it — which the
+		// interpreter itself imposes no restriction against, so the range
+		// variable is unconditionally blank-used right after declaration,
+		// exactly like the two-variable index form below already does for
+		// both of its range variables.
+		g.body.WriteString(fmt.Sprintf("_ = %s\n", n.ItemVar))
 		mark := g.scopeMark()
 		g.pushScope(n.ItemVar, n.ItemVar, elemTyp, false)
 		for _, child := range n.Body {

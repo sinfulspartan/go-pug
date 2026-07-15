@@ -16,6 +16,7 @@ func RenderLargeCG(w io.Writer, d LargeCGData) error {
 	io.WriteString(w, html.EscapeString(d.Intro))
 	io.WriteString(w, "</p><ul class=\"items\">")
 	for _, product := range d.Products {
+		_ = product
 		io.WriteString(w, "<li class=\"item\" data-id=\"")
 		io.WriteString(w, gopug.EscapeAttr(strconv.Itoa(product.ID)))
 		io.WriteString(w, "\"><span class=\"name\">")

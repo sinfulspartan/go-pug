@@ -8,6 +8,7 @@ import (
 
 func RenderBenchAttrs(w io.Writer, d BenchAttrsData) error {
 	for _, item := range d.Items {
+		_ = item
 		io.WriteString(w, "<div")
 		if err := gopug.WriteSpreadAttrs(w, map[string]*gopug.AttributeValue{"class": {Value: "row"}, "data-id": {Value: item.ID}}, item.Attrs); err != nil {
 			return err
