@@ -1181,7 +1181,12 @@ func isRawTextElement(name string) bool {
 // part of a valid entity reference).  Single quotes do NOT need escaping
 // inside double-quoted attributes, so they are passed through unchanged —
 // this is important for inline JS event handlers such as onclick="alert('x')".
+// When none of <, >, ", or & appear at all, the loop below would leave every
+// byte untouched, so s is returned as-is without allocating a builder.
 func htmlEscapeAttr(s string) string {
+	if !strings.ContainsAny(s, `<>"&`) {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); {
@@ -1234,6 +1239,30 @@ func EscapeAttr(s string) string {
 // logic in generated code.
 func EscapeText(s string) string {
 	return htmlEscapeText(s)
+}
+
+// EscapeHTML escapes s exactly as the stdlib html.EscapeString does — ',
+// ", &, <, and > each become their entity — for the general HTML-text
+// interpolation contexts (`#{expr}`, `= expr`) that use the stdlib escaper
+// rather than htmlEscapeAttr/htmlEscapeText's entity-aware variants. When
+// none of those five characters are present, html.EscapeString would already
+// be the identity function on s, so it is returned unchanged without
+// allocating. It is exported so codegen-generated code can call it directly
+// instead of html.EscapeString, keeping interpreter and codegen escaping
+// (and this fast path) single-sourced in one place.
+func EscapeHTML(s string) string {
+	return htmlEscapeStdlib(s)
+}
+
+// htmlEscapeStdlib guards html.EscapeString with a cheap pre-scan: if none
+// of the five characters it transforms (', ", &, <, >) are present, s is
+// returned unchanged instead of being handed to html.EscapeString, which
+// would allocate a builder only to reproduce the same bytes.
+func htmlEscapeStdlib(s string) string {
+	if !strings.ContainsAny(s, `'"&<>`) {
+		return s
+	}
+	return html.EscapeString(s)
 }
 
 // JoinClasses returns classes joined by a single space, dropping any empty
@@ -1862,8 +1891,13 @@ func sortAttrNames(attrs map[string]*AttributeValue) []string {
 // htmlEscapeText escapes only the characters that must be escaped in HTML
 // text content: <, >, and bare & (i.e. & not already part of a valid HTML
 // entity reference like &copy; or &#169;).  Single and double quotes are
-// left as-is because they are safe in text nodes.
+// left as-is because they are safe in text nodes. When none of <, >, or &
+// appear at all, the loop below would leave every byte untouched, so s is
+// returned as-is without allocating a builder.
 func htmlEscapeText(s string) string {
+	if !strings.ContainsAny(s, "<>&") {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); {
@@ -1954,7 +1988,7 @@ func (r *Runtime) renderInterpolation(interp *InterpolationNode) error {
 	}
 
 	if !interp.Unescaped {
-		val = html.EscapeString(val)
+		val = htmlEscapeStdlib(val)
 	}
 
 	r.htmlBuf.WriteString(val)
@@ -1980,7 +2014,7 @@ func (r *Runtime) renderCode(code *CodeNode) error {
 		if err != nil {
 			return err
 		}
-		r.htmlBuf.WriteString(html.EscapeString(val))
+		r.htmlBuf.WriteString(htmlEscapeStdlib(val))
 		return nil
 	case CodeUnescaped:
 		val, err := r.evaluateCode(code)
@@ -2478,13 +2512,13 @@ func (r *Runtime) renderBlockText(block *BlockTextNode) error {
 		case TokenTagInterpolationStart:
 			innerLex := NewLexer(tok.Value)
 			if _, err := innerLex.Lex(); err != nil {
-				r.htmlBuf.WriteString(html.EscapeString(tok.Value))
+				r.htmlBuf.WriteString(htmlEscapeStdlib(tok.Value))
 				continue
 			}
 			innerParser := NewParser(innerLex.tokens)
 			innerAST, err := innerParser.Parse()
 			if err != nil || innerAST == nil || len(innerAST.Children) == 0 {
-				r.htmlBuf.WriteString(html.EscapeString(tok.Value))
+				r.htmlBuf.WriteString(htmlEscapeStdlib(tok.Value))
 				continue
 			}
 			for _, node := range innerAST.Children {

@@ -269,7 +269,7 @@ func TestCodegenTernaryCompositionTemplateLiteral(t *testing.T) {
 
 // TestCodegenTernaryCompositionInterpolation proves a ternary as a `#{...}`
 // interpolation composes — the IIFE call expression is wrapped in
-// html.EscapeString, exactly as any other genValueExpr result reaching
+// gopug.EscapeHTML, exactly as any other genValueExpr result reaching
 // genInterpolation is.
 func TestCodegenTernaryCompositionInterpolation(t *testing.T) {
 	t.Parallel()

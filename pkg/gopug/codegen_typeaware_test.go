@@ -120,7 +120,7 @@ func TestCodegenInterpolationNilReflectType(t *testing.T) {
 		t.Fatalf("GenerateGo: %v", err)
 	}
 
-	if !strings.Contains(string(got), "html.EscapeString(d.Count)") {
+	if !strings.Contains(string(got), "gopug.EscapeHTML(d.Count)") {
 		t.Errorf("GenerateGo with nil DataReflectType did not emit the string-assuming form; got:\n%s", got)
 	}
 	if strings.Contains(string(got), "strconv") {

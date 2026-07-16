@@ -2,7 +2,6 @@ package gopug_test
 
 import (
 	"github.com/sinfulspartan/go-pug/pkg/gopug"
-	"html"
 	"io"
 )
 
@@ -14,7 +13,7 @@ func RenderBenchAttrs(w io.Writer, d BenchAttrsData) error {
 			return err
 		}
 		io.WriteString(w, "><span>")
-		io.WriteString(w, html.EscapeString(item.ID))
+		io.WriteString(w, gopug.EscapeHTML(item.ID))
 		io.WriteString(w, "</span></div>")
 	}
 	return nil

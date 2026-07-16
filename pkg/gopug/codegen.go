@@ -249,9 +249,6 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	if g.needsFmt {
 		src.WriteString("\t\"fmt\"\n")
 	}
-	if g.needsHTML {
-		src.WriteString("\t\"html\"\n")
-	}
 	src.WriteString("\t\"io\"\n")
 	if g.needsStrconv {
 		src.WriteString("\t\"strconv\"\n")
@@ -315,11 +312,13 @@ type generator struct {
 	// non-nil, resolveFieldExpr walks it (and each scope entry's typ) to
 	// resolve every field expression's Go type.
 	rootType reflect.Type
-	// needsHTML/needsStrconv/needsGopug track whether the generated body
-	// actually calls html.EscapeString/strconv.*/gopug.EscapeAttr anywhere,
-	// so GenerateGo only imports those packages when they are used (an
-	// unused import fails to compile).
-	needsHTML    bool
+	// needsStrconv/needsGopug track whether the generated body actually
+	// calls strconv.*/gopug.EscapeAttr/gopug.EscapeHTML anywhere, so
+	// GenerateGo only imports those packages when they are used (an unused
+	// import fails to compile). Every generated escape call — attribute
+	// (gopug.EscapeAttr) and general HTML text (gopug.EscapeHTML) alike —
+	// goes through the "gopug" import, so there is no separate needsHTML:
+	// html.EscapeString itself is never emitted into generated code.
 	needsStrconv bool
 	needsGopug   bool
 	needsUtf8    bool
@@ -907,7 +906,7 @@ func (g *generator) flushStatic() {
 }
 
 // writeExprWrite flushes any pending static text, then emits a write of a
-// dynamic Go expression (already valid Go source, e.g. "html.EscapeString(d.Name)").
+// dynamic Go expression (already valid Go source, e.g. "gopug.EscapeHTML(d.Name)").
 func (g *generator) writeExprWrite(goExpr string) {
 	g.flushStatic()
 	g.body.WriteString("io.WriteString(w, ")
@@ -2229,12 +2228,12 @@ func (g *generator) genDynamicClassObject(trimmed string, classObjStart int) err
 // string/numeric/bool literals and the supported operators — the same way
 // for both forms, since Runtime.renderInterpolation itself computes the
 // identical value for either and differs only in whether it wraps that value
-// in html.EscapeString (runtime.go's `if !interp.Unescaped` branch). The
-// escaped form wraps the value in html.EscapeString and sets g.needsHTML so
-// the "html" import is emitted; the unescaped form writes the value directly,
-// with no wrapper and no needsHTML — it introduces no use of the "html"
-// package, so a template using only unescaped output must not pull in an
-// unused import.
+// in the stdlib escaper (runtime.go's `if !interp.Unescaped` branch). The
+// escaped form wraps the value in gopug.EscapeHTML — the exported, single-
+// sourced guarded equivalent of html.EscapeString — and sets g.needsGopug so
+// the "gopug" import is emitted; the unescaped form writes the value
+// directly, introducing no new import, so a template using only unescaped
+// output must not pull in one.
 func (g *generator) genInterpolation(n *InterpolationNode) error {
 	valExpr, fallible, err := g.genValueExpr(n.Expression)
 	if err != nil {
@@ -2247,21 +2246,23 @@ func (g *generator) genInterpolation(n *InterpolationNode) error {
 		g.writeExprWrite(valExpr)
 		return nil
 	}
-	g.needsHTML = true
-	g.writeExprWrite("html.EscapeString(" + valExpr + ")")
+	g.needsGopug = true
+	g.writeExprWrite("gopug.EscapeHTML(" + valExpr + ")")
 	return nil
 }
 
 // genCode emits a buffered code node, either the default escaped `= expr`
 // (CodeBuffered) or the unescaped `!= expr` (CodeUnescaped), as a write of
-// genValueExpr(expr) — wrapped in html.EscapeString for CodeBuffered, written
+// genValueExpr(expr) — wrapped in gopug.EscapeHTML for CodeBuffered, written
 // raw for CodeUnescaped — mirroring Runtime.renderCode's own two cases
-// exactly (runtime.go: CodeBuffered writes html.EscapeString(val), CodeUnescaped
-// writes val raw; both compute val the same way via evaluateCode). Only
-// CodeBuffered sets g.needsHTML, since only it emits an html.EscapeString
-// call; CodeUnescaped introduces no use of the "html" package. An unbuffered
-// statement (`- stmt`, executed for its side effect with no output) is
-// dispatched to genUnbufferedStatement, which supports only the
+// exactly (runtime.go: CodeBuffered writes the stdlib-equivalent escaped
+// form, CodeUnescaped writes val raw; both compute val the same way via
+// evaluateCode). gopug.EscapeHTML is the exported, single-sourced guarded
+// equivalent of html.EscapeString that runtime.go itself calls through
+// (htmlEscapeStdlib) for this same context, so generated code and the
+// interpreter can never drift on what does or does not need escaping. An
+// unbuffered statement (`- stmt`, executed for its side effect with no
+// output) is dispatched to genUnbufferedStatement, which supports only the
 // plain-assignment subset (`- var x = <rhs>`) described there; every other
 // unbuffered shape (mutation, a bare expression statement) still returns a
 // clear unsupported error.
@@ -2275,8 +2276,8 @@ func (g *generator) genCode(n *CodeNode) error {
 		if fallible {
 			valExpr = g.genFallibleExtraction(valExpr)
 		}
-		g.needsHTML = true
-		g.writeExprWrite("html.EscapeString(" + valExpr + ")")
+		g.needsGopug = true
+		g.writeExprWrite("gopug.EscapeHTML(" + valExpr + ")")
 		return nil
 	case CodeUnescaped:
 		valExpr, fallible, err := g.genValueExpr(n.Expression)
@@ -4131,7 +4132,7 @@ func (g *generator) genTernaryValueExpr(expr string, idx int) (goExpr string, fa
 // never-fallible string, joined into the rest with the same native Go `+`
 // as every other segment — genTemplateLiteral's own result therefore always
 // reports fallible=false to its caller, regardless of whether any part was
-// itself fallible. Escaping (html.EscapeString or EscapeAttr) is the
+// itself fallible. Escaping (gopug.EscapeHTML or gopug.EscapeAttr) is the
 // caller's job, applied once to the whole result, exactly as for every other
 // genValueExpr leaf.
 func (g *generator) genTemplateLiteral(expr string) (string, error) {
@@ -4205,7 +4206,7 @@ func (g *generator) genTemplateLiteral(expr string) (string, error) {
 // goExpr the way Runtime.lookupAndStringify would for a field of type typ —
 // exactly genInterpolation's former per-type dispatch, extracted so
 // genValueExpr's field/dot-path leaf case can share it, except a string
-// value is returned bare rather than wrapped in html.EscapeString: escaping
+// value is returned bare rather than wrapped in gopug.EscapeHTML: escaping
 // is the caller's job (genInterpolation and genCode both apply it to the
 // whole value they build, not to each leaf), since an unescaped scalar
 // nested inside a `+` still needs the concatenation's escaping to happen

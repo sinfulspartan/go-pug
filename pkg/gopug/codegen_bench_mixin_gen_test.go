@@ -2,7 +2,6 @@ package gopug_test
 
 import (
 	"github.com/sinfulspartan/go-pug/pkg/gopug"
-	"html"
 	"io"
 )
 
@@ -25,7 +24,7 @@ func pugMixin_card(w io.Writer, arg1 string, arg2 string, pugBlock func(io.Write
 	io.WriteString(w, "<div class=\"card\" data-kind=\"")
 	io.WriteString(w, gopug.EscapeAttr(arg2))
 	io.WriteString(w, "\"><h3>")
-	io.WriteString(w, html.EscapeString(arg1))
+	io.WriteString(w, gopug.EscapeHTML(arg1))
 	io.WriteString(w, "</h3>")
 	if pugBlock != nil {
 		if err := pugBlock(w); err != nil {

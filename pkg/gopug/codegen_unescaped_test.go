@@ -321,9 +321,11 @@ func TestCodegenUnescapedAttributeClassAndBooleanStillDeferred(t *testing.T) {
 
 // TestCodegenUnescapedOnlyTemplateImportGating proves a template using ONLY
 // unescaped output (no escaped `#{}`/`=` node anywhere) still compiles and
-// runs without an unused "html" import: genInterpolation/genCode's
-// unescaped arm never sets g.needsHTML, since it never emits an
-// html.EscapeString call.
+// runs without an unused "html" import: generated code never references the
+// stdlib "html" package at all (escaped output goes through the exported
+// gopug.EscapeHTML instead), and genInterpolation/genCode's unescaped arm
+// never sets g.needsGopug on its own, since it writes the value raw with no
+// escape call.
 func TestCodegenUnescapedOnlyTemplateImportGating(t *testing.T) {
 	t.Parallel()
 	src := "p !{Name}\np!= Count\n"
@@ -360,10 +362,11 @@ func TestCodegenUnescapedOnlyTemplateImportGating(t *testing.T) {
 	}
 }
 
-// TestCodegenUnescapedAlongsideEscapedImportGating proves the "html" import
-// is still emitted when a template mixes unescaped and escaped output — the
-// unescaped arm's needsHTML skip must not suppress the import an escaped
-// sibling node in the SAME template still needs.
+// TestCodegenUnescapedAlongsideEscapedImportGating proves the escaped arm's
+// gopug.EscapeHTML call is still emitted when a template mixes unescaped and
+// escaped output — the unescaped arm writing its value raw must not
+// suppress an escaped sibling node in the SAME template still calling
+// through to the shared, guarded escaper.
 func TestCodegenUnescapedAlongsideEscapedImportGating(t *testing.T) {
 	t.Parallel()
 	src := "p !{Name}\np= Name\n"
@@ -381,8 +384,8 @@ func TestCodegenUnescapedAlongsideEscapedImportGating(t *testing.T) {
 		t.Fatalf("GenerateGo(%q): %v", src, err)
 	}
 
-	if !strings.Contains(string(generated), `"html"`) {
-		t.Errorf("GenerateGo(%q) does not import \"html\" even though the template contains an escaped node:\n%s", src, generated)
+	if !strings.Contains(string(generated), "gopug.EscapeHTML(") {
+		t.Errorf("GenerateGo(%q) does not call gopug.EscapeHTML even though the template contains an escaped node:\n%s", src, generated)
 	}
 
 	tmpl, err := Compile(src, nil)

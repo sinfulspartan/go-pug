@@ -2,7 +2,6 @@ package gopug_test
 
 import (
 	"github.com/sinfulspartan/go-pug/pkg/gopug"
-	"html"
 	"io"
 	"strconv"
 	"unicode/utf8"
@@ -10,15 +9,15 @@ import (
 
 func RenderSkel(w io.Writer, d SkelData) error {
 	io.WriteString(w, "<!DOCTYPE html><html><head><title>Skeleton</title></head><body><div id=\"main\" class=\"container\" data-role=\"app\"><p>Hello, ")
-	io.WriteString(w, html.EscapeString(d.Name))
+	io.WriteString(w, gopug.EscapeHTML(d.Name))
 	io.WriteString(w, "!</p><p>Bio: ")
-	io.WriteString(w, html.EscapeString(d.Author.Bio))
+	io.WriteString(w, gopug.EscapeHTML(d.Author.Bio))
 	io.WriteString(w, "</p><p>Count: ")
-	io.WriteString(w, html.EscapeString(strconv.Itoa(d.Count)))
+	io.WriteString(w, gopug.EscapeHTML(strconv.Itoa(d.Count)))
 	io.WriteString(w, "</p><p>Price: ")
-	io.WriteString(w, html.EscapeString(strconv.FormatFloat(d.Price, 'f', -1, 64)))
+	io.WriteString(w, gopug.EscapeHTML(strconv.FormatFloat(d.Price, 'f', -1, 64)))
 	io.WriteString(w, "</p><p>Flag: ")
-	io.WriteString(w, html.EscapeString(strconv.FormatBool(d.Flag)))
+	io.WriteString(w, gopug.EscapeHTML(strconv.FormatBool(d.Flag)))
 	io.WriteString(w, "</p><img alt=\"logo\" src=\"/logo.png\"><a id=\"profile\" href=\"")
 	io.WriteString(w, gopug.EscapeAttr(d.Link))
 	io.WriteString(w, "\">Profile</a><img src=\"")
@@ -39,7 +38,7 @@ func RenderSkel(w io.Writer, d SkelData) error {
 	for _, item := range d.Items {
 		_ = item
 		io.WriteString(w, "<li>")
-		io.WriteString(w, html.EscapeString(item.Label))
+		io.WriteString(w, gopug.EscapeHTML(item.Label))
 		io.WriteString(w, "</li>")
 	}
 	io.WriteString(w, "</ul>")
