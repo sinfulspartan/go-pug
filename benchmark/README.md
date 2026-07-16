@@ -100,3 +100,7 @@ The Go side (interpreter + codegen) and the Node side (pug.js) implement this ex
 - **Absolute numbers are machine-dependent.** Renders/second will differ on other hardware; only the relative ordering and rough magnitude should be expected to reproduce. `results.json`'s `machine` field records the exact OS, CPU, Go version, Node version, and pug.js version this run used.
 - **The corpus is deliberately narrow.** It covers the codegen-supported, three-way byte-identical subset of Pug as of this release — not every Pug feature, and not necessarily representative of every application's template mix.
 - **The Y-axis is logarithmic** (see `chart.svg`) because the go-pug interpreter's throughput sits one to two orders of magnitude below both pug.js and codegen on this corpus; every bar still carries its own printed renders/second value label, so no precision is lost to the log scale — it only prevents the interpreter's bars from being visually flattened to invisibility.
+
+## See also
+
+[`vs-joker/`](vs-joker/) is a separate cross-library comparison against [Joker/jade](https://github.com/Joker/jade), a mature independent Pug/Jade engine for Go — it lives in its own isolated Go module (so the root go-pug module stays dependency-free) and is **not** part of the byte-identity-gated 3-way corpus above.

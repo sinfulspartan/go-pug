@@ -1,0 +1,24 @@
+//- Ported from ../../templates/card_list.pug. The only change: pug.js's
+//- parenthesized attribute ternary `(product.Featured ? "a" : "b")` is
+//- rewritten as an explicit call to the `ternary` helper the jade CLI
+//- itself generates into every package (see joker_runtime.go) — Joker's
+//- attribute-value parser recognizes a bare `cond ? a : b` but not one
+//- wrapped in an extra pair of parens, so the parenthesized pug.js form
+//- fails to compile as-is.
+:go:func CardList(d cardListData)
+doctype html
+html
+  head
+    title= d.PageTitle
+  body
+    h1= d.PageTitle
+    div.product-grid
+      each product in d.Products
+        div(class=ternary(product.Featured, "product-card product-card--featured", "product-card"))
+          h2.product-card__name= product.Name
+          p.product-card__description= product.Description
+          p.product-card__price #{product.Price}
+          if product.InStock
+            span.badge.badge--in-stock In stock
+          else
+            span.badge.badge--out-of-stock Out of stock

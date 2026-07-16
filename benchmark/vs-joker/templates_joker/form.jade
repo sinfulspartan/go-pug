@@ -1,0 +1,23 @@
+//- Ported from ../../templates/form.pug verbatim (no pug.js constructs
+//- Joker rejects appear in this template). Output differs from go-pug/pugjs
+//- by 5 bytes: Joker self-closes void elements (`<input/>`), go-pug and
+//- pug.js render them terse (`<input>`); this template has five `<input>`
+//- elements. See benchmark/vs-joker/README.md's output-fidelity note.
+:go:func Form(d formData)
+doctype html
+html
+  head
+    title Account Settings
+  body
+    h1 Account Settings
+    form(action="/settings" method="post")
+      each field in d.Fields
+        div.form-group
+          label(for=field.ID)= field.Label
+          input(id=field.ID name=field.ID type="text" value=field.Value)
+      div.form-group
+        label(for="role") Role
+        select(id="role" name="role")
+          each option in d.RoleOptions
+            option(value=option.Value)= option.Label
+      button(type="submit") Save Changes

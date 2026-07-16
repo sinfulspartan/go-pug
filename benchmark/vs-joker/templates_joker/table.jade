@@ -1,0 +1,26 @@
+//- Ported from ../../templates/table.pug. pug.js's `{class: cond}` object
+//- literal (`{"data-table__row": true, "data-table__row--highlight": employee.Highlight}`)
+//- is a pug.js-specific class-merging feature Joker does not implement; it is
+//- rewritten as a `ternary` helper call between the two whole class strings,
+//- which renders the identical two-class list.
+:go:func Table(d tableData)
+doctype html
+html
+  head
+    title= d.PageTitle
+  body
+    h1= d.PageTitle
+    table.data-table
+      thead
+        tr
+          th Name
+          th Department
+          th Status
+          th Salary
+      tbody
+        each employee in d.Employees
+          tr(class=ternary(employee.Highlight, "data-table__row data-table__row--highlight", "data-table__row"))
+            td= employee.Name
+            td= employee.Department
+            td= employee.Status
+            td= employee.Salary

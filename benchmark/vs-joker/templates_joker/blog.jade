@@ -1,0 +1,21 @@
+//- Ported from ../../templates/blog.pug verbatim (no pug.js constructs
+//- Joker rejects appear in this template).
+:go:func Blog(d blogData)
+doctype html
+html
+  head
+    title= d.PageTitle
+  body
+    h1= d.PageTitle
+    each post in d.Posts
+      article.post
+        h2= post.Title
+        p.post-meta= post.Author
+        case post.Category
+          when "tech"
+            span.tag.tag--tech Tech
+          when "life"
+            span.tag.tag--life Life
+          default
+            span.tag.tag--general General
+        p= post.Summary

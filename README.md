@@ -119,6 +119,8 @@ Renders per second per template (higher is better); see [`benchmark/README.md`](
 
 Codegen is the fastest engine on all 10 templates in the corpus, typically 1.5–3x pug.js's throughput; the narrowest margin is `blog` at roughly 1.5x, and the widest is `mixin_attrs` at roughly 21x (an outlier — its spread-attrs code path is unusually well-optimized at generate time). The go-pug interpreter, the tree-walking default path, is slower than pug.js on every template. It is closest on the smaller, less-iterative templates (`mixin_attrs`, `form`: roughly 5–6x slower) and furthest on the two template-inheritance/include templates (`page_extends`, `page_include`: roughly 70x and 50x slower) — this cycle added compile-once caching of parsed `extends`/`include` ASTs, which made the interpreter's own throughput on those two templates dramatically faster than before (`page_include` ~12x, `page_extends` ~3x, by no longer re-reading and re-parsing the layout/partial file on every render), but pug.js's own composition handling is evidently cheaper still, so the *relative* gap to pug.js on these two templates remains the widest in the corpus even after that win.
 
+A separate cross-library comparison against [Joker/jade](https://github.com/Joker/jade), a mature independent Pug/Jade engine for Go, lives in [`benchmark/vs-joker/`](benchmark/vs-joker/) (its own isolated module, not part of the corpus above).
+
 ---
 
 ## Quick Start
