@@ -20,7 +20,9 @@ Three engines, same four templates as the main corpus (`card_list`, `table`,
 
 **go-pug codegen is 2.5–6.5x faster than Joker's compiled path. go-pug's interpreter is 3–3.6x *slower* than Joker on three of the four templates, and only ~1.4x slower on `blog`.** The win here is codegen, not the interpreter — do not read this page as "go-pug beats Joker"; read it as "go-pug's ahead-of-time-compiled path beats Joker's ahead-of-time-compiled path, and go-pug's default interpreted path does not."
 
-Renders/second (higher is better), representative run (see [Reproduce](#reproduce) — five runs were taken, run-to-run spread was ~2–8%, no outliers):
+![go-pug vs Joker/jade render throughput: grouped bar chart, log scale, comparing go-pug interpreter (blue), go-pug codegen (green), and Joker/jade precompiled (purple) across card_list, table, form, and blog — go-pug codegen leads every template, while the go-pug interpreter trails Joker on all four templates, by roughly 3x on most and ~1.4x on blog](chart.svg)
+
+Renders/second (higher is better), representative run (see [Reproduce](#reproduce) — five runs were taken, run-to-run spread was ~2–8%, no outliers). The chart above and the table below are both generated from `results.json`, so they cannot drift apart:
 
 | Template | go-pug interpreter | go-pug codegen | Joker/jade | codegen vs Joker | interpreter vs Joker |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -176,6 +178,12 @@ go run ./gengopug
 # boilerplate) across files generated in the same invocation, so generating
 # them one at a time produces undefined constant references between files.
 go tool jade -writer -pkg main -d . templates_joker/card_list.jade templates_joker/table.jade templates_joker/form.jade templates_joker/blog.jade
+```
+
+To regenerate `chart.svg` from `results.json` (the single source of truth for both the chart and the table above — update `results.json` first, then regenerate, rather than editing the chart or the table by hand):
+
+```sh
+go run ./chartgen
 ```
 
 ## Methodology
