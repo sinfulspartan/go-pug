@@ -480,6 +480,38 @@ func TestBlockExpansionLiAnchor(t *testing.T) {
 	}
 }
 
+// TestBlockExpansionRepeatedRenderIsIdempotent guards against a block
+// expansion (tag: child) leaking its child into the parent tag's own node
+// permanently: rendering the same compiled template twice must produce the
+// same HTML both times, not an ever-growing list of children on the second
+// and later renders.
+func TestBlockExpansionRepeatedRenderIsIdempotent(t *testing.T) {
+	tpl, err := Compile(`li: a(href="#") text`, nil)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+
+	first, err := tpl.Render(nil)
+	if err != nil {
+		t.Fatalf("first Render error: %v", err)
+	}
+	second, err := tpl.Render(nil)
+	if err != nil {
+		t.Fatalf("second Render error: %v", err)
+	}
+	third, err := tpl.Render(nil)
+	if err != nil {
+		t.Fatalf("third Render error: %v", err)
+	}
+
+	if second != first {
+		t.Errorf("second render diverged from the first:\nfirst:  %q\nsecond: %q", first, second)
+	}
+	if third != first {
+		t.Errorf("third render diverged from the first:\nfirst: %q\nthird: %q", first, third)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Explicit self-closing tag
 // ---------------------------------------------------------------------------
@@ -4019,6 +4051,63 @@ func TestBlockExpansionThreeLevels(t *testing.T) {
 	assertContains(t, out, "<c></c>")
 	assertContains(t, out, "</b>")
 	assertContains(t, out, "</a>")
+}
+
+// TestBlockExpansionPrettyModeClosingNewline pins the exact pretty-mode
+// bytes for a block expansion (tag: child), matching pug.js 3.0.4: a
+// block-level expanded child (e.g. a bare div) still forces the parent's
+// trailing newline before its own closing tag, exactly as it would if the
+// child had been written as an ordinary indented child instead of via `:`
+// shorthand. This guards renderTagWithChildren's closing-tag layout decision
+// against consulting the wrong (unexpanded) child list. Pretty mode always
+// emits a leading newline before the very first top-level tag (pre-existing,
+// unrelated to block expansion), so every want string below starts with one.
+func TestBlockExpansionPrettyModeClosingNewline(t *testing.T) {
+	opts := &Options{Pretty: true}
+
+	t.Run("block-level expanded child forces a newline", func(t *testing.T) {
+		out, err := Render("li: div", nil, opts)
+		if err != nil {
+			t.Fatalf("Render error: %v", err)
+		}
+		want := "\n<li>\n  <div></div>\n</li>"
+		if out != want {
+			t.Errorf("Render(%q) = %q, want %q", "li: div", out, want)
+		}
+	})
+
+	t.Run("block-level expanded child with class and text forces a newline", func(t *testing.T) {
+		out, err := Render("li: div.block Text", nil, opts)
+		if err != nil {
+			t.Fatalf("Render error: %v", err)
+		}
+		want := "\n<li>\n  <div class=\"block\">Text</div>\n</li>"
+		if out != want {
+			t.Errorf("Render(%q) = %q, want %q", "li: div.block Text", out, want)
+		}
+	})
+
+	t.Run("inline-named expanded child does not force a newline", func(t *testing.T) {
+		out, err := Render("li: a Text", nil, opts)
+		if err != nil {
+			t.Fatalf("Render error: %v", err)
+		}
+		want := "\n<li><a>Text</a></li>"
+		if out != want {
+			t.Errorf("Render(%q) = %q, want %q", "li: a Text", out, want)
+		}
+	})
+
+	t.Run("nested block expansion still forces newlines at every level", func(t *testing.T) {
+		out, err := Render("ul\n  li: div", nil, opts)
+		if err != nil {
+			t.Fatalf("Render error: %v", err)
+		}
+		want := "\n<ul>\n  <li>\n    <div></div>\n  </li>\n</ul>"
+		if out != want {
+			t.Errorf("Render(%q) = %q, want %q", "ul\\n  li: div", out, want)
+		}
+	})
 }
 
 // ── Attributes ───────────────────────────────────────────────────────────────

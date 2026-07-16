@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // mixinScopeBoundary is a sentinel frame pushed onto scopeStack immediately
@@ -138,7 +139,18 @@ func tagIsInline(tag *TagNode) bool {
 // (no children at all) vacuously can inline — there is nothing to force a
 // block layout.
 func tagCanInline(tag *TagNode) bool {
-	for _, child := range tag.Children {
+	return tagCanInlineChildren(tag.Children)
+}
+
+// tagCanInlineChildren is tagCanInline's own check, applied to an explicit
+// child list rather than a *TagNode's own Children. renderTagWithChildren
+// needs this: a block-expansion (tag: child) renders the expanded child from
+// a locally-built children slice that is never written back to
+// tag.Children (tag.Children stays the shared compiled AST node's own,
+// unexpanded list — see renderBlockExpansion), so the closing-tag layout
+// decision must inspect the SAME children actually rendered, not tag's own.
+func tagCanInlineChildren(children []Node) bool {
+	for _, child := range children {
 		if !childCanInline(child) {
 			return false
 		}
@@ -273,11 +285,30 @@ func (r *Runtime) collectMixins(nodes []Node) {
 	}
 }
 
+// extendsResolution is the resolved, block-merged root AST of an extends
+// chain plus every mixin collected along the way — everything renderExtends
+// needs to render, computed once by resolveExtendsAST and cached by
+// extendsCache when the render is real-file-anchored (see renderExtends).
+type extendsResolution struct {
+	root   *DocumentNode
+	mixins map[string]*MixinDeclNode
+}
+
+// extendsCache caches an extends chain's resolved (root, mixins) pair keyed
+// by "<abs entry-file path>\x00<Basedir>", populated only for a real
+// top-level file render (see renderExtends for exactly which renders qualify
+// and which fall through uncached). The cached root is only ever walked
+// read-only afterward, the same invariant parsedIncludeCache and
+// compiledCache's shared *Template.ast already rely on. ClearCache resets
+// this alongside compiledCache and parsedIncludeCache.
+var extendsCache sync.Map
+
 // renderExtends handles template inheritance.
 //
 // Algorithm:
 //  1. Resolve the fully-patched root AST via resolveExtendsAST (handles
-//     chained extends of any depth without goto / label spaghetti).
+//     chained extends of any depth without goto / label spaghetti) — or reuse
+//     a previously resolved one from extendsCache.
 //  2. Merge all collected mixins into the runtime.
 //  3. Render the patched root AST with the current data.
 func (r *Runtime) renderExtends() (string, error) {
@@ -297,9 +328,41 @@ func (r *Runtime) renderExtends() (string, error) {
 		currentPath = filepath.Join(r.includeBase, "_root_.pug")
 	}
 
-	rootAST, mixins, err := r.resolveExtendsAST(currentPath, r.ast)
-	if err != nil {
-		return "", err
+	// Only a real top-level file render — not nested inside another
+	// include/extends, and not a string render's synthetic "_root_.pug" path
+	// (which two different string templates could share) — gets a stable,
+	// collision-free cache key: the entry file's own absolute path. Basedir is
+	// folded into the key too because a leading-slash ("basedir-relative")
+	// extends path resolves differently for the same entry file under a
+	// different Basedir. Anything else (nested, or no real entry file) falls
+	// through to resolving fresh every render, exactly as before this cache
+	// existed.
+	cacheKey := ""
+	if len(r.includeStack) == 0 && r.entryFile != "" {
+		if abs, err := filepath.Abs(r.entryFile); err == nil {
+			cacheKey = abs + "\x00" + r.includeBase
+		}
+	}
+
+	var rootAST *DocumentNode
+	var mixins map[string]*MixinDeclNode
+
+	if cacheKey != "" {
+		if cached, ok := extendsCache.Load(cacheKey); ok {
+			res := cached.(*extendsResolution)
+			rootAST, mixins = res.root, res.mixins
+		}
+	}
+
+	if rootAST == nil {
+		var err error
+		rootAST, mixins, err = r.resolveExtendsAST(currentPath, r.ast)
+		if err != nil {
+			return "", err
+		}
+		if cacheKey != "" {
+			extendsCache.Store(cacheKey, &extendsResolution{root: rootAST, mixins: mixins})
+		}
 	}
 
 	if len(mixins) > 0 {
@@ -888,6 +951,16 @@ func mergeSpreadClass(existing, spreadVal string) string {
 }
 
 func (r *Runtime) renderTag(tag *TagNode) error {
+	return r.renderTagWithChildren(tag, tag.Children)
+}
+
+// renderTagWithChildren renders tag exactly as renderTag does, but walks
+// children instead of tag.Children. This lets renderBlockExpansion append its
+// inline child for the duration of one render without ever writing to
+// tag.Children itself — tag is the shared compiled AST node, reused across
+// concurrent and repeated renders of the same *Template, so mutating it would
+// leak the appended child into every render after the first.
+func (r *Runtime) renderTagWithChildren(tag *TagNode, children []Node) error {
 	pretty := r.pretty()
 	isInline := pretty && tagIsInline(tag)
 	if pretty && !isInline {
@@ -1260,7 +1333,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		r.wsSensitive = true
 	}
 
-	for _, child := range tag.Children {
+	for _, child := range children {
 		if err := r.renderNode(child); err != nil {
 			return err
 		}
@@ -1279,7 +1352,7 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	// regardless of tagCanInline — matching pug-code-gen's direct
 	// WHITE_SPACE_SENSITIVE_TAGS[tag.name] check on the tag itself (not a
 	// subtree-wide flag).
-	if pretty && !isInline && !tagCanInline(tag) && !isWhitespaceSensitiveTagName(tag.Name) {
+	if pretty && !isInline && !tagCanInlineChildren(children) && !isWhitespaceSensitiveTagName(tag.Name) {
 		r.prettyNewline()
 	}
 
@@ -2696,8 +2769,14 @@ func (r *Runtime) renderLiteralHTML(lit *LiteralHTMLNode) error {
 }
 
 func (r *Runtime) renderBlockExpansion(exp *BlockExpansionNode) error {
-	exp.Parent.Children = append(exp.Parent.Children, exp.Child)
-	return r.renderTag(exp.Parent)
+	// Build a fresh slice for this one render rather than appending exp.Child
+	// onto exp.Parent.Children: exp.Parent is the shared compiled AST node,
+	// so mutating its Children in place would duplicate the child on every
+	// subsequent render of the same *Template.
+	children := make([]Node, len(exp.Parent.Children)+1)
+	copy(children, exp.Parent.Children)
+	children[len(exp.Parent.Children)] = exp.Child
+	return r.renderTagWithChildren(exp.Parent, children)
 }
 
 // renderInclude resolves and renders an include directive.
@@ -2797,6 +2876,47 @@ func (r *Runtime) resolveIncludeAbs(inc *IncludeNode) (abs string, unquoted stri
 	return abs, inclPath, nil
 }
 
+// parsedIncludeCache caches a `.pug` include partial's parsed AST by absolute
+// path, so a partial included from inside an each/while loop — or included
+// from several different renders — is read, lexed, and parsed once, not once
+// per iteration or per render. The cached tree is only ever walked read-only
+// afterward: collectMixins reads each MixinDeclNode's fields into
+// r.mixinDecls without touching the node, and renderNode never writes to a
+// node it did not itself just allocate — the same read-only invariant that
+// already lets one compiled *Template's ast be shared across concurrent
+// renders via compiledCache. ClearCache resets this alongside compiledCache.
+var parsedIncludeCache sync.Map
+
+// loadIncludeAST returns the parsed AST for the `.pug` file at abs, reusing a
+// previously parsed tree from parsedIncludeCache when one exists. hint
+// formats the "did you mean a leading-slash path" suggestion for a failed
+// read, matching renderInclude's own error message.
+func loadIncludeAST(abs, inclPath string, hint func(string) string) (*DocumentNode, error) {
+	if cached, ok := parsedIncludeCache.Load(abs); ok {
+		return cached.(*DocumentNode), nil
+	}
+
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, fmt.Errorf("include: cannot read %q: %w%s", abs, err, hint(inclPath))
+	}
+
+	lexer := NewLexer(string(src))
+	tokens, err := lexer.Lex()
+	if err != nil {
+		return nil, fmt.Errorf("include: lex error in %q: %w", abs, err)
+	}
+
+	parser := NewParser(tokens)
+	ast, err := parser.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("include: parse error in %q: %w", abs, err)
+	}
+
+	parsedIncludeCache.Store(abs, ast)
+	return ast, nil
+}
+
 // renderInclude resolves and renders an include directive. .pug files (or no
 // extension) are lexed, parsed, and rendered; all other files are written
 // raw (optionally through a registered filter). Cycle detection is via
@@ -2814,21 +2934,9 @@ func (r *Runtime) renderInclude(inc *IncludeNode) error {
 	defer func() { r.includeStack = r.includeStack[:len(r.includeStack)-1] }()
 
 	if ext == ".pug" {
-		src, err := os.ReadFile(abs)
+		ast, err := loadIncludeAST(abs, inclPath, r.basedirResolveHint)
 		if err != nil {
-			return fmt.Errorf("include: cannot read %q: %w%s", abs, err, r.basedirResolveHint(inclPath))
-		}
-
-		lexer := NewLexer(string(src))
-		tokens, err := lexer.Lex()
-		if err != nil {
-			return fmt.Errorf("include: lex error in %q: %w", abs, err)
-		}
-
-		parser := NewParser(tokens)
-		ast, err := parser.Parse()
-		if err != nil {
-			return fmt.Errorf("include: parse error in %q: %w", abs, err)
+			return err
 		}
 
 		r.collectMixins(ast.Children)

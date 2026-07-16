@@ -36,9 +36,21 @@ func SimpleFilter(fn func(string) (string, error)) FilterFunc {
 
 var compiledCache sync.Map
 
+// ClearCache drops every entry from the compiled-template cache and the
+// render-time composition caches (parsed include partials, resolved extends
+// chains), so a hot-reloaded file on disk is picked up on the next
+// Compile/Render instead of returning a stale cached AST.
 func ClearCache() {
 	compiledCache.Range(func(k, _ any) bool {
 		compiledCache.Delete(k)
+		return true
+	})
+	parsedIncludeCache.Range(func(k, _ any) bool {
+		parsedIncludeCache.Delete(k)
+		return true
+	})
+	extendsCache.Range(func(k, _ any) bool {
+		extendsCache.Delete(k)
 		return true
 	})
 }
