@@ -63,6 +63,14 @@ func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options
 	if opts != nil && opts.entryFile != "" {
 		r.entryFile = opts.entryFile
 	}
+	// Real templates typically render 8-30KB of HTML, but htmlBuf starts at
+	// zero capacity, so bytes.Buffer's growth doubling (64, 128, 256, ...)
+	// costs several reallocations before it catches up. Grow only reserves
+	// capacity — it never writes any bytes — so this is a pure allocation
+	// optimization with no effect on rendered output. 1024 bytes covers the
+	// early doublings for realistic output while staying a modest, bounded
+	// one-time cost for a tiny render.
+	r.htmlBuf.Grow(1024)
 	return r
 }
 
@@ -838,57 +846,63 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 	// FIRST embedded quote, silently truncating or losing the rest of the
 	// value instead of escaping it, which is a data-loss/attribute-injection
 	// risk when the spread source is a runtime map value, not fixed template
-	// text. spreadFinal is empty for every tag with no &attributes spread,
-	// so this changes nothing about ordinary (non-spread) attribute
-	// rendering.
-	spreadFinal := map[string]string{}
+	// text. spreadFinal is nil (never written) for every tag with no
+	// &attributes spread — tag.noSpread is precomputed at compile time — so
+	// this changes nothing about ordinary (non-spread) attribute rendering:
+	// a read from a nil map returns the zero value with ok=false, identical
+	// to reading an empty map.
+	var spreadFinal map[string]string
 
-	for k, v := range tag.Attributes {
-		if k != "&attributes" {
-			continue
-		}
+	if !tag.noSpread {
+		spreadFinal = map[string]string{}
 
-		expr := strings.TrimSpace(v.Value)
+		for k, v := range tag.Attributes {
+			if k != "&attributes" {
+				continue
+			}
 
-		spreadMap := map[string]any{}
+			expr := strings.TrimSpace(v.Value)
 
-		if raw, ok := r.lookup(expr); ok && raw != nil {
-			rv := reflect.ValueOf(raw)
-			if rv.Kind() == reflect.Map {
-				for _, mk := range rv.MapKeys() {
-					spreadMap[fmt.Sprintf("%v", mk.Interface())] = rv.MapIndex(mk).Interface()
+			spreadMap := map[string]any{}
+
+			if raw, ok := r.lookup(expr); ok && raw != nil {
+				rv := reflect.ValueOf(raw)
+				if rv.Kind() == reflect.Map {
+					for _, mk := range rv.MapKeys() {
+						spreadMap[fmt.Sprintf("%v", mk.Interface())] = rv.MapIndex(mk).Interface()
+					}
+				}
+			} else if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
+				obj := parseInlineObject(expr)
+				for key, val := range obj {
+					spreadMap[key] = val
 				}
 			}
-		} else if len(expr) >= 2 && expr[0] == '{' && expr[len(expr)-1] == '}' {
-			obj := parseInlineObject(expr)
-			for key, val := range obj {
-				spreadMap[key] = val
-			}
-		}
 
-		for attrKey, attrVal := range spreadMap {
-			valStr := fmt.Sprintf("%v", attrVal)
+			for attrKey, attrVal := range spreadMap {
+				valStr := fmt.Sprintf("%v", attrVal)
 
-			switch attrKey {
-			case "class":
-				existingVal := ""
-				if existing, ok := merged["class"]; ok {
-					existingVal = strings.Trim(existing.Value, `"`)
-				}
-				finalVal := mergeSpreadClass(existingVal, valStr)
-				merged["class"] = &AttributeValue{Value: `"` + finalVal + `"`}
-				spreadFinal["class"] = finalVal
-			default:
-				switch valStr {
-				case "true":
-					merged[attrKey] = &AttributeValue{IsBare: true}
-					delete(spreadFinal, attrKey)
-				case "false":
-					delete(merged, attrKey)
-					delete(spreadFinal, attrKey)
+				switch attrKey {
+				case "class":
+					existingVal := ""
+					if existing, ok := merged["class"]; ok {
+						existingVal = strings.Trim(existing.Value, `"`)
+					}
+					finalVal := mergeSpreadClass(existingVal, valStr)
+					merged["class"] = &AttributeValue{Value: `"` + finalVal + `"`}
+					spreadFinal["class"] = finalVal
 				default:
-					merged[attrKey] = &AttributeValue{Value: `"` + valStr + `"`}
-					spreadFinal[attrKey] = valStr
+					switch valStr {
+					case "true":
+						merged[attrKey] = &AttributeValue{IsBare: true}
+						delete(spreadFinal, attrKey)
+					case "false":
+						delete(merged, attrKey)
+						delete(spreadFinal, attrKey)
+					default:
+						merged[attrKey] = &AttributeValue{Value: `"` + valStr + `"`}
+						spreadFinal[attrKey] = valStr
+					}
 				}
 			}
 		}
