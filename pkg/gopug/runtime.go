@@ -567,6 +567,35 @@ func (r *Runtime) writeNewlineAfterDoctype(nodes []Node) {
 	}
 }
 
+// staticClassLiteralValue computes the ONE branch of resolveClassTokenList
+// that is a pure function of the raw template text: a whole-quoted value
+// (e.g. `"badge"`, or a shorthand+quoted-class merge like `"base foo bar"`)
+// with at least one whitespace-separated word after unquoting. It reports
+// ok=false for anything else — a non-quoted value (which resolveClassTokenList
+// evaluates word-by-word at render time) or a whole-quoted value with no
+// words at all (e.g. `class=""`, which resolveClassTokenList still routes
+// through evaluateExpr rather than returning a literal empty string, so it
+// is deliberately excluded here too).
+//
+// This has no Runtime receiver and touches no render state, so it can run at
+// Compile time as well as render time; resolveClassTokenList and the
+// compile-time static-class classifier below both call it, guaranteeing the
+// two can never compute a different string for the same raw value.
+func staticClassLiteralValue(rawValExpr string) (value string, ok bool) {
+	inner := rawValExpr
+	if len(inner) < 2 ||
+		!((inner[0] == '"' && inner[len(inner)-1] == '"') ||
+			(inner[0] == '\'' && inner[len(inner)-1] == '\'')) {
+		return "", false
+	}
+	inner = inner[1 : len(inner)-1]
+	words := strings.Fields(inner)
+	if len(words) == 0 {
+		return "", false
+	}
+	return strings.Join(words, " "), true
+}
+
 // resolveClassTokenList resolves the words of a class= value that fell
 // through to the default (non-slice, non-map) case of the class-attribute
 // branch in renderTag. rawValExpr may be a whole-quoted static literal
@@ -582,6 +611,10 @@ func (r *Runtime) writeNewlineAfterDoctype(nodes []Node) {
 // expressions and dropped when they resolve to empty, so an empty variable's
 // identifier name never leaks into the output.
 func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
+	if v, ok := staticClassLiteralValue(rawValExpr); ok {
+		return v
+	}
+
 	inner := rawValExpr
 	wasQuoted := false
 	if len(inner) >= 2 &&
@@ -593,11 +626,10 @@ func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
 	words := strings.Fields(inner)
 
 	if wasQuoted {
-		if len(words) == 0 {
-			evaluated, _ := r.evaluateExpr(rawValExpr)
-			return evaluated
-		}
-		return strings.Join(words, " ")
+		// staticClassLiteralValue already handled len(words) > 0 above; this
+		// is reached only for the empty-quoted case (e.g. `class=""`).
+		evaluated, _ := r.evaluateExpr(rawValExpr)
+		return evaluated
 	}
 
 	var resolved []string
@@ -691,6 +723,25 @@ func splitClassTokensTopLevel(s string) []string {
 	return tokens
 }
 
+// classValueIsObjectShape reports whether rawValExpr is classified as a
+// class-object value (e.g. `{active: x}`, optionally prefixed by static
+// classes such as `card {active: x}`) by renderTag's class-attribute branch:
+// it scans for the first top-level `{` and requires the value to end in `}`.
+// It is extracted into its own function purely so the compile-time
+// static-class classifier below can reuse this exact test instead of
+// re-deriving it, guaranteeing the two can never disagree about which
+// values are object-shaped.
+func classValueIsObjectShape(rawValExpr string) bool {
+	start := -1
+	for i := 0; i < len(rawValExpr); i++ {
+		if rawValExpr[i] == '{' {
+			start = i
+			break
+		}
+	}
+	return start >= 0 && start < len(rawValExpr)-1 && rawValExpr[len(rawValExpr)-1] == '}'
+}
+
 // classExprMergeShape reports whether rawValExpr matches the shape
 // parser.go's class-merge branch produces when a shorthand/static class list
 // is combined with a class= value that carries a top-level operator
@@ -731,6 +782,40 @@ func classExprMergeShape(rawValExpr string) (literals []string, exprInner string
 	}
 
 	return literals, last[1 : len(last)-1], true
+}
+
+// classifyStaticClassAttr reports whether a tag's "class" attribute raw
+// value is PROVABLY a pure function of template text — i.e. rendering it
+// will always reach resolveClassTokenList's whole-quoted, non-empty branch,
+// with no possibility of evaluating a variable, an operator, an object
+// literal, or a class-merge expression. On a match it returns the exact
+// string renderTag would compute for that value (via staticClassLiteralValue,
+// the same helper resolveClassTokenList itself calls), so a caller may cache
+// it once and never re-derive it.
+//
+// It reuses, in the same order renderTag's own class-attribute dispatch
+// checks them, the render dispatch's own classification functions —
+// classValueIsObjectShape, classExprMergeShape, isOperatorExpr, and
+// containsParenExpr — rather than re-deriving the "is this static" test, so
+// this compile-time gate can never diverge from what renderTag would
+// actually do for the same raw value. (A whole-quoted literal can never
+// satisfy any of the three operator/paren checks, since none of them ever
+// look inside a quoted string, but they are called anyway so the proof rests
+// on the render dispatch's own logic rather than on that observation alone.)
+func classifyStaticClassAttr(rawValExpr string) (value string, ok bool) {
+	if classValueIsObjectShape(rawValExpr) {
+		return "", false
+	}
+	if _, _, mergeOK := classExprMergeShape(rawValExpr); mergeOK {
+		return "", false
+	}
+	if isOperatorExpr(rawValExpr) {
+		return "", false
+	}
+	if containsParenExpr(rawValExpr) {
+		return "", false
+	}
+	return staticClassLiteralValue(rawValExpr)
 }
 
 // resolveClassExprMerge evaluates a class= value in the classExprMergeShape
@@ -935,14 +1020,10 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 					evaluated = strings.Join(parts, ";") + ";"
 				}
 			} else if name == "class" {
-				classObjStart := -1
-				for i := 0; i < len(rawValExpr); i++ {
-					if rawValExpr[i] == '{' {
-						classObjStart = i
-						break
-					}
-				}
-				if classObjStart >= 0 && classObjStart < len(rawValExpr)-1 && rawValExpr[len(rawValExpr)-1] == '}' {
+				if tag.hasStaticClass {
+					evaluated = tag.staticClass
+				} else if classValueIsObjectShape(rawValExpr) {
+					classObjStart := strings.IndexByte(rawValExpr, '{')
 					objStr := rawValExpr[classObjStart:]
 					obj := parseInlineObject(objStr)
 					if obj != nil {

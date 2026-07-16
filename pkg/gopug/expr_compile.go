@@ -298,19 +298,40 @@ func walkCodeNodes(nodes []Node, visit func(*CodeNode)) {
 }
 
 // compileTagAttrs walks the whole AST once, at Compile time, and precomputes
-// each no-`&attributes`-spread TagNode's sorted attribute-name list. The
-// attribute-name SET for such a tag is fixed at parse time — nothing at
-// render time adds or removes a key, only a spread can do that — and
+// each no-`&attributes`-spread TagNode's sorted attribute-name list, plus (for
+// a tag whose "class" value is provably static) its resolved class string.
+//
+// The attribute-name SET for a no-spread tag is fixed at parse time — nothing
+// at render time adds or removes a key, only a spread can do that — and
 // sortAttrNames depends only on the key set, not the values, so the sorted
 // order computed here from tag.Attributes is byte-identical to the order
 // renderTag would compute at render time from its merged copy of the same
-// keys. It must only be called once per compile, never per render.
+// keys.
+//
+// A tag's "class" value can only be classified as static when the tag has no
+// spread: a spread's own class handling (mergeSpreadClass, see runtime.go)
+// can inject or append to the class value at render time, so caching would
+// go stale the moment a spread ran. classifyStaticClassAttr (runtime.go)
+// reuses renderTag's own class-value classification functions, so the
+// compile-time "is this static" test can never diverge from what renderTag
+// itself would decide at render time.
+//
+// It must only be called once per compile, never per render.
 func compileTagAttrs(nodes []Node) {
 	walkTagNodes(nodes, func(tag *TagNode) {
 		_, hasSpread := tag.Attributes["&attributes"]
 		tag.noSpread = !hasSpread
-		if tag.noSpread {
-			tag.sortedAttrNames = sortAttrNames(tag.Attributes)
+		if !tag.noSpread {
+			return
+		}
+		tag.sortedAttrNames = sortAttrNames(tag.Attributes)
+
+		if classAttr, ok := tag.Attributes["class"]; ok && classAttr.Value != "" {
+			raw := strings.TrimSpace(classAttr.Value)
+			if v, ok := classifyStaticClassAttr(raw); ok {
+				tag.staticClass = v
+				tag.hasStaticClass = true
+			}
 		}
 	})
 }

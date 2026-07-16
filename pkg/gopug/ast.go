@@ -42,6 +42,27 @@ type TagNode struct {
 	// TagNode this pass never reaches, since noSpread's zero value is false.
 	noSpread        bool
 	sortedAttrNames []string
+
+	// staticClass and hasStaticClass are a Compile-time precompute (see
+	// compileTagAttrs, expr_compile.go), read-only afterward — same
+	// single-writer-then-read-only lifecycle as noSpread/sortedAttrNames
+	// above, so concurrent renders of the same compiled Template may read
+	// them safely without synchronization.
+	//
+	// hasStaticClass is true only for a no-spread tag whose "class" value is
+	// PROVABLY a pure function of template text: it reaches
+	// resolveClassTokenList's whole-quoted, non-empty branch at render time
+	// with no possibility of evaluating a variable, operator, or object
+	// literal (classifyStaticClassAttr proves this using the exact same
+	// classification functions renderTag itself uses, so the two can never
+	// disagree). When true, staticClass holds the already-resolved string
+	// and renderTag uses it directly instead of re-parsing the raw value on
+	// every render. hasStaticClass defaults to false — for any tag this pass
+	// does not prove static (including every tag with an "&attributes"
+	// spread, since a spread can inject or merge a class value at render
+	// time), renderTag takes its unchanged runtime dispatch.
+	staticClass    string
+	hasStaticClass bool
 }
 
 func (n *TagNode) node() {}
