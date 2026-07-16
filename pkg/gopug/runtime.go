@@ -2880,7 +2880,11 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 		return fmt.Errorf("mixin %q is not defined", call.Name)
 	}
 
-	scope := make(map[string]any)
+	scopeSize := len(decl.Parameters) + 1
+	if decl.RestParamName != "" {
+		scopeSize++
+	}
+	scope := make(map[string]any, scopeSize)
 
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
@@ -2916,19 +2920,30 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 		scope[decl.RestParamName] = rest
 	}
 
-	attrMap := make(map[string]any)
-	for k, v := range call.Attributes {
-		var evaluated string
-		if v.IsBare {
-			evaluated = "true"
-		} else {
-			var err error
-			evaluated, err = r.evaluateExpr(v.Value)
-			if err != nil {
-				evaluated = v.Value
+	// A call with no attributes at all is the overwhelmingly common case, so
+	// attrMap is left nil rather than allocating an empty map that the loop
+	// below (its only writer) would never populate. Every downstream reader
+	// of the mixin's "attributes" object — getField's map[string]any fast
+	// path, a bare lookup, `each` iteration, and a &attributes(attributes)
+	// forward inside the mixin body — treats a nil map[string]any exactly
+	// like an empty one (present-key lookup misses, MapKeys/range are
+	// no-ops), so this is not observable in the rendered output.
+	var attrMap map[string]any
+	if len(call.Attributes) > 0 {
+		attrMap = make(map[string]any, len(call.Attributes))
+		for k, v := range call.Attributes {
+			var evaluated string
+			if v.IsBare {
+				evaluated = "true"
+			} else {
+				var err error
+				evaluated, err = r.evaluateExpr(v.Value)
+				if err != nil {
+					evaluated = v.Value
+				}
 			}
+			attrMap[k] = evaluated
 		}
-		attrMap[k] = evaluated
 	}
 	scope["attributes"] = attrMap
 

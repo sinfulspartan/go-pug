@@ -1635,14 +1635,32 @@ func TestMixinUndefinedError(t *testing.T) {
 	}
 }
 
-// TestMixinEmptyAttributesMap verifies that `attributes` is always an empty
-// map (never nil) when no attributes are passed at the call site, so that
+// TestMixinEmptyAttributesMap verifies that `attributes` behaves like an
+// empty map when no attributes are passed at the call site, so that
 // expressions like `attributes.class` evaluate to "" rather than panicking.
 func TestMixinEmptyAttributesMap(t *testing.T) {
 	src := "mixin probe\n  p= attributes.class\n+probe"
 	out := renderTest(t, src, nil)
 	// attributes.class should resolve to "" — renders as an empty paragraph
 	assertContains(t, out, "<p></p>")
+}
+
+// TestMixinEmptyAttributesForward verifies that &attributes(attributes)
+// inside a mixin body, with no attributes supplied at the call site, spreads
+// nothing onto the target tag and does not panic or render a stray value.
+func TestMixinEmptyAttributesForward(t *testing.T) {
+	src := "mixin box()\n  div.base&attributes(attributes) Hi\n+box()"
+	out := renderTest(t, src, nil)
+	assertEqual(t, out, `<div class="base">Hi</div>`)
+}
+
+// TestMixinEmptyAttributesEach verifies that iterating the mixin's own
+// `attributes` object with `each` renders the empty-body branch when no
+// attributes are supplied at the call site.
+func TestMixinEmptyAttributesEach(t *testing.T) {
+	src := "mixin box()\n  each v, k in attributes\n    span= k\n  else\n    span none\n+box()"
+	out := renderTest(t, src, nil)
+	assertEqual(t, out, `<span>none</span>`)
 }
 
 // TestMixinRestParamZeroVariadics verifies that calling a mixin with a rest
