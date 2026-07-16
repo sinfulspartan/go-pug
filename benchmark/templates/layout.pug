@@ -1,0 +1,17 @@
+doctype html
+html
+  head
+    title= PageTitle
+    block head
+      meta(charset="utf-8")
+  body
+    header.site-header
+      nav.site-nav
+        block nav
+          a(href="/") Home
+    main.content
+      block content
+        p No content
+    footer.site-footer
+      block footer
+        p.copyright Default Footer

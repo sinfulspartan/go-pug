@@ -127,6 +127,33 @@ type blogData struct {
 	Posts     []post
 }
 
+// --- page_extends.pug (extends layout.pug) ---
+
+type extendsItem struct {
+	Name     string
+	Price    string
+	Featured bool
+}
+
+type extendsPageData struct {
+	PageTitle string
+	Copyright string
+	Items     []extendsItem
+}
+
+// --- page_include.pug (include _card.pug, inside an each loop) ---
+
+type includeCard struct {
+	Name     string
+	Price    string
+	Featured bool
+}
+
+type includePageData struct {
+	PageTitle string
+	Items     []includeCard
+}
+
 func benchCases() []benchCase {
 	return []benchCase{
 		{
@@ -400,6 +427,97 @@ type blogData struct {
 		{Title: "Team Offsite Recap", Author: "Jordan K.", Category: "general", Summary: "Photos and highlights from this years offsite."},
 		{Title: "Cooking for a Crowd", Author: "Sam O.", Category: "life", Summary: "Batch recipes that scale from four people to forty."},
 		{Title: "Type Systems & Codegen", Author: "Priya N.", Category: "tech", Summary: "What a typed code generator can prove that a dynamic interpreter cannot."},
+	},
+}`,
+		},
+		{
+			name:        "page_extends",
+			description: "extends+block: layout override plus block prepend/append on nav and footer, each-loop item list",
+			template:    "page_extends.pug",
+			interpData: map[string]any{
+				"PageTitle": "Shop",
+				"Copyright": "(c) 2026 Acme Outfitters",
+				"Items": []any{
+					map[string]any{"Name": "Trail Runner Jacket", "Price": "$89.00", "Featured": true},
+					map[string]any{"Name": "Merino Wool Socks (3-pack)", "Price": "$24.00", "Featured": false},
+					map[string]any{"Name": "Camp Stove", "Price": "$54.50", "Featured": false},
+					map[string]any{"Name": "Insulated Bottle 32oz", "Price": "$32.00", "Featured": true},
+					map[string]any{"Name": "Trekking Poles (pair)", "Price": "$79.99", "Featured": false},
+					map[string]any{"Name": "Headlamp 350lm", "Price": "$38.00", "Featured": false},
+					map[string]any{"Name": "Backpack 45L", "Price": "$149.00", "Featured": true},
+					map[string]any{"Name": "Sleeping Bag 20F", "Price": "$210.00", "Featured": false},
+				},
+			},
+			dataType:    "extendsPageData",
+			reflectType: reflect.TypeOf(extendsPageData{}),
+			structSrc: `type extendsItem struct {
+	Name     string
+	Price    string
+	Featured bool
+}
+
+type extendsPageData struct {
+	PageTitle string
+	Copyright string
+	Items     []extendsItem
+}
+`,
+			dataLiteralSrc: `extendsPageData{
+	PageTitle: "Shop",
+	Copyright: "(c) 2026 Acme Outfitters",
+	Items: []extendsItem{
+		{Name: "Trail Runner Jacket", Price: "$89.00", Featured: true},
+		{Name: "Merino Wool Socks (3-pack)", Price: "$24.00", Featured: false},
+		{Name: "Camp Stove", Price: "$54.50", Featured: false},
+		{Name: "Insulated Bottle 32oz", Price: "$32.00", Featured: true},
+		{Name: "Trekking Poles (pair)", Price: "$79.99", Featured: false},
+		{Name: "Headlamp 350lm", Price: "$38.00", Featured: false},
+		{Name: "Backpack 45L", Price: "$149.00", Featured: true},
+		{Name: "Sleeping Bag 20F", Price: "$210.00", Featured: false},
+	},
+}`,
+		},
+		{
+			name:        "page_include",
+			description: "include _card.pug inside an each loop — one partial re-included per item",
+			template:    "page_include.pug",
+			interpData: map[string]any{
+				"PageTitle": "Featured Products",
+				"Items": []any{
+					map[string]any{"Name": "Trail Runner Jacket", "Price": "$89.00", "Featured": true},
+					map[string]any{"Name": "Merino Wool Socks (3-pack)", "Price": "$24.00", "Featured": false},
+					map[string]any{"Name": "Camp Stove", "Price": "$54.50", "Featured": false},
+					map[string]any{"Name": "Insulated Bottle 32oz", "Price": "$32.00", "Featured": true},
+					map[string]any{"Name": "Trekking Poles (pair)", "Price": "$79.99", "Featured": false},
+					map[string]any{"Name": "Headlamp 350lm", "Price": "$38.00", "Featured": false},
+					map[string]any{"Name": "Backpack 45L", "Price": "$149.00", "Featured": true},
+					map[string]any{"Name": "Sleeping Bag 20F", "Price": "$210.00", "Featured": false},
+				},
+			},
+			dataType:    "includePageData",
+			reflectType: reflect.TypeOf(includePageData{}),
+			structSrc: `type includeCard struct {
+	Name     string
+	Price    string
+	Featured bool
+}
+
+type includePageData struct {
+	PageTitle string
+	Items     []includeCard
+}
+`,
+			dataLiteralSrc: `includePageData{
+	PageTitle: "Featured Products",
+	Items: []includeCard{
+		{Name: "Trail Runner Jacket", Price: "$89.00", Featured: true},
+		{Name: "Merino Wool Socks (3-pack)", Price: "$24.00", Featured: false},
+		{Name: "Camp Stove", Price: "$54.50", Featured: false},
+		{Name: "Insulated Bottle 32oz", Price: "$32.00", Featured: true},
+		{Name: "Trekking Poles (pair)", Price: "$79.99", Featured: false},
+		{Name: "Headlamp 350lm", Price: "$38.00", Featured: false},
+		{Name: "Backpack 45L", Price: "$149.00", Featured: true},
+		{Name: "Sleeping Bag 20F", Price: "$210.00", Featured: false},
 	},
 }`,
 		},

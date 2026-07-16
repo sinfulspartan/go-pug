@@ -1,0 +1,22 @@
+extends layout.pug
+
+block head
+  meta(charset="utf-8")
+  link(href="/assets/style.css", rel="stylesheet")
+
+block prepend nav
+  a(href="/products") Products
+
+block append nav
+  a(href="/contact") Contact
+
+block content
+  h1= PageTitle
+  ul.item-list
+    each item in Items
+      li(class=(item.Featured ? "item item--featured" : "item"))
+        span.item-name= item.Name
+        span.item-price #{item.Price}
+
+block append footer
+  p.copyright-extra #{Copyright}
