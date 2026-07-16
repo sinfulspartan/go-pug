@@ -4417,6 +4417,18 @@ func (r *Runtime) getField(obj any, field string) any {
 		return nil
 	}
 
+	// Fast path for the dominant data shape: templates are overwhelmingly
+	// rendered against map[string]any data, and a plain type assertion +
+	// map index avoids the reflect.ValueOf/MapIndex allocation the general
+	// path below needs. It is only ever taken for this exact concrete type
+	// (a *map[string]any, or any other map type, still falls through to
+	// the reflect path unchanged) and returns the same value the reflect
+	// path would: the stored value for a present key (including a stored
+	// nil), or nil for an absent one.
+	if m, ok := obj.(map[string]any); ok {
+		return m[field]
+	}
+
 	v := reflect.ValueOf(obj)
 
 	// Dereference a pointer-to-struct (or pointer-to-map) so that field
