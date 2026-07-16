@@ -2230,7 +2230,7 @@ func (g *generator) genDynamicClassObject(trimmed string, classObjStart int) err
 // identical value for either and differs only in whether it wraps that value
 // in the stdlib escaper (runtime.go's `if !interp.Unescaped` branch). The
 // escaped form wraps the value in gopug.EscapeHTML — the exported, single-
-// sourced guarded equivalent of html.EscapeString — and sets g.needsGopug so
+// sourced wrapper over html.EscapeString — and sets g.needsGopug so
 // the "gopug" import is emitted; the unescaped form writes the value
 // directly, introducing no new import, so a template using only unescaped
 // output must not pull in one.
@@ -2257,8 +2257,8 @@ func (g *generator) genInterpolation(n *InterpolationNode) error {
 // raw for CodeUnescaped — mirroring Runtime.renderCode's own two cases
 // exactly (runtime.go: CodeBuffered writes the stdlib-equivalent escaped
 // form, CodeUnescaped writes val raw; both compute val the same way via
-// evaluateCode). gopug.EscapeHTML is the exported, single-sourced guarded
-// equivalent of html.EscapeString that runtime.go itself calls through
+// evaluateCode). gopug.EscapeHTML is the exported, single-sourced wrapper
+// around html.EscapeString that runtime.go itself calls through
 // (htmlEscapeStdlib) for this same context, so generated code and the
 // interpreter can never drift on what does or does not need escaping. An
 // unbuffered statement (`- stmt`, executed for its side effect with no

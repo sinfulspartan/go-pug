@@ -152,16 +152,18 @@ func TestEscapeFastPathHTMLEscapeTextByteIdentical(t *testing.T) {
 	}
 }
 
-// TestEscapeFastPathHTMLEscapeStdlibByteIdentical is
-// TestEscapeFastPathHTMLEscapeAttrByteIdentical's counterpart for
-// htmlEscapeStdlib's ContainsAny(s, `'"&<>`) guard, compared directly
-// against the unguarded stdlib html.EscapeString it wraps.
+// TestEscapeFastPathHTMLEscapeStdlibByteIdentical pins htmlEscapeStdlib as a
+// pure pass-through to html.EscapeString: unlike htmlEscapeAttr/
+// htmlEscapeText, it carries no ContainsAny pre-scan of its own (html.
+// EscapeString already has its own allocation-free no-op fast path, so an
+// extra scan here would only add overhead without saving an allocation).
+// This test proves the two never diverge across every tricky case above.
 func TestEscapeFastPathHTMLEscapeStdlibByteIdentical(t *testing.T) {
 	for _, s := range escapeFastPathCases {
 		got := htmlEscapeStdlib(s)
 		want := html.EscapeString(s)
 		if got != want {
-			t.Errorf("htmlEscapeStdlib(%q) = %q, html.EscapeString (unguarded) = %q", s, got, want)
+			t.Errorf("htmlEscapeStdlib(%q) = %q, want %q (html.EscapeString directly)", s, got, want)
 		}
 	}
 }
@@ -188,12 +190,15 @@ func TestEscapeFastPathExportedWrappersMatchUnexported(t *testing.T) {
 
 // TestEscapeFastPathNoOpProvenByGuardCondition asserts the core safety
 // argument directly, rather than just its consequence: whenever each
-// guard's ContainsAny check is false, the corresponding unguarded reference
-// escaper must ALREADY be the identity function on that input (which is
-// exactly why it is safe to skip calling it). This is checked over both the
-// fixed case table and a wide swept range of single/double/triple-byte
-// strings, so the guard's character set can't be missing a transformed
-// character without this test catching it.
+// character set's ContainsAny check is false, the corresponding unguarded
+// reference escaper must ALREADY be the identity function on that input.
+// For htmlEscapeAttr/htmlEscapeText this is exactly why their ContainsAny
+// guards are safe to keep; for html.EscapeString (what htmlEscapeStdlib
+// wraps, unguarded) it is exactly why no extra guard is needed there in the
+// first place — it already has this no-op fast path internally. This is
+// checked over both the fixed case table and a wide swept range of
+// single/double/triple-byte strings, so the character set can't be missing
+// a transformed character without this test catching it.
 func TestEscapeFastPathNoOpProvenByGuardCondition(t *testing.T) {
 	checkAttr := func(s string) {
 		if !strings.ContainsAny(s, `<>"&`) {
@@ -212,7 +217,7 @@ func TestEscapeFastPathNoOpProvenByGuardCondition(t *testing.T) {
 	checkStdlib := func(s string) {
 		if !strings.ContainsAny(s, `'"&<>`) {
 			if got := html.EscapeString(s); got != s {
-				t.Errorf("htmlEscapeStdlib guard says %q is a no-op, but html.EscapeString produced %q", s, got)
+				t.Errorf("html.EscapeString(%q) should be a no-op when it contains none of '\"&<>, but produced %q", s, got)
 			}
 		}
 	}
@@ -464,5 +469,37 @@ func TestEscapeFastPathCardListCodegenByteIdentical(t *testing.T) {
 				t.Errorf("codegen output != interpreter output\n--- codegen ---\n%s\n--- interpreter ---\n%s", got, want)
 			}
 		})
+	}
+}
+
+// escapeFastPathBenchClean is a representative already-safe interpolation
+// value (a product name, the case the stdlib escape path is on the hot path
+// for in interpolation-heavy templates): no escaping is actually needed, so
+// this benchmark measures pure call/scan overhead rather than the cost of
+// building escaped output.
+const escapeFastPathBenchClean = "Wireless Mouse, ergonomic and quiet"
+
+// BenchmarkHTMLEscapeStdlibClean pins htmlEscapeStdlib's cost on a clean,
+// no-escaping-needed input to html.EscapeString's own cost on the same
+// input: since htmlEscapeStdlib is a direct pass-through with no pre-scan of
+// its own, the two must track closely (a regression here — htmlEscapeStdlib
+// meaningfully slower than html.EscapeString alone — would mean a guard or
+// other overhead crept back in front of the stdlib call).
+func BenchmarkHTMLEscapeStdlibClean(b *testing.B) {
+	s := escapeFastPathBenchClean
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = htmlEscapeStdlib(s)
+	}
+}
+
+// BenchmarkHTMLEscapeStringClean is BenchmarkHTMLEscapeStdlibClean's
+// baseline: html.EscapeString called directly, with no go-pug wrapper at
+// all, on the same clean input.
+func BenchmarkHTMLEscapeStringClean(b *testing.B) {
+	s := escapeFastPathBenchClean
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = html.EscapeString(s)
 	}
 }

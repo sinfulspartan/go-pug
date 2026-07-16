@@ -1249,24 +1249,24 @@ func EscapeText(s string) string {
 // EscapeHTML escapes s exactly as the stdlib html.EscapeString does — ',
 // ", &, <, and > each become their entity — for the general HTML-text
 // interpolation contexts (`#{expr}`, `= expr`) that use the stdlib escaper
-// rather than htmlEscapeAttr/htmlEscapeText's entity-aware variants. When
-// none of those five characters are present, html.EscapeString would already
-// be the identity function on s, so it is returned unchanged without
-// allocating. It is exported so codegen-generated code can call it directly
-// instead of html.EscapeString, keeping interpreter and codegen escaping
-// (and this fast path) single-sourced in one place.
+// rather than htmlEscapeAttr/htmlEscapeText's entity-aware variants. It is a
+// thin wrapper, with no extra pre-scan of its own, because html.EscapeString
+// already returns s unchanged without allocating when none of those five
+// characters are present; an additional guard here would only re-scan the
+// string and add call overhead for no benefit. It is exported so
+// codegen-generated code can call it directly instead of html.EscapeString,
+// keeping interpreter and codegen escaping single-sourced in one place.
 func EscapeHTML(s string) string {
 	return htmlEscapeStdlib(s)
 }
 
-// htmlEscapeStdlib guards html.EscapeString with a cheap pre-scan: if none
-// of the five characters it transforms (', ", &, <, >) are present, s is
-// returned unchanged instead of being handed to html.EscapeString, which
-// would allocate a builder only to reproduce the same bytes.
+// htmlEscapeStdlib is a thin pass-through to html.EscapeString. Unlike
+// htmlEscapeAttr/htmlEscapeText below, it does not pre-scan s with
+// strings.ContainsAny before calling the escaper: html.EscapeString already
+// has its own allocation-free fast path for inputs that need no escaping, so
+// a guard here would only duplicate that scan and add overhead without
+// saving an allocation.
 func htmlEscapeStdlib(s string) string {
-	if !strings.ContainsAny(s, `'"&<>`) {
-		return s
-	}
 	return html.EscapeString(s)
 }
 
