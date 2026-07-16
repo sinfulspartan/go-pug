@@ -1868,22 +1868,25 @@ func sortAttrNames(attrs map[string]*AttributeValue) []string {
 	for k := range attrs {
 		names = append(names, k)
 	}
-	sort.Slice(names, func(i, j int) bool {
-		order := func(n string) int {
-			switch n {
-			case "id":
-				return 0
-			case "class":
-				return 1
-			default:
-				return 2
+	order := func(n string) int {
+		switch n {
+		case "id":
+			return 0
+		case "class":
+			return 1
+		default:
+			return 2
+		}
+	}
+	slices.SortFunc(names, func(a, b string) int {
+		oa, ob := order(a), order(b)
+		if oa != ob {
+			if oa < ob {
+				return -1
 			}
+			return 1
 		}
-		oi, oj := order(names[i]), order(names[j])
-		if oi != oj {
-			return oi < oj
-		}
-		return names[i] < names[j]
+		return strings.Compare(a, b)
 	})
 	return names
 }
