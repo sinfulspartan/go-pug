@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-15T22:22:19Z",
+  "generatedAt": "2026-07-16T12:56:08Z",
   "methodology": {
     "description": "Every engine is pre-compiled/pre-generated exactly once, outside the timed loop: pug.js via pug.compileFile, the interpreter via gopug.Compile, codegen via GenerateGo + `go build`. Only the render call itself is timed, rendering the same fixture data every iteration to a discarded sink (io.Discard for codegen; the interpreter's returned string is discarded after a length checksum; pug.js accumulates a length checksum so V8 cannot treat the calls as dead code).",
     "metric": "renders per second (higher is better)",
@@ -29,58 +29,58 @@
     {
       "name": "mixin_data_args",
       "description": "mixin called with struct-typed data (positional string args)",
-      "pugjsRendersPerSec": 12296866.32493641,
-      "interpreterRendersPerSec": 457640.114071985,
-      "codegenRendersPerSec": 32472663.429502927
+      "pugjsRendersPerSec": 12930516.013615577,
+      "interpreterRendersPerSec": 624047.3397319543,
+      "codegenRendersPerSec": 32520043.186617356
     },
     {
       "name": "mixin_default",
       "description": "mixin with a default parameter, called twice (data-free)",
-      "pugjsRendersPerSec": 7758841.087430409,
-      "interpreterRendersPerSec": 483968.2297442357,
-      "codegenRendersPerSec": 16205082.886298118
+      "pugjsRendersPerSec": 7959107.233576726,
+      "interpreterRendersPerSec": 618705.1264772487,
+      "codegenRendersPerSec": 17623050.009516444
     },
     {
       "name": "mixin_attrs",
       "description": "mixin with \u0026attributes spreading a caller-supplied attribute block",
-      "pugjsRendersPerSec": 2500809.094994655,
-      "interpreterRendersPerSec": 375189.46599045687,
-      "codegenRendersPerSec": 48386394.39104916
+      "pugjsRendersPerSec": 2617009.72037533,
+      "interpreterRendersPerSec": 487591.7885447038,
+      "codegenRendersPerSec": 54594887.734712526
     },
     {
       "name": "nil_pointer_path",
       "description": "nil-safe dot-path through a non-nil pointer intermediate",
-      "pugjsRendersPerSec": 21318693.711639334,
-      "interpreterRendersPerSec": 1250486.819704236,
-      "codegenRendersPerSec": 57116855.37441051
+      "pugjsRendersPerSec": 21717957.98752394,
+      "interpreterRendersPerSec": 2071960.5719716223,
+      "codegenRendersPerSec": 63079675.938678145
     },
     {
       "name": "card_list",
       "description": "product grid: each-loop, paren-ternary dynamic class, if/else badge",
-      "pugjsRendersPerSec": 497854.5769646724,
-      "interpreterRendersPerSec": 11518.18704823052,
-      "codegenRendersPerSec": 471520.2181189659
+      "pugjsRendersPerSec": 510188.01476946817,
+      "interpreterRendersPerSec": 17067.206196065752,
+      "codegenRendersPerSec": 790167.1182383951
     },
     {
       "name": "table",
       "description": "data table: each-loop over rows, class-object zebra highlight",
-      "pugjsRendersPerSec": 207768.46484547318,
-      "interpreterRendersPerSec": 18361.840309714924,
-      "codegenRendersPerSec": 307557.8276378681
+      "pugjsRendersPerSec": 213669.5117299899,
+      "interpreterRendersPerSec": 31050.13836940659,
+      "codegenRendersPerSec": 470264.7374149867
     },
     {
       "name": "form",
       "description": "settings form: each-loop text fields + each-loop select options",
-      "pugjsRendersPerSec": 601836.6224863423,
-      "interpreterRendersPerSec": 42587.47740090152,
-      "codegenRendersPerSec": 872884.3284238924
+      "pugjsRendersPerSec": 620607.0299238247,
+      "interpreterRendersPerSec": 62952.778812144395,
+      "codegenRendersPerSec": 1047721.6977366208
     },
     {
       "name": "blog",
       "description": "blog index: each-loop with a nested case/when tag classifier",
-      "pugjsRendersPerSec": 1221725.4246843152,
-      "interpreterRendersPerSec": 41505.34237054922,
-      "codegenRendersPerSec": 1635819.7411707856
+      "pugjsRendersPerSec": 1251725.1521527637,
+      "interpreterRendersPerSec": 54069.85595802047,
+      "codegenRendersPerSec": 1659122.4525280823
     }
   ]
 }

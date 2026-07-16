@@ -106,16 +106,16 @@ Renders per second per template (higher is better); see [`benchmark/README.md`](
 
 | Template          | pug.js     | go-pug interpreter | go-pug codegen |
 | ----------------- | ---------- | ------------------- | --------------- |
-| mixin_data_args   | 12,296,866 | 457,640              | 32,472,663      |
-| mixin_default     | 7,758,841  | 483,968              | 16,205,083      |
-| mixin_attrs       | 2,500,809  | 375,189              | 48,386,394      |
-| nil_pointer_path  | 21,318,694 | 1,250,487            | 57,116,855      |
-| card_list         | 497,855    | 11,518               | 471,520         |
-| table             | 207,768    | 18,362               | 307,558         |
-| form              | 601,837    | 42,587               | 872,884         |
-| blog              | 1,221,725  | 41,505               | 1,635,820       |
+| mixin_data_args   | 12,930,516 | 624,047              | 32,520,043      |
+| mixin_default     | 7,959,107  | 618,705              | 17,623,050      |
+| mixin_attrs       | 2,617,010  | 487,592              | 54,594,888      |
+| nil_pointer_path  | 21,717,958 | 2,071,961            | 63,079,676      |
+| card_list         | 510,188    | 17,067               | 790,167         |
+| table             | 213,670    | 31,050               | 470,265         |
+| form              | 620,607    | 62,953               | 1,047,722       |
+| blog              | 1,251,725  | 54,070               | 1,659,122       |
 
-Codegen is the fastest engine on 7 of the 8 templates in the corpus, typically 1.3–2.7x pug.js's throughput (one template, `mixin_attrs`, reaches roughly 19x); on the remaining template, `card_list`, it comes in a few percent behind pug.js, reported as measured. Both pug.js and codegen render one to two orders of magnitude faster than the go-pug interpreter, the tree-walking default path.
+Codegen is the fastest engine on all 8 templates in the corpus, typically 1.3–2.9x pug.js's throughput (one template, `mixin_attrs`, reaches roughly 21x); the narrowest margin is `blog` at roughly 1.3x, still a clear win. The go-pug interpreter, the tree-walking default path, is slower than pug.js on every template — the interpreter has gotten meaningfully faster from a round of allocation-reduction work (a guarded HTML-escape fast path, a map fast path for field lookups, a faster attribute-name sort, and a compile-time attribute-name cache), which reduces overhead but does not close the architectural gap between a tree-walking interpreter and a JIT-compiled or ahead-of-time-compiled renderer. On this corpus the interpreter is roughly 5x to 30x slower than pug.js, with the gap widest on the templates that iterate the most (`card_list`, `blog`) and narrowest on the smaller mixin templates.
 
 ---
 
