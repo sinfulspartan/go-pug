@@ -26,6 +26,22 @@ type TagNode struct {
 	SelfClose  bool
 	Line       int
 	Col        int
+
+	// noSpread and sortedAttrNames are a Compile-time precompute, populated
+	// by compileTagAttrs (see expr_compile.go) before the AST is ever
+	// rendered, and read-only afterward — so concurrent renders of the same
+	// compiled Template may read them safely without synchronization.
+	//
+	// noSpread is true iff Attributes has no "&attributes" key. When it is
+	// true, the tag's rendered attribute-name set is fixed at parse time (a
+	// spread is the only thing that can add or remove keys at render time),
+	// so sortedAttrNames holds sortAttrNames(Attributes) computed once here
+	// instead of on every render. sortedAttrNames is nil and unused when
+	// noSpread is false; renderTag falls back to sorting the render-time
+	// merged attribute map for that case, and also falls back for any
+	// TagNode this pass never reaches, since noSpread's zero value is false.
+	noSpread        bool
+	sortedAttrNames []string
 }
 
 func (n *TagNode) node() {}

@@ -128,6 +128,7 @@ func Compile(src string, opts *Options) (*Template, error) {
 	// at compile time, not per render.
 	compileExprs(ast.Children)
 	compileMixinArgs(ast.Children)
+	compileTagAttrs(ast.Children)
 
 	return &Template{
 		ast:  ast,

@@ -297,6 +297,65 @@ func walkCodeNodes(nodes []Node, visit func(*CodeNode)) {
 	}
 }
 
+// compileTagAttrs walks the whole AST once, at Compile time, and precomputes
+// each no-`&attributes`-spread TagNode's sorted attribute-name list. The
+// attribute-name SET for such a tag is fixed at parse time — nothing at
+// render time adds or removes a key, only a spread can do that — and
+// sortAttrNames depends only on the key set, not the values, so the sorted
+// order computed here from tag.Attributes is byte-identical to the order
+// renderTag would compute at render time from its merged copy of the same
+// keys. It must only be called once per compile, never per render.
+func compileTagAttrs(nodes []Node) {
+	walkTagNodes(nodes, func(tag *TagNode) {
+		_, hasSpread := tag.Attributes["&attributes"]
+		tag.noSpread = !hasSpread
+		if tag.noSpread {
+			tag.sortedAttrNames = sortAttrNames(tag.Attributes)
+		}
+	})
+}
+
+// walkTagNodes recurses through every node kind that can contain a TagNode
+// (document/tag/each/conditional/mixin/etc. bodies, tag-interpolation's
+// wrapped tag, and block-expansion's parent/child) and calls visit for each
+// TagNode found.
+func walkTagNodes(nodes []Node, visit func(*TagNode)) {
+	for _, n := range nodes {
+		switch v := n.(type) {
+		case *TagNode:
+			visit(v)
+			walkTagNodes(v.Children, visit)
+		case *DocumentNode:
+			walkTagNodes(v.Children, visit)
+		case *TagInterpolationNode:
+			walkTagNodes([]Node{v.Tag}, visit)
+		case *ConditionalNode:
+			walkTagNodes(v.Consequent, visit)
+			walkTagNodes(v.Alternate, visit)
+		case *EachNode:
+			walkTagNodes(v.Body, visit)
+			walkTagNodes(v.EmptyBody, visit)
+		case *WhileNode:
+			walkTagNodes(v.Body, visit)
+		case *CaseNode:
+			for _, w := range v.Cases {
+				walkTagNodes(w.Body, visit)
+			}
+			walkTagNodes(v.Default, visit)
+		case *MixinDeclNode:
+			walkTagNodes(v.Body, visit)
+		case *MixinCallNode:
+			walkTagNodes(v.BlockContent, visit)
+		case *BlockNode:
+			walkTagNodes(v.Body, visit)
+		case *BlockExpansionNode:
+			walkTagNodes([]Node{v.Parent, v.Child}, visit)
+		case *TextRunNode:
+			walkTagNodes(v.Nodes, visit)
+		}
+	}
+}
+
 // compileMixinArgs walks the whole AST once, at Compile time, and populates
 // compiledArgs on every MixinCallNode whose arguments include at least one
 // expression that classifies to a supported shape. It must only be called

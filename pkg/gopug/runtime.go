@@ -894,7 +894,12 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		}
 	}
 
-	names := sortAttrNames(merged)
+	var names []string
+	if tag.noSpread {
+		names = tag.sortedAttrNames
+	} else {
+		names = sortAttrNames(merged)
+	}
 
 	for _, name := range names {
 		val := merged[name]
