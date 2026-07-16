@@ -3,6 +3,58 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.1
+
+### Fixed
+
+- A **data race in template inheritance**: merging a child template's `block`
+  overrides into an extended layout mutated shared, compiled AST nodes in
+  place, so rendering the same `extends`/`block` template concurrently from
+  multiple goroutines could race under `-race` (output was still correct
+  single-threaded, since identical inputs re-derived identical bytes, but the
+  memory access itself was undefined behavior). The merge is now a pure
+  function that copies every node it touches instead of writing into shared
+  state.
+- **Block expansion** (`tag: tag` shorthand) mutated the shared compiled tag
+  node's children on every render instead of building a fresh local slice,
+  which could corrupt output across repeated or concurrent renders of the
+  same cached template. Fixed the same way — render from a fresh copy, never
+  the shared original.
+
+### Performance
+
+Rendering is substantially faster and allocates far less, with byte-identical
+output throughout:
+
+- A large-template render now allocates **133 times/op instead of 701**
+  (roughly 81% fewer allocations), from a round of allocation-reduction work:
+  a guarded HTML-escape fast path that skips the allocation when nothing
+  needs escaping, a `map[string]any` fast path for field lookups that skips
+  reflection, a faster attribute-name sort with a compile-time cache for
+  templates with no spread attributes, a compile-time cache for fully-static
+  `class` attribute values, and skipping the attributes map allocation
+  entirely for a mixin call with no attributes.
+- Template composition is now dramatically faster in the interpreter: parsed
+  `extends` layouts and `include` partials are cached by file path instead of
+  being re-read and re-parsed from disk on every `Render()` call — for an
+  `include` inside a loop, that was once per iteration. Measured on this
+  release's benchmark corpus, `include` renders roughly **12x faster** and
+  `extends` renders roughly **3x faster** than before the cache, with file
+  I/O and parsing gone from the profile entirely.
+
+### Added
+
+- The render-throughput benchmark corpus gained its first template-inheritance
+  and `include` coverage: `page_extends` (an `extends`/`block` layout with
+  replace, prepend, and append overrides plus an each-loop item list) and
+  `page_include` (`include` from inside an each loop), both verified
+  byte-identical across pug.js, the interpreter, and codegen before being
+  timed. See the refreshed 10-template table in the README's
+  [Benchmarks](README.md#benchmarks) section.
+- Pretty-mode golden test coverage for template composition, mixins, filters,
+  and `case`/`when` — previously tested deeply only in compact mode, which
+  had hidden a pretty-mode-only block-expansion layout bug (now fixed above).
+
 ## v0.4.0
 
 ### Added

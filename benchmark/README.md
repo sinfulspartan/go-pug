@@ -16,16 +16,18 @@ Renders/second (higher is better), one column per engine:
 
 | Template | pug.js (Node) | go-pug interpreter | go-pug codegen |
 | --- | ---: | ---: | ---: |
-| `mixin_data_args` | 12,296,866 | 457,640 | 32,472,663 |
-| `mixin_default` | 7,758,841 | 483,968 | 16,205,083 |
-| `mixin_attrs` | 2,500,809 | 375,189 | 48,386,394 |
-| `nil_pointer_path` | 21,318,694 | 1,250,487 | 57,116,855 |
-| `card_list` | 497,855 | 11,518 | 471,520 |
-| `table` | 207,768 | 18,362 | 307,558 |
-| `form` | 601,837 | 42,587 | 872,884 |
-| `blog` | 1,221,725 | 41,505 | 1,635,820 |
+| `mixin_data_args` | 13,020,824 | 888,052 | 33,981,319 |
+| `mixin_default` | 7,909,264 | 647,673 | 18,258,104 |
+| `mixin_attrs` | 2,550,978 | 444,272 | 54,546,942 |
+| `nil_pointer_path` | 22,057,607 | 1,934,334 | 64,423,719 |
+| `card_list` | 507,346 | 36,790 | 779,864 |
+| `table` | 210,139 | 36,222 | 453,648 |
+| `form` | 563,017 | 106,813 | 1,028,879 |
+| `blog` | 1,134,629 | 134,599 | 1,656,499 |
+| `page_extends` | 755,910 | 10,719 | 1,861,581 |
+| `page_include` | 1,607,847 | 32,474 | 2,728,510 |
 
-Codegen is the fastest engine on every template except `card_list`, where it comes in a hair below pug.js (471,520 vs 497,855 renders/second, roughly 5% slower) — reported as measured rather than rounded away. Codegen's lead over pug.js is typically 1.3–2.7x on this corpus; `mixin_attrs` is the one outlier, at roughly 19x. The interpreter is slower than pug.js on every template in this corpus; its throughput is highest on the two smallest mixin templates (457,640–483,968 renders/second) and lowest on `card_list`/`table`/`form`/`blog` (11,518–42,587), which do more actual iteration and branching per render for the interpreter to walk.
+Codegen is the fastest engine on all 10 templates in this corpus, typically 1.5–3x pug.js's throughput; the narrowest margin is `blog` at roughly 1.5x, and the widest is `mixin_attrs` at roughly 21x (an outlier — its spread-attrs code path is unusually well-optimized at generate time; `card_list`, the one template where codegen previously trailed pug.js, is now a clear codegen win too, following the render-performance work). The interpreter is slower than pug.js on every template in this corpus; it is closest on `mixin_attrs`/`form` (roughly 5–6x slower) and furthest on the two composition templates, `page_extends`/`page_include` (roughly 70x/50x slower). Those two are the newest additions to the corpus (see [Template corpus](#template-corpus)): the interpreter now caches their parsed `extends`/`include` ASTs instead of re-reading and re-parsing from disk on every render, which made its own absolute throughput on them dramatically faster than before that fix (`page_include` ~12x, `page_extends` ~3x) — but pug.js's own composition handling is evidently cheaper still, so relative to pug.js those two templates remain the widest gap in the corpus even after that improvement.
 
 ![Render throughput chart](chart.svg)
 
@@ -60,8 +62,10 @@ Requires Node.js and Go on `PATH`; `go run ./benchmark` shells out to `node` and
 | `table.pug` | a data table: each-loop over rows, a dynamic class-object zebra highlight |
 | `form.pug` | a settings form: each-loop text fields plus an each-loop `<select>` |
 | `blog.pug` | a blog index: each-loop with a nested `case`/`when` tag classifier |
+| `page_extends.pug` | `extends`+`block`: layout override plus block prepend/append on nav and footer, each-loop item list |
+| `page_include.pug` | `include _card.pug` inside an each loop — one partial re-included per item |
 
-The first four are the codegen-supported, three-way byte-identical subset of `perf-compare/tri-diff/synth/*.pug` (an internal, git-ignored differential harness); the last four are new, purpose-written templates chosen to be more realistic — the kind of small-but-real page fragment (a card grid, a table, a form, a list with light branching) an application actually renders — while staying inside the current codegen-supported subset of Pug (see [Corpus selection](#corpus-selection)).
+The first four are the codegen-supported, three-way byte-identical subset of `perf-compare/tri-diff/synth/*.pug` (an internal, git-ignored differential harness); the next four are purpose-written templates chosen to be more realistic — the kind of small-but-real page fragment (a card grid, a table, a form, a list with light branching) an application actually renders — while staying inside the current codegen-supported subset of Pug (see [Corpus selection](#corpus-selection)). The last two, `page_extends` and `page_include`, are the corpus's first template-composition coverage: `page_extends` exercises `extends`/`block` (replace, prepend, and append all in one template, against a shared `layout.pug`), and `page_include` exercises `include` from inside an `each` loop (`_card.pug` re-included once per item) — both resolved at generate time for codegen and, for the interpreter, resolved from a compile-once cache of the parsed layout/partial AST rather than re-read and re-parsed from disk on every render.
 
 ## Byte-identity
 
