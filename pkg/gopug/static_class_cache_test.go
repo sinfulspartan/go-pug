@@ -41,32 +41,44 @@ var cacheableStaticClassCases = []struct {
 	name            string
 	src             string
 	wantStaticClass string
+	// data is rendered along with src in the byte-identical differential; it
+	// is nil for every case that has no free variable to put in scope, and
+	// non-nil for the two cases below whose whole point is proving a
+	// same-named in-scope variable is never substituted into a whole-quoted
+	// class value.
+	data map[string]any
 }{
-	{"shorthand single class", `div.form-group`, "form-group"},
-	{"shorthand multiple classes", `li.item.active`, "item active"},
-	{"quoted multi-word", `div(class="a b c")`, "a b c"},
-	{"quoted single word", `div(class="single")`, "single"},
-	{"quoted multi-space collapses", `div(class="a   b")`, "a b"},
-	{"quoted leading and trailing space trims", `div(class="  lead  ")`, "lead"},
-	{"shorthand merged with quoted explicit class", `.base(class="foo bar")`, "base foo bar"},
+	{"shorthand single class", `div.form-group`, "form-group", nil},
+	{"shorthand multiple classes", `li.item.active`, "item active", nil},
+	{"quoted multi-word", `div(class="a b c")`, "a b c", nil},
+	{"quoted single word", `div(class="single")`, "single", nil},
+	{"quoted multi-space collapses", `div(class="a   b")`, "a b", nil},
+	{"quoted leading and trailing space trims", `div(class="  lead  ")`, "lead", nil},
+	{"shorthand merged with quoted explicit class", `.base(class="foo bar")`, "base foo bar", nil},
 	{
 		// The whole value stays whole-quoted even though "badge" also names
 		// an in-scope variable; resolveClassTokenList's invariant is that a
 		// whole-quoted class value's words are never evaluated, so the
-		// collision must not change the cached result.
+		// collision must not change the cached result. data puts "badge" in
+		// scope so the byte-identical differential actually renders with the
+		// variable present, rather than merely with nil data.
 		"quoted literal colliding with an in-scope variable name",
 		`div(class="badge")`,
 		"badge",
+		map[string]any{"badge": "not-the-class-value"},
 	},
 	{
 		// Attribute values are plain JS-style expressions in Pug, not a
 		// text-interpolation context: a quoted string's `#{...}` is literal
 		// text, never substituted (verified against pug.js 3.0.4 — see this
 		// task's report). The value stays whole-quoted, so it is still
-		// provably static and correctly cached.
+		// provably static and correctly cached. data puts "b" in scope so the
+		// byte-identical differential actually renders with the variable
+		// present, rather than merely with nil data.
 		"quoted literal containing pug-interpolation-shaped text",
 		`div(class="a #{b} c")`,
 		"a #{b} c",
+		map[string]any{"b": "not-substituted"},
 	},
 }
 
@@ -183,7 +195,7 @@ func TestStaticClassCacheByteIdenticalRender(t *testing.T) {
 
 	var cases []tc
 	for _, c := range cacheableStaticClassCases {
-		cases = append(cases, tc{c.name, c.src, nil})
+		cases = append(cases, tc{c.name, c.src, c.data})
 	}
 	for _, c := range mustFallThroughClassCases {
 		cases = append(cases, tc{c.name, c.src, c.data})

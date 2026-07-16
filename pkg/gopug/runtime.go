@@ -23,12 +23,15 @@ import (
 var mixinScopeBoundary = map[string]any{"\x00mixin_boundary": true}
 
 type Runtime struct {
-	ast              *DocumentNode
-	data             map[string]any
-	globals          map[string]any
-	htmlBuf          *bytes.Buffer
-	scopeStack       []map[string]any
-	doctype          string
+	ast        *DocumentNode
+	data       map[string]any
+	htmlBuf    *bytes.Buffer
+	scopeStack []map[string]any
+	doctype    string
+	// mixinDecls is left nil until the first mixin declaration is collected
+	// (collectMixins / renderExtends), since most documents declare no mixins
+	// at all. A nil map reads as empty (zero value, ok=false) everywhere it is
+	// consulted, so renderMixinCall's undefined-mixin error path is unchanged.
 	mixinDecls       map[string]*MixinDeclNode
 	callerBlock      []Node
 	inMixin          bool
@@ -49,11 +52,9 @@ func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options
 	r := &Runtime{
 		ast:          ast,
 		data:         data,
-		globals:      make(map[string]any),
 		htmlBuf:      &bytes.Buffer{},
 		scopeStack:   make([]map[string]any, 1),
 		doctype:      "html",
-		mixinDecls:   make(map[string]*MixinDeclNode),
 		opts:         opts,
 		includeStack: make([]string, 0),
 	}
@@ -264,6 +265,9 @@ func (r *Runtime) findExtendsNode(nodes []Node) *ExtendsNode {
 func (r *Runtime) collectMixins(nodes []Node) {
 	for _, node := range nodes {
 		if m, ok := node.(*MixinDeclNode); ok {
+			if r.mixinDecls == nil {
+				r.mixinDecls = make(map[string]*MixinDeclNode)
+			}
 			r.mixinDecls[m.Name] = m
 		}
 	}
@@ -298,7 +302,12 @@ func (r *Runtime) renderExtends() (string, error) {
 		return "", err
 	}
 
-	maps.Copy(r.mixinDecls, mixins)
+	if len(mixins) > 0 {
+		if r.mixinDecls == nil {
+			r.mixinDecls = make(map[string]*MixinDeclNode, len(mixins))
+		}
+		maps.Copy(r.mixinDecls, mixins)
+	}
 	r.collectMixins(rootAST.Children)
 
 	for _, node := range rootAST.Children {
@@ -903,10 +912,23 @@ func (r *Runtime) renderTag(tag *TagNode) error {
 		boolean   bool
 	}
 
-	merged := make(map[string]*AttributeValue)
-	for k, v := range tag.Attributes {
-		if k != "&attributes" {
-			merged[k] = v
+	// A no-spread tag (precomputed at compile time: tag.Attributes has no
+	// "&attributes" key) can alias tag.Attributes directly instead of copying
+	// it into a fresh map: every write to merged below lives inside the
+	// !tag.noSpread branch, so a no-spread tag never writes through this
+	// alias, and tag.Attributes itself is only ever written at compile time —
+	// never at render time, by any tag. Aliasing the shared AST map is safe
+	// only because of that read-only invariant; many goroutines render the
+	// same compiled *Template concurrently.
+	var merged map[string]*AttributeValue
+	if tag.noSpread {
+		merged = tag.Attributes
+	} else {
+		merged = make(map[string]*AttributeValue)
+		for k, v := range tag.Attributes {
+			if k != "&attributes" {
+				merged[k] = v
+			}
 		}
 	}
 
@@ -4398,9 +4420,8 @@ func parseRadixMagnitude(digits string, base int) (float64, bool) {
 	return float64(n), true
 }
 
-// lookup retrieves a value by name from the scope stack (innermost first),
-// falling back to globals. Dot notation ("user.name") is resolved by walking
-// the chain with getField.
+// lookup retrieves a value by name from the scope stack (innermost first).
+// Dot notation ("user.name") is resolved by walking the chain with getField.
 //
 // The key is split on "." without allocating a []string: a bare identifier
 // (no dot) resolves directly, and a dotted path is walked segment-by-segment
@@ -4433,13 +4454,6 @@ func (r *Runtime) lookup(key string) (any, bool) {
 			rootVal = val
 			found = true
 			break
-		}
-	}
-
-	if !found {
-		if val, ok := r.globals[root]; ok {
-			rootVal = val
-			found = true
 		}
 	}
 

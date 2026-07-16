@@ -31,13 +31,6 @@ func referenceLookup(r *Runtime, key string) (any, bool) {
 	}
 
 	if !found {
-		if val, ok := r.globals[root]; ok {
-			rootVal = val
-			found = true
-		}
-	}
-
-	if !found {
 		return nil, false
 	}
 
@@ -54,14 +47,10 @@ func referenceLookup(r *Runtime, key string) (any, bool) {
 }
 
 // newLookupTestRuntime builds a bare Runtime with a single scope frame set to
-// data, plus the given globals, suitable for exercising lookup directly.
-func newLookupTestRuntime(data map[string]any, globals map[string]any) *Runtime {
-	if globals == nil {
-		globals = make(map[string]any)
-	}
+// data, suitable for exercising lookup directly.
+func newLookupTestRuntime(data map[string]any) *Runtime {
 	return &Runtime{
 		data:       data,
-		globals:    globals,
 		scopeStack: []map[string]any{data},
 	}
 }
@@ -134,8 +123,8 @@ func TestLookupDifferentialAgainstReference(t *testing.T) {
 	for _, setup := range setups {
 		for _, key := range keys {
 			t.Run(setup.name+"/"+key, func(t *testing.T) {
-				rt1 := newLookupTestRuntime(setup.data, nil)
-				rt2 := newLookupTestRuntime(setup.data, nil)
+				rt1 := newLookupTestRuntime(setup.data)
+				rt2 := newLookupTestRuntime(setup.data)
 
 				gotVal, gotOK := rt1.lookup(key)
 				wantVal, wantOK := referenceLookup(rt2, key)
@@ -151,31 +140,6 @@ func TestLookupDifferentialAgainstReference(t *testing.T) {
 	}
 }
 
-// TestLookupDifferentialWithGlobals confirms the globals fallback path is
-// also byte-identical between the two implementations.
-func TestLookupDifferentialWithGlobals(t *testing.T) {
-	data := map[string]any{"local": "local-val"}
-	globals := map[string]any{
-		"g":     "global-val",
-		"nest":  map[string]any{"x": "global-nested"},
-		"local": "shadowed-by-scope",
-	}
-
-	keys := []string{"g", "nest.x", "local", "missing", "g.", ".g", "g . x"}
-
-	for _, key := range keys {
-		rt1 := newLookupTestRuntime(data, globals)
-		rt2 := newLookupTestRuntime(data, globals)
-
-		gotVal, gotOK := rt1.lookup(key)
-		wantVal, wantOK := referenceLookup(rt2, key)
-
-		if gotOK != wantOK || !reflect.DeepEqual(gotVal, wantVal) {
-			t.Errorf("lookup(%q) = (%v, %v), want (%v, %v)", key, gotVal, gotOK, wantVal, wantOK)
-		}
-	}
-}
-
 // TestLookupMixinBoundaryUnaffected proves the mixin scope boundary
 // short-circuit still stops descent at the sentinel frame after the rewrite.
 func TestLookupMixinBoundaryUnaffected(t *testing.T) {
@@ -183,7 +147,6 @@ func TestLookupMixinBoundaryUnaffected(t *testing.T) {
 	mixinFrame := map[string]any{"x": "mixin-val"}
 
 	r := &Runtime{
-		globals:    map[string]any{},
 		scopeStack: []map[string]any{callerFrame, mixinScopeBoundary, mixinFrame},
 	}
 
@@ -198,7 +161,7 @@ func TestLookupMixinBoundaryUnaffected(t *testing.T) {
 // TestLookupBareKeyDoesNotAllocate proves the no-dot fast path resolves a
 // bare identifier without allocating a slice.
 func TestLookupBareKeyDoesNotAllocate(t *testing.T) {
-	r := newLookupTestRuntime(map[string]any{"name": "World"}, nil)
+	r := newLookupTestRuntime(map[string]any{"name": "World"})
 
 	allocs := testing.AllocsPerRun(100, func() {
 		if _, ok := r.lookup("name"); !ok {
