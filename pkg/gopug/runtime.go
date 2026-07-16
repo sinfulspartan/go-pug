@@ -128,27 +128,24 @@ func tagIsInline(tag *TagNode) bool {
 	return inlineTagNames[tag.Name]
 }
 
-// tagCanInline reports whether every child of tag can render inline,
-// matching pug.js's pug-code-gen tagCanInline. This is a CONTENT-based
-// decision, independent of tagIsInline, and it governs whether a trailing
-// newline (and therefore indented block layout) is required before the
-// tag's own closing bracket: a tag whose content can inline needs no
-// trailing newline even when the tag itself is not inline-named (e.g. a
+// tagCanInlineChildren reports whether every child in the given list can
+// render inline, matching pug.js's pug-code-gen tagCanInline. This is a
+// CONTENT-based decision, independent of tagIsInline, and it governs whether
+// a trailing newline (and therefore indented block layout) is required
+// before the tag's own closing bracket: a tag whose content can inline needs
+// no trailing newline even when the tag itself is not inline-named (e.g. a
 // block tag with a single line of text), and a tag whose content cannot
-// inline needs one even when the tag itself is inline-named. An empty tag
+// inline needs one even when the tag itself is inline-named. An empty list
 // (no children at all) vacuously can inline — there is nothing to force a
 // block layout.
-func tagCanInline(tag *TagNode) bool {
-	return tagCanInlineChildren(tag.Children)
-}
-
-// tagCanInlineChildren is tagCanInline's own check, applied to an explicit
-// child list rather than a *TagNode's own Children. renderTagWithChildren
-// needs this: a block-expansion (tag: child) renders the expanded child from
-// a locally-built children slice that is never written back to
-// tag.Children (tag.Children stays the shared compiled AST node's own,
-// unexpanded list — see renderBlockExpansion), so the closing-tag layout
-// decision must inspect the SAME children actually rendered, not tag's own.
+//
+// It takes an explicit child list rather than a *TagNode's own Children
+// because renderTagWithChildren needs this for a block-expansion (tag:
+// child), which renders the expanded child from a locally-built children
+// slice that is never written back to tag.Children (tag.Children stays the
+// shared compiled AST node's own, unexpanded list — see
+// renderBlockExpansion), so the closing-tag layout decision must inspect the
+// SAME children actually rendered, not tag's own.
 func tagCanInlineChildren(children []Node) bool {
 	for _, child := range children {
 		if !childCanInline(child) {
@@ -487,7 +484,7 @@ func (r *Runtime) resolveExtendsAST(currentPath string, childAST *DocumentNode) 
 			mixins[m.Name] = m
 		}
 	}
-	r.applyBlockOverrides(rootAST.Children, childBlocks)
+	rootAST.Children = r.applyBlockOverrides(rootAST.Children, childBlocks)
 
 	return rootAST, mixins, nil
 }
@@ -506,57 +503,116 @@ func (r *Runtime) collectBlocks(nodes []Node) map[string][]*BlockNode {
 	return blocks
 }
 
-// applyBlockOverrides recursively walks a node slice (the parent/root AST) and
-// replaces, appends to, or prepends each BlockNode whose name appears in the
-// overrides map. The walk is deep so blocks nested inside tags, conditionals,
-// etc. are also patched.
+// applyBlockOverrides walks a node slice (the parent/root AST) and returns a
+// new slice with each BlockNode whose name appears in the overrides map
+// replaced, appended to, or prepended to. The walk is deep so blocks nested
+// inside tags, conditionals, etc. are also patched.
+//
+// This never mutates a node or slice that it did not itself allocate. Some of
+// the nodes reached through overrides — and, once a block has been replaced
+// or grown, everything downstream of that on the same side of the tree —
+// originate from the child template's own AST, which is a single parsed tree
+// reused across every concurrent render of the same compiled Template (see
+// Template.ast). Writing into any of that shared structure in place (whether
+// through a shared pointer's field or into a shared slice's spare capacity)
+// is a data race; building a fresh copy at every level the walk touches is
+// what keeps concurrent renders of the same template safe.
 //
 // Multiple overrides for the same block name are applied in declaration order.
 // A replace override resets the body; subsequent append/prepend overrides then
 // operate on that new body. This means a child can legitimately write both
 // "block prepend foo" and "block append foo" and get [prepend, parent, append].
-func (r *Runtime) applyBlockOverrides(nodes []Node, overrides map[string][]*BlockNode) {
+func (r *Runtime) applyBlockOverrides(nodes []Node, overrides map[string][]*BlockNode) []Node {
+	if len(nodes) == 0 {
+		return nodes
+	}
+	out := make([]Node, len(nodes))
 	for i, node := range nodes {
-		switch n := node.(type) {
-		case *BlockNode:
-			overrideList, ok := overrides[n.Name]
-			if !ok {
-				r.applyBlockOverrides(n.Body, overrides)
-				continue
-			}
+		out[i] = r.applyBlockOverridesNode(node, overrides)
+	}
+	return out
+}
+
+// applyBlockOverridesNode applies applyBlockOverrides's rewrite to a single
+// node, returning a (possibly new) node with any matching nested blocks
+// patched. Every node type the walk descends into is copied before any of
+// its fields are updated, so the original — potentially shared — node is
+// never written to. Node types that carry no nested body (or aren't part of
+// this walk, e.g. include/extends nodes) are returned unchanged.
+func (r *Runtime) applyBlockOverridesNode(node Node, overrides map[string][]*BlockNode) Node {
+	switch n := node.(type) {
+	case *BlockNode:
+		merged := *n
+		if overrideList, ok := overrides[n.Name]; ok {
 			for _, override := range overrideList {
 				switch override.Mode {
 				case BlockModeAppend:
-					n.Body = append(n.Body, override.Body...)
+					fresh := make([]Node, 0, len(merged.Body)+len(override.Body))
+					fresh = append(fresh, merged.Body...)
+					fresh = append(fresh, override.Body...)
+					merged.Body = fresh
 				case BlockModePrepend:
-					n.Body = append(override.Body, n.Body...)
+					fresh := make([]Node, 0, len(override.Body)+len(merged.Body))
+					fresh = append(fresh, override.Body...)
+					fresh = append(fresh, merged.Body...)
+					merged.Body = fresh
 				default: // BlockModeReplace
-					n.Body = override.Body
+					fresh := make([]Node, len(override.Body))
+					copy(fresh, override.Body)
+					merged.Body = fresh
 				}
 			}
-			nodes[i] = n
-			r.applyBlockOverrides(n.Body, overrides)
-
-		case *TagNode:
-			r.applyBlockOverrides(n.Children, overrides)
-		case *ConditionalNode:
-			r.applyBlockOverrides(n.Consequent, overrides)
-			r.applyBlockOverrides(n.Alternate, overrides)
-		case *EachNode:
-			r.applyBlockOverrides(n.Body, overrides)
-			r.applyBlockOverrides(n.EmptyBody, overrides)
-		case *WhileNode:
-			r.applyBlockOverrides(n.Body, overrides)
-		case *CaseNode:
-			for _, when := range n.Cases {
-				r.applyBlockOverrides(when.Body, overrides)
-			}
-			r.applyBlockOverrides(n.Default, overrides)
-		case *MixinDeclNode:
-			r.applyBlockOverrides(n.Body, overrides)
-		case *BlockExpansionNode:
-			r.applyBlockOverrides([]Node{n.Child}, overrides)
 		}
+		merged.Body = r.applyBlockOverrides(merged.Body, overrides)
+		return &merged
+
+	case *TagNode:
+		merged := *n
+		merged.Children = r.applyBlockOverrides(n.Children, overrides)
+		return &merged
+
+	case *ConditionalNode:
+		merged := *n
+		merged.Consequent = r.applyBlockOverrides(n.Consequent, overrides)
+		merged.Alternate = r.applyBlockOverrides(n.Alternate, overrides)
+		return &merged
+
+	case *EachNode:
+		merged := *n
+		merged.Body = r.applyBlockOverrides(n.Body, overrides)
+		merged.EmptyBody = r.applyBlockOverrides(n.EmptyBody, overrides)
+		return &merged
+
+	case *WhileNode:
+		merged := *n
+		merged.Body = r.applyBlockOverrides(n.Body, overrides)
+		return &merged
+
+	case *CaseNode:
+		merged := *n
+		if n.Cases != nil {
+			merged.Cases = make([]*WhenNode, len(n.Cases))
+			for i, when := range n.Cases {
+				w := *when
+				w.Body = r.applyBlockOverrides(when.Body, overrides)
+				merged.Cases[i] = &w
+			}
+		}
+		merged.Default = r.applyBlockOverrides(n.Default, overrides)
+		return &merged
+
+	case *MixinDeclNode:
+		merged := *n
+		merged.Body = r.applyBlockOverrides(n.Body, overrides)
+		return &merged
+
+	case *BlockExpansionNode:
+		merged := *n
+		merged.Child = r.applyBlockOverridesNode(n.Child, overrides)
+		return &merged
+
+	default:
+		return node
 	}
 }
 

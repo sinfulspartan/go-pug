@@ -44,8 +44,8 @@ func TestPrettyPreNestedInlineNamedTagChild(t *testing.T) {
 // "\n<pre>\n  <div><span>Hi</span></div></pre>" — the nested <div> still
 // gets its own indented leading newline (its own isInline classification is
 // untouched by the pre ancestor), but pre's closing tag gets none, even
-// though tagCanInline(pre) would otherwise say it needs one (its content is
-// not inline, since div is a block-named child).
+// though tagCanInlineChildren(pre's children) would otherwise say it needs
+// one (its content is not inline, since div is a block-named child).
 func TestPrettyPreNestedBlockPlusInline(t *testing.T) {
 	assertEqual(t, prettyRender(t, "pre\n  div\n    span Hi"), "\n<pre>\n  <div><span>Hi</span></div></pre>")
 }
