@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 // FilterFunc is the signature for a filter function that also receives the
@@ -58,7 +59,23 @@ func ClearCache() {
 type Template struct {
 	ast  *DocumentNode
 	opts *Options
+
+	// renderSizeHint records the byte length of the most recent successful
+	// render of this Template, used to pre-size the next render's output
+	// buffer (see Render). A *Template is shared and rendered concurrently
+	// (that's the whole point of compiledCache), so this MUST be accessed
+	// atomically. Zero means "no hint yet" — the first render falls back to
+	// defaultRenderBufCap. An approximate or momentarily stale value is
+	// harmless: it only ever affects reserved buffer capacity, never a single
+	// emitted byte.
+	renderSizeHint atomic.Uint64
 }
+
+// maxRenderBufCap bounds the buffer pre-size derived from renderSizeHint so
+// a pathological hint (or a hint corrupted by some future bug) can never
+// force an absurdly large upfront allocation. Real templates never approach
+// this; it exists purely as a defensive ceiling.
+const maxRenderBufCap = 1 << 26 // 64 MiB
 
 type Options struct {
 	Basedir string
@@ -160,16 +177,18 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 
 	if cached, ok := compiledCache.Load(abs); ok {
 		tpl := cached.(*Template)
-		// If caller supplied opts, return a shallow copy that merges them in
-		// so the cached AST is re-used but per-call options are honoured.
+		// If caller supplied opts, return a variant that reuses the cached
+		// AST but honours the per-call options. Built field-by-field (not a
+		// whole-struct copy) because Template embeds an atomic.Uint64, which
+		// must never be copied. The new Template starts with its own fresh
+		// renderSizeHint (zero) rather than inheriting the cached one, since
+		// different options can legitimately produce different-sized output.
 		if opts != nil {
-			merged := *tpl
 			// Preserve the entry-file path for top-level relative resolution;
 			// the caller's Options never carries it.
 			mergedOpts := *opts
 			mergedOpts.entryFile = abs
-			merged.opts = &mergedOpts
-			return &merged, nil
+			return &Template{ast: tpl.ast, opts: &mergedOpts}, nil
 		}
 		return tpl, nil
 	}
@@ -195,7 +214,8 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 		return nil, err
 	}
 
-	// Store with default opts so the cache-hit branch can return a safe shallow copy for callers with custom opts.
+	// Store with default opts so the cache-hit branch can return a Template
+	// with custom opts for callers that need them.
 	compiledCache.Store(abs, tpl)
 	return tpl, nil
 }
@@ -213,8 +233,27 @@ func (t *Template) Render(data map[string]any) (string, error) {
 		}
 	}
 
-	rt := NewRuntimeWithOptions(t.ast, data, t.opts)
-	return rt.Render()
+	// Pre-size the output buffer from the previous successful render's
+	// length: successive renders of the same compiled *Template with
+	// different data tend to produce similarly-sized output, so this
+	// collapses bytes.Buffer's growth-doubling reallocations to near zero
+	// after the first render. It never changes what gets written — Grow only
+	// reserves capacity — so output is byte-identical regardless of the hint.
+	presize := defaultRenderBufCap
+	if h := t.renderSizeHint.Load(); h > 0 {
+		hp := h + h/8
+		if hp > maxRenderBufCap || hp < h { // hp < h catches uint64 overflow
+			hp = maxRenderBufCap
+		}
+		presize = int(hp)
+	}
+
+	rt := newRuntimeWithBufCap(t.ast, data, t.opts, presize)
+	html, err := rt.Render()
+	if err == nil {
+		t.renderSizeHint.Store(uint64(len(html)))
+	}
+	return html, err
 }
 
 func (t *Template) RenderToWriter(w io.Writer, data map[string]any) error {

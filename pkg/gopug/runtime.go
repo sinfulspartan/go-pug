@@ -45,11 +45,28 @@ type Runtime struct {
 	wsSensitive      bool
 }
 
+// defaultRenderBufCap is the htmlBuf pre-size used whenever no better
+// estimate of the eventual output size is available (first render of a
+// *Template, NewRuntime/NewRuntimeWithOptions callers, composition
+// sub-renders).
+const defaultRenderBufCap = 1024
+
 func NewRuntime(ast *DocumentNode, data map[string]any) *Runtime {
 	return NewRuntimeWithOptions(ast, data, nil)
 }
 
+// NewRuntimeWithOptions constructs a Runtime ready to render ast against data
+// under opts. htmlBuf is pre-sized to defaultRenderBufCap; callers that know
+// a better size estimate up front (Template.Render, using the previous
+// render's length as a hint) use the unexported newRuntimeWithBufCap instead.
 func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options) *Runtime {
+	return newRuntimeWithBufCap(ast, data, opts, defaultRenderBufCap)
+}
+
+// newRuntimeWithBufCap is the internal constructor; bufCap seeds htmlBuf's
+// reserved capacity so a render whose output size is roughly known up front
+// avoids bytes.Buffer's growth-doubling reallocations.
+func newRuntimeWithBufCap(ast *DocumentNode, data map[string]any, opts *Options, bufCap int) *Runtime {
 	r := &Runtime{
 		ast:          ast,
 		data:         data,
@@ -69,10 +86,10 @@ func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options
 	// zero capacity, so bytes.Buffer's growth doubling (64, 128, 256, ...)
 	// costs several reallocations before it catches up. Grow only reserves
 	// capacity — it never writes any bytes — so this is a pure allocation
-	// optimization with no effect on rendered output. 1024 bytes covers the
+	// optimization with no effect on rendered output. bufCap covers the
 	// early doublings for realistic output while staying a modest, bounded
 	// one-time cost for a tiny render.
-	r.htmlBuf.Grow(1024)
+	r.htmlBuf.Grow(bufCap)
 	return r
 }
 
