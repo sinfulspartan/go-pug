@@ -63,7 +63,7 @@ go get github.com/sinfulspartan/go-pug@latest
 Or pin to a specific version:
 
 ```sh
-go get github.com/sinfulspartan/go-pug@v0.3.1
+go get github.com/sinfulspartan/go-pug@v0.4.2
 ```
 
 Import path: `github.com/sinfulspartan/go-pug/pkg/gopug`
@@ -71,7 +71,7 @@ Import path: `github.com/sinfulspartan/go-pug/pkg/gopug`
 The current version is also available at runtime via the `Version` constant:
 
 ```go
-fmt.Println(gopug.Version) // e.g. "v0.3.1"
+fmt.Println(gopug.Version) // e.g. "v0.4.2"
 ```
 
 ---
@@ -518,6 +518,30 @@ mixin list(...items)
 +list("a", "b", "c")
 ```
 
+**Collection arguments**
+
+A slice, map, or struct passed as a regular (non-rest) mixin argument keeps its type, so it can be iterated with `each` (or indexed, ranged, etc.) inside the mixin body, just like standard Pug.
+
+```pug
+mixin list(items)
+  ul
+    each item in items
+      li= item
+
++list(["Apples", "Bananas", "Cherries"])
+```
+
+This also works for a map argument, iterating both value and key:
+
+```pug
+mixin dict(m)
+  ul
+    each val, key in m
+      li= key + ": " + val
+
++dict({"a": "1", "b": "2"})
+```
+
 > ⚠️ **Mixin declarations must be at the top level** — `collectMixins` scans only top-level document nodes before rendering begins. A mixin declared inside an `if`, `each`, or any other block is never registered, so calls to it always fail — even when the enclosing condition evaluates to true at runtime.
 >
 > ```pug
@@ -777,7 +801,7 @@ html, err := gopug.RenderFile(path string, data map[string]any, opts *gopug.Opti
 gopug.ClearCache()
 
 // The current engine version (mirrors the latest git tag).
-gopug.Version // e.g. "v0.3.1"
+gopug.Version // e.g. "v0.4.2"
 ```
 
 > ⚠️ **`CompileFile` caches by path only** — the cache key is the absolute file path. If you call `CompileFile` with the same path but different `Options` (e.g. different `Globals` or `Filters`), the cached `*Template` from the first call is returned with the new options shallow-copied in, but the AST is shared. Call `ClearCache()` before a second compile of the same file if you need a fresh result under different options.
