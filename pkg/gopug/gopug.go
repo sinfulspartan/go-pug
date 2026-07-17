@@ -167,12 +167,15 @@ func Compile(src string, opts *Options) (*Template, error) {
 		return nil, err
 	}
 
-	// Compile buffered/unescaped expressions and mixin-call arguments into
-	// closures once, here, so renderCode/renderMixinCall never re-parse
-	// their strings on every render. These are one-time passes over the AST
-	// at compile time, not per render.
+	// Compile buffered/unescaped expressions into closures once, here, so
+	// renderCode never re-parses their strings on every render. Mixin-call
+	// arguments are deliberately NOT compiled into string closures here —
+	// renderMixinCall evaluates them through the type-preserving
+	// evaluateExprRaw path instead, so a slice/map/struct argument reaches
+	// the mixin body with its real Go type intact rather than being
+	// stringified up front. These are one-time passes over the AST at
+	// compile time, not per render.
 	compileExprs(ast.Children)
-	compileMixinArgs(ast.Children)
 	compileTagAttrs(ast.Children)
 
 	return &Template{

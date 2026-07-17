@@ -2338,18 +2338,17 @@ func (r *Runtime) evaluateCode(code *CodeNode) (string, error) {
 	return r.evaluateExpr(code.Expression)
 }
 
-// evaluateMixinArg returns the same string r.evaluateExpr(call.Arguments[i])
-// would, using the closure-compiled version of that argument when
-// classifyExpr found one at Compile time, and falling back to the string
-// interpreter otherwise. Mixin arguments are stringified today (never typed
-// values), so both paths return a string.
-func (r *Runtime) evaluateMixinArg(call *MixinCallNode, i int) (string, error) {
-	if call.compiledArgs != nil {
-		if fn := call.compiledArgs[i]; fn != nil {
-			return fn(r)
-		}
-	}
-	return r.evaluateExpr(call.Arguments[i])
+// evaluateMixinArg evaluates a mixin call's i-th argument through the
+// type-preserving evaluator, the same one `each`'s own collection expression
+// uses, so a slice/map/struct argument reaches the mixin's scope frame as
+// its real Go value rather than an eagerly stringified blob — matching
+// reference Pug's JS semantics, where passing a collection into a function
+// call never coerces it to a string. Scalar arguments (string/number/bool)
+// still resolve to the same value they always did; only their
+// stringification is now deferred to wherever the mixin body actually uses
+// them, rather than happening eagerly here.
+func (r *Runtime) evaluateMixinArg(call *MixinCallNode, i int) any {
+	return r.evaluateExprRaw(call.Arguments[i])
 }
 
 // unbufferedStmtKind classifies an unbuffered code statement's shape, as
@@ -3120,11 +3119,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
-			val, err := r.evaluateMixinArg(call, i)
-			if err != nil {
-				return err
-			}
-			scope[param] = val
+			scope[param] = r.evaluateMixinArg(call, i)
 		} else if decl.ParamDefaults != nil {
 			if defaultExpr, ok := decl.ParamDefaults[param]; ok {
 				val, err := r.evaluateExpr(defaultExpr)
@@ -3143,11 +3138,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	if decl.RestParamName != "" {
 		rest := make([]any, 0)
 		for i := len(decl.Parameters); i < len(call.Arguments); i++ {
-			val, err := r.evaluateMixinArg(call, i)
-			if err != nil {
-				return err
-			}
-			rest = append(rest, val)
+			rest = append(rest, r.evaluateMixinArg(call, i))
 		}
 		scope[decl.RestParamName] = rest
 	}

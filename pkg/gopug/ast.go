@@ -256,17 +256,6 @@ type MixinCallNode struct {
 	BlockContent []Node
 	Line         int
 	Col          int
-
-	// compiledArgs holds a closure-compiled version of Arguments[i] at the
-	// same index, for the argument shapes classifyExpr recognizes as safe to
-	// precompute at Compile time (see expr_compile.go). It is nil, or has a
-	// nil entry at index i, for any argument the classifier can't prove
-	// identical to the string interpreter, in which case renderMixinCall
-	// falls back to evaluateExpr for that argument. It is populated exactly
-	// once, by compileMixinArgs during Compile, before the AST is ever
-	// rendered, and is read-only afterward — so concurrent renders of the
-	// same compiled Template may read it safely without synchronization.
-	compiledArgs []compiledExpr
 }
 
 func (n *MixinCallNode) node() {}

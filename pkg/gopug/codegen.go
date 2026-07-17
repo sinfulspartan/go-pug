@@ -859,10 +859,12 @@ var (
 
 // reflectTypeStringSlice is the reflect.Type a mixin rest parameter
 // (`...items`) is pushed onto the generator's scope with — a Go `[]string`,
-// the element type Runtime.renderMixinCall's own rest-argument collection
-// always produces (each element is a string, via evaluateMixinArg), so the
-// existing slice-typed body machinery (genEach, `.length`, index, `.join`)
-// consumes it unchanged.
+// matching what genMixinRestArg always builds caller-side for a codegen'd
+// rest argument, so the existing slice-typed body machinery (genEach,
+// `.length`, index, `.join`) consumes it unchanged. This is a purely
+// codegen-side typing choice, independent of the interpreter's own
+// Runtime.renderMixinCall, whose rest-argument collection preserves each
+// argument's real evaluated type rather than always producing a string.
 var reflectTypeStringSlice = reflect.TypeOf([]string(nil))
 
 // reflectTypeStringMap is the reflect.Type a &attributes-forwarding mixin
@@ -5843,10 +5845,10 @@ func (g *generator) genMixinParamValue(call *MixinCallNode, decl *MixinDeclNode,
 // that can extract into a plain `:=` local before the call), a slice-literal
 // ELEMENT position cannot host that same two-value extraction inline, and
 // hoisting every element into its own local first is a distinct,
-// untested claim this increment does not make — Runtime.renderMixinCall's
-// own rest-collection loop returns the render error immediately on a
-// fallible element (r.evaluateMixinArg), so refusing to generate it at all
-// is fail-closed, not a bounded-agreement breach.
+// untested claim this increment does not make — codegen's own
+// genFallibleExtraction machinery has no equivalent for a slice-literal
+// element position, so refusing to generate it at all is fail-closed, not a
+// bounded-agreement breach.
 func (g *generator) genMixinRestArg(call *MixinCallNode, decl *MixinDeclNode) (string, error) {
 	n := len(decl.Parameters)
 	if len(call.Arguments) <= n {
