@@ -82,21 +82,24 @@ func NewRuntime(ast *DocumentNode, data map[string]any) *Runtime {
 }
 
 // NewRuntimeWithOptions constructs a Runtime ready to render ast against data
-// under opts. htmlBuf is pre-sized to defaultRenderBufCap; callers that know
-// a better size estimate up front (Template.Render, using the previous
-// render's length as a hint) use the unexported newRuntimeWithBufCap instead.
+// under opts. It allocates its own htmlBuf (pre-sized to defaultRenderBufCap)
+// and is never handed a pooled buffer — only Template.Render pools buffers,
+// via the unexported newRuntimeWithBufCap, which also lets it pass a better
+// size estimate up front (the previous render's length as a hint).
 func NewRuntimeWithOptions(ast *DocumentNode, data map[string]any, opts *Options) *Runtime {
-	return newRuntimeWithBufCap(ast, data, opts, defaultRenderBufCap)
+	return newRuntimeWithBufCap(ast, data, opts, &bytes.Buffer{}, defaultRenderBufCap)
 }
 
-// newRuntimeWithBufCap is the internal constructor; bufCap seeds htmlBuf's
-// reserved capacity so a render whose output size is roughly known up front
-// avoids bytes.Buffer's growth-doubling reallocations.
-func newRuntimeWithBufCap(ast *DocumentNode, data map[string]any, opts *Options, bufCap int) *Runtime {
+// newRuntimeWithBufCap is the internal constructor. buf becomes htmlBuf
+// directly — the caller must hand in a Reset (empty) buffer, since this
+// never clears it itself — and bufCap seeds its reserved capacity so a
+// render whose output size is roughly known up front avoids bytes.Buffer's
+// growth-doubling reallocations.
+func newRuntimeWithBufCap(ast *DocumentNode, data map[string]any, opts *Options, buf *bytes.Buffer, bufCap int) *Runtime {
 	r := &Runtime{
 		ast:          ast,
 		data:         data,
-		htmlBuf:      &bytes.Buffer{},
+		htmlBuf:      buf,
 		scopeStack:   make([]map[string]any, 1),
 		doctype:      "html",
 		opts:         opts,

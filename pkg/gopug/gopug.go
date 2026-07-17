@@ -1,6 +1,7 @@
 package gopug
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -76,6 +77,21 @@ type Template struct {
 // force an absurdly large upfront allocation. Real templates never approach
 // this; it exists purely as a defensive ceiling.
 const maxRenderBufCap = 1 << 26 // 64 MiB
+
+// renderBufPool recycles output buffers across Template.Render calls. A
+// bytes.Buffer holds no semantic state of its own — just an underlying byte
+// slice and a length — and Reset only sets the length back to zero without
+// touching the bytes beyond it. Since nothing ever reads past a buffer's
+// current length, a Reset buffer handed to a later, unrelated render can
+// never surface a previous render's bytes: there is no read path that could
+// observe them. This lets us reuse the buffer's backing array across renders
+// instead of allocating a fresh one every time.
+var renderBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// maxPooledBufCap bounds what Template.Render returns to renderBufPool, so
+// one unusually large render doesn't leave a big backing array pinned in the
+// pool indefinitely for every subsequent, typically much smaller render.
+const maxPooledBufCap = 1 << 20 // 1 MiB
 
 type Options struct {
 	Basedir string
@@ -248,7 +264,19 @@ func (t *Template) Render(data map[string]any) (string, error) {
 		presize = int(hp)
 	}
 
-	rt := newRuntimeWithBufCap(t.ast, data, t.opts, presize)
+	buf := renderBufPool.Get().(*bytes.Buffer)
+	defer func() {
+		// Reset before the cap check: len must go back to zero regardless of
+		// whether the backing array is small enough to keep. html was already
+		// produced by rt.Render() via htmlBuf.String() — an independent copy —
+		// so clearing/returning buf here can never affect the returned string.
+		buf.Reset()
+		if buf.Cap() <= maxPooledBufCap {
+			renderBufPool.Put(buf)
+		}
+	}()
+
+	rt := newRuntimeWithBufCap(t.ast, data, t.opts, buf, presize)
 	html, err := rt.Render()
 	if err == nil {
 		t.renderSizeHint.Store(uint64(len(html)))
