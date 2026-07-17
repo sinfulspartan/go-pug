@@ -43,6 +43,32 @@ type Runtime struct {
 	entryFile        string
 	prettyIndent     int
 	wsSensitive      bool
+	// scopePool is a free-list of scope frames (each/mixin-call maps) reused
+	// across a single render to avoid repeated map allocation. It is
+	// per-Runtime, so it is never shared across concurrent renders.
+	scopePool []map[string]any
+}
+
+// acquireScope returns an empty map[string]any for a new scope frame,
+// reusing one from the per-render free-list when available. The Runtime is
+// single-goroutine, so no synchronization is needed.
+func (r *Runtime) acquireScope() map[string]any {
+	n := len(r.scopePool)
+	if n == 0 {
+		return make(map[string]any)
+	}
+	m := r.scopePool[n-1]
+	r.scopePool = r.scopePool[:n-1]
+	return m
+}
+
+// releaseScope clears a scope frame and returns it to the free-list for a
+// later frame to reuse. It must be called only on a map acquireScope
+// produced, after that map has been popped off scopeStack (never on r.data,
+// scopeStack[0], or the shared mixinScopeBoundary sentinel).
+func (r *Runtime) releaseScope(m map[string]any) {
+	clear(m)
+	r.scopePool = append(r.scopePool, m)
 }
 
 // defaultRenderBufCap is the htmlBuf pre-size used whenever no better
@@ -2585,7 +2611,7 @@ func (r *Runtime) renderEach(each *EachNode) error {
 				return nil
 			}
 			for _, mapKey := range v.MapKeys() {
-				scope := make(map[string]any)
+				scope := r.acquireScope()
 				scope[each.ItemVar] = v.MapIndex(mapKey).Interface()
 				if each.IndexVar != "" {
 					scope[each.IndexVar] = fmt.Sprintf("%v", mapKey.Interface())
@@ -2594,10 +2620,12 @@ func (r *Runtime) renderEach(each *EachNode) error {
 				for _, node := range each.Body {
 					if err := r.renderNode(node); err != nil {
 						r.scopeStack = r.scopeStack[:len(r.scopeStack)-1]
+						r.releaseScope(scope)
 						return err
 					}
 				}
 				r.scopeStack = r.scopeStack[:len(r.scopeStack)-1]
+				r.releaseScope(scope)
 			}
 			return nil
 		}
@@ -2615,7 +2643,7 @@ func (r *Runtime) renderEach(each *EachNode) error {
 	}
 
 	for i, item := range items {
-		scope := make(map[string]any)
+		scope := r.acquireScope()
 		scope[each.ItemVar] = item
 		if each.IndexVar != "" {
 			scope[each.IndexVar] = strconv.Itoa(i)
@@ -2624,10 +2652,12 @@ func (r *Runtime) renderEach(each *EachNode) error {
 		for _, node := range each.Body {
 			if err := r.renderNode(node); err != nil {
 				r.scopeStack = r.scopeStack[:len(r.scopeStack)-1]
+				r.releaseScope(scope)
 				return err
 			}
 		}
 		r.scopeStack = r.scopeStack[:len(r.scopeStack)-1]
+		r.releaseScope(scope)
 	}
 
 	return nil
@@ -3083,11 +3113,7 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 		return fmt.Errorf("mixin %q is not defined", call.Name)
 	}
 
-	scopeSize := len(decl.Parameters) + 1
-	if decl.RestParamName != "" {
-		scopeSize++
-	}
-	scope := make(map[string]any, scopeSize)
+	scope := r.acquireScope()
 
 	for i, param := range decl.Parameters {
 		if i < len(call.Arguments) {
@@ -3162,12 +3188,18 @@ func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
 	for _, node := range decl.Body {
 		if err := r.renderNode(node); err != nil {
 			r.scopeStack = r.scopeStack[:len(r.scopeStack)-2]
+			// mixinScopeBoundary is a shared package-level sentinel, not
+			// something acquireScope produced, so it is never released here.
+			r.releaseScope(scope)
 			r.inMixin = prevInMixin
 			r.callerBlock = prevBlock
 			return err
 		}
 	}
 	r.scopeStack = r.scopeStack[:len(r.scopeStack)-2]
+	// mixinScopeBoundary is a shared package-level sentinel, not something
+	// acquireScope produced, so it is never released here.
+	r.releaseScope(scope)
 	r.inMixin = prevInMixin
 	r.callerBlock = prevBlock
 	return nil
