@@ -18,36 +18,44 @@ Three engines, same four templates as the main corpus (`card_list`, `table`,
 
 ## The headline, honestly
 
-**go-pug codegen is 2.5–6.5x faster than Joker's compiled path. go-pug's interpreter is 3–3.6x *slower* than Joker on three of the four templates, and only ~1.4x slower on `blog`.** The win here is codegen, not the interpreter — do not read this page as "go-pug beats Joker"; read it as "go-pug's ahead-of-time-compiled path beats Joker's ahead-of-time-compiled path, and go-pug's default interpreted path does not."
+**go-pug codegen is 2.5–6.8x faster than Joker's compiled path. go-pug's interpreter is 1.2–3.3x *slower* than Joker on all four templates.** That interpreter gap narrowed this release (it was 3–3.6x on three templates and ~1.4x on `blog` previously) thanks to buffer/scope pooling and a mixin-argument fix landed since the last measurement here — but the interpreter is still slower than Joker on every template. The win here is codegen, not the interpreter — do not read this page as "go-pug beats Joker"; read it as "go-pug's ahead-of-time-compiled path beats Joker's ahead-of-time-compiled path, and go-pug's default interpreted path does not."
 
-![go-pug vs Joker/jade render throughput: grouped bar chart, log scale, comparing go-pug interpreter (blue), go-pug codegen (green), and Joker/jade precompiled (purple) across card_list, table, form, and blog — go-pug codegen leads every template, while the go-pug interpreter trails Joker on all four templates, by roughly 3x on most and ~1.4x on blog](chart.svg)
+![go-pug vs Joker/jade render throughput: grouped bar chart, log scale, comparing go-pug interpreter (blue), go-pug codegen (green), and Joker/jade precompiled (purple) across card_list, table, form, and blog — go-pug codegen leads every template, while the go-pug interpreter trails Joker on all four templates, by roughly 3x on most and ~1.2x on blog](chart.svg)
 
 Renders/second (higher is better), representative run (see [Reproduce](#reproduce) — five runs were taken, run-to-run spread was ~2–8%, no outliers). The chart above and the table below are both generated from `results.json`, so they cannot drift apart:
 
 | Template | go-pug interpreter | go-pug codegen | Joker/jade | codegen vs Joker | interpreter vs Joker |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `card_list` | 36,427 | 622,523 | 131,430 | 4.7x faster | 3.6x slower |
-| `table` | 35,953 | 358,465 | 107,737 | 3.3x faster | 3.0x slower |
-| `form` | 107,329 | 882,807 | 349,561 | 2.5x faster | 3.3x slower |
-| `blog` | 136,850 | 1,290,249 | 197,513 | 6.5x faster | 1.4x slower |
+| `card_list` | 39,997 | 626,154 | 132,591 | 4.7x faster | 3.3x slower |
+| `table` | 37,897 | 376,570 | 109,302 | 3.4x faster | 2.9x slower |
+| `form` | 113,931 | 875,692 | 347,838 | 2.5x faster | 3.1x slower |
+| `blog` | 163,541 | 1,356,555 | 200,907 | 6.8x faster | 1.2x slower |
 
 Allocations per render (lower is better) — this is the mechanism behind codegen's win, see [Mechanism](#mechanism):
 
 | Template | go-pug interpreter | go-pug codegen | Joker/jade |
 | --- | ---: | ---: | ---: |
-| `card_list` | 115 | 6 | 32 |
-| `table` | 119 | 26 | 62 |
-| `form` | 27 | 2 | 31 |
-| `blog` | 21 | 1 | 20 |
+| `card_list` | 94 | 6 | 32 |
+| `table` | 89 | 26 | 62 |
+| `form` | 11 | 2 | 31 |
+| `blog` | 9 | 1 | 20 |
+
+The interpreter's allocation count dropped sharply this release (it was
+115/119/27/21 previously), and on two of the four templates it has now
+crossed below Joker's: on `form` the interpreter allocates 11 times per
+render against Joker's 31, and on `blog` 9 against Joker's 20 — even though
+Joker still renders faster on both. Allocation count alone doesn't decide
+wall-clock speed; Joker's remaining edge on those two templates comes from
+elsewhere (dispatch and escaping cost, not allocation volume).
 
 ns/op (lower is better), representative run:
 
 | Template | go-pug interpreter | go-pug codegen | Joker/jade |
 | --- | ---: | ---: | ---: |
-| `card_list` | 27,452.3 | 1,606.4 | 7,608.6 |
-| `table` | 27,814.2 | 2,789.7 | 9,281.9 |
-| `form` | 9,317.2 | 1,132.8 | 2,860.7 |
-| `blog` | 7,307.3 | 775.0 | 5,063.0 |
+| `card_list` | 25,001.8 | 1,597.1 | 7,542.0 |
+| `table` | 26,387.2 | 2,655.5 | 9,148.9 |
+| `form` | 8,777.3 | 1,142.0 | 2,874.9 |
+| `blog` | 6,114.7 | 737.2 | 4,977.4 |
 
 Machine: AMD Ryzen 9 5900HX, Windows/amd64, go1.26.0, GOMAXPROCS=16, Joker/jade v1.1.3.
 
