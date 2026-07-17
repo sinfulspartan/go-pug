@@ -61,6 +61,14 @@ type Template struct {
 	ast  *DocumentNode
 	opts *Options
 
+	// topMixins is the template's top-level mixin declarations, computed once
+	// when the Template is minted (see collectTopLevelMixins) and never
+	// written to afterward. Template.Render hands it to the Runtime as
+	// baseMixins, shared read-only across every concurrent render of this
+	// Template exactly like ast already is — this avoids rebuilding the same
+	// map on every single render.
+	topMixins map[string]*MixinDeclNode
+
 	// renderSizeHint records the byte length of the most recent successful
 	// render of this Template, used to pre-size the next render's output
 	// buffer (see Render). A *Template is shared and rendered concurrently
@@ -179,9 +187,29 @@ func Compile(src string, opts *Options) (*Template, error) {
 	compileTagAttrs(ast.Children)
 
 	return &Template{
-		ast:  ast,
-		opts: opts,
+		ast:       ast,
+		opts:      opts,
+		topMixins: collectTopLevelMixins(ast),
 	}, nil
+}
+
+// collectTopLevelMixins walks ast's top-level nodes and returns a map of
+// mixin name to declaration for every *MixinDeclNode found directly in
+// ast.Children, or nil if there are none. It is the compile-time,
+// side-effect-free counterpart of Runtime.collectMixins: called exactly once
+// per Template mint (never per render), its result is shared read-only
+// across every subsequent render of that Template.
+func collectTopLevelMixins(ast *DocumentNode) map[string]*MixinDeclNode {
+	var mixins map[string]*MixinDeclNode
+	for _, node := range ast.Children {
+		if m, ok := node.(*MixinDeclNode); ok {
+			if mixins == nil {
+				mixins = make(map[string]*MixinDeclNode)
+			}
+			mixins[m.Name] = m
+		}
+	}
+	return mixins
 }
 
 // CompileFile reads a .pug file and compiles it into a Template.
@@ -207,7 +235,9 @@ func CompileFile(path string, opts *Options) (*Template, error) {
 			// the caller's Options never carries it.
 			mergedOpts := *opts
 			mergedOpts.entryFile = abs
-			return &Template{ast: tpl.ast, opts: &mergedOpts}, nil
+			// Share tpl.topMixins as-is (same ast, so the same already-computed
+			// read-only map applies) rather than recomputing it.
+			return &Template{ast: tpl.ast, opts: &mergedOpts, topMixins: tpl.topMixins}, nil
 		}
 		return tpl, nil
 	}
@@ -280,6 +310,11 @@ func (t *Template) Render(data map[string]any) (string, error) {
 	}()
 
 	rt := newRuntimeWithBufCap(t.ast, data, t.opts, buf, presize)
+	// t.topMixins is written once at Template mint and never mutated
+	// afterward, so handing it to rt as a shared read-only base is safe even
+	// though many goroutines may be rendering this same Template concurrently.
+	rt.baseMixins = t.topMixins
+	rt.topMixinsSeeded = true
 	html, err := rt.Render()
 	if err == nil {
 		t.renderSizeHint.Store(uint64(len(html)))

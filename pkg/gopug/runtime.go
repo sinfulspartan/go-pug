@@ -29,11 +29,26 @@ type Runtime struct {
 	htmlBuf    *bytes.Buffer
 	scopeStack []map[string]any
 	doctype    string
-	// mixinDecls is left nil until the first mixin declaration is collected
-	// (collectMixins / renderExtends), since most documents declare no mixins
-	// at all. A nil map reads as empty (zero value, ok=false) everywhere it is
-	// consulted, so renderMixinCall's undefined-mixin error path is unchanged.
-	mixinDecls       map[string]*MixinDeclNode
+	// mixinDecls is the per-render overlay of mixin declarations collected at
+	// render time (extends/include), left nil until the first one is
+	// collected since most documents declare no mixins at all beyond their
+	// own top level. A nil map reads as empty (zero value, ok=false)
+	// everywhere it is consulted, so renderMixinCall's undefined-mixin error
+	// path is unchanged. See baseMixins for the template's own top-level
+	// mixins, which this overlay shadows on a name conflict.
+	mixinDecls map[string]*MixinDeclNode
+	// baseMixins is the template's top-level mixin declarations, shared
+	// read-only across every concurrent render of the same *Template (set by
+	// Template.Render from its precomputed Template.topMixins) and never
+	// written to by the Runtime. Direct NewRuntime/NewRuntimeWithOptions
+	// callers leave it nil; topMixinsSeeded being false in that case makes
+	// Render collect top-level mixins into the mixinDecls overlay instead, so
+	// their behavior is unchanged.
+	baseMixins map[string]*MixinDeclNode
+	// topMixinsSeeded is true only when baseMixins was already populated by
+	// the caller (Template.Render) before Render runs, so Render skips its
+	// own redundant top-level mixin collection.
+	topMixinsSeeded  bool
 	callerBlock      []Node
 	inMixin          bool
 	inRawTextElement bool
@@ -286,7 +301,9 @@ func textRunSpansMultipleLines(run *TextRunNode) bool {
 func (r *Runtime) Render() (string, error) {
 	r.scopeStack[0] = r.data
 
-	r.collectMixins(r.ast.Children)
+	if !r.topMixinsSeeded {
+		r.collectMixins(r.ast.Children)
+	}
 
 	if r.findExtendsNode(r.ast.Children) != nil {
 		return r.renderExtends()
@@ -3110,7 +3127,14 @@ func (r *Runtime) renderTextRun(run *TextRunNode) error {
 }
 
 func (r *Runtime) renderMixinCall(call *MixinCallNode) error {
+	// The overlay (render-time include/extends mixins) is checked first, then
+	// the shared top-level base — reproducing the pre-overlay-split behavior
+	// where top-level mixins were collected first and any later
+	// extends/include collection overwrote same-named entries on conflict.
 	decl, ok := r.mixinDecls[call.Name]
+	if !ok {
+		decl, ok = r.baseMixins[call.Name]
+	}
 	if !ok {
 		return fmt.Errorf("mixin %q is not defined", call.Name)
 	}
