@@ -1675,14 +1675,62 @@ func WriteSpreadAttrsAny(w io.Writer, base map[string]*AttributeValue, spread ma
 	return writeSpreadAttrsCore(w, base, stringified)
 }
 
+// mergedAttr is writeSpreadAttrsCore's own merged-map value type: a plain
+// value/bare pair that lives inline in the map's buckets instead of behind a
+// pointer, so merging a spread entry (or copying a base entry into the
+// merged map) never heap-allocates a separate *AttributeValue the way the
+// merge used to. base itself keeps the *AttributeValue param type codegen
+// generates calls against; only this function's internal merged map uses
+// the value type.
+type mergedAttr struct {
+	value string
+	bare  bool
+}
+
+// sortMergedAttrNames orders mergedAttr map keys with the exact same
+// id-first, class-second, alphabetical-rest three-tier rule sortAttrNames
+// applies to a map[string]*AttributeValue. It is a separate, deliberately
+// duplicated implementation — not a call to sortAttrNames itself — because
+// writeSpreadAttrsCore's merged map is a map[string]mergedAttr, not a
+// map[string]*AttributeValue; sortAttrNames remains the single source of
+// truth for this ordering, so any future change to that three-tier rule
+// must be mirrored here.
+func sortMergedAttrNames(attrs map[string]mergedAttr) []string {
+	names := make([]string, 0, len(attrs))
+	for k := range attrs {
+		names = append(names, k)
+	}
+	order := func(n string) int {
+		switch n {
+		case "id":
+			return 0
+		case "class":
+			return 1
+		default:
+			return 2
+		}
+	}
+	slices.SortFunc(names, func(a, b string) int {
+		oa, ob := order(a), order(b)
+		if oa != ob {
+			if oa < ob {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+	return names
+}
+
 // writeSpreadAttrsCore is the shared merge/sort/escape implementation both
 // WriteSpreadAttrs and WriteSpreadAttrsAny delegate to once their spread
 // values are already plain strings; see WriteSpreadAttrs's own doc comment
 // for the merge rule this reproduces.
 func writeSpreadAttrsCore(w io.Writer, base map[string]*AttributeValue, spread map[string]string) error {
-	merged := make(map[string]*AttributeValue, len(base)+len(spread))
+	merged := make(map[string]mergedAttr, len(base)+len(spread))
 	for k, v := range base {
-		merged[k] = v
+		merged[k] = mergedAttr{value: v.Value, bare: v.IsBare}
 	}
 
 	for attrKey, valStr := range spread {
@@ -1690,30 +1738,39 @@ func writeSpreadAttrsCore(w io.Writer, base map[string]*AttributeValue, spread m
 		case "class":
 			existingVal := ""
 			if existing, ok := merged["class"]; ok {
-				existingVal = existing.Value
+				existingVal = existing.value
 			}
-			merged["class"] = &AttributeValue{Value: mergeSpreadClass(existingVal, valStr)}
+			merged["class"] = mergedAttr{value: mergeSpreadClass(existingVal, valStr)}
 		default:
 			switch valStr {
 			case "true":
-				merged[attrKey] = &AttributeValue{IsBare: true}
+				merged[attrKey] = mergedAttr{bare: true}
 			case "false":
 				delete(merged, attrKey)
 			default:
-				merged[attrKey] = &AttributeValue{Value: valStr}
+				merged[attrKey] = mergedAttr{value: valStr}
 			}
 		}
 	}
 
-	for _, name := range sortAttrNames(merged) {
+	for _, name := range sortMergedAttrNames(merged) {
 		val := merged[name]
-		if val.IsBare {
-			if _, err := io.WriteString(w, " "+name); err != nil {
-				return err
-			}
+		if _, err := io.WriteString(w, " "); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, name); err != nil {
+			return err
+		}
+		if val.bare {
 			continue
 		}
-		if _, err := io.WriteString(w, " "+name+`="`+EscapeAttr(val.Value)+`"`); err != nil {
+		if _, err := io.WriteString(w, `="`); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, EscapeAttr(val.value)); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, `"`); err != nil {
 			return err
 		}
 	}
