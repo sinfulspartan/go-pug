@@ -313,9 +313,14 @@ func TestCodegenUnescapedAttrStaticNilRootType(t *testing.T) {
 }
 
 // TestCodegenUnescapedOnlyAttributeImportGating proves a tag using ONLY an
-// unescaped dynamic attribute (no other node needing the "gopug" import)
-// still compiles: the unescaped attribute write never calls gopug.EscapeAttr,
-// so it alone must not force the import.
+// unescaped dynamic attribute never calls gopug.EscapeAttr — the unescaped
+// path drops the escape wrapper entirely, exactly as
+// TestCodegenUnescapedAttrDiscriminatingStatic proves for its static
+// counterpart. The generated function still imports "gopug", but only for
+// gopug.StringWriter, which every generated function with a direct write
+// derives once at entry (see swPrefix) — a distinct reason from EscapeAttr,
+// so this asserts the absence of the EscapeAttr call specifically rather
+// than the absence of the import as a whole.
 func TestCodegenUnescapedOnlyAttributeImportGating(t *testing.T) {
 	t.Parallel()
 	src := "div(data-x!= Name)\n"
@@ -333,8 +338,8 @@ func TestCodegenUnescapedOnlyAttributeImportGating(t *testing.T) {
 		t.Fatalf("GenerateGo(%q): %v", src, err)
 	}
 
-	if strings.Contains(string(generated), `"github.com/sinfulspartan/go-pug/pkg/gopug"`) {
-		t.Errorf("GenerateGo(%q) imports \"gopug\" even though the template's only attribute is unescaped:\n%s", src, generated)
+	if strings.Contains(string(generated), "gopug.EscapeAttr(") {
+		t.Errorf("GenerateGo(%q) calls gopug.EscapeAttr even though the template's only attribute is unescaped:\n%s", src, generated)
 	}
 
 	tmpl, err := Compile(src, nil)

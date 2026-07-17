@@ -1595,6 +1595,30 @@ func JoinClasses(classes ...string) string {
 	return strings.Join(kept, " ")
 }
 
+// StringWriter returns w as an io.StringWriter, using w directly when it
+// already implements the interface (the overwhelmingly common case —
+// *bytes.Buffer, *strings.Builder, *bufio.Writer, http.ResponseWriter,
+// *os.File, net.Conn all do) and wrapping it otherwise. A generated render
+// function derives it once at entry so each subsequent write is a single
+// interface call instead of io.WriteString's own per-call type assertion.
+func StringWriter(w io.Writer) io.StringWriter {
+	if sw, ok := w.(io.StringWriter); ok {
+		return sw
+	}
+	return stringWriterWrapper{w}
+}
+
+// stringWriterWrapper adapts an io.Writer that does not itself implement
+// io.StringWriter, reproducing io.WriteString's own fallback (a single
+// []byte(str) conversion, then Write) so StringWriter's non-allocating fast
+// path and this fallback path together behave identically to calling
+// io.WriteString(w, str) directly.
+type stringWriterWrapper struct{ w io.Writer }
+
+func (s stringWriterWrapper) WriteString(str string) (int, error) {
+	return s.w.Write([]byte(str))
+}
+
 // WriteSpreadAttrs renders a tag's attribute list for a `&attributes(<expr>)`
 // spread whose source is only known at RUNTIME — a map[string]string value
 // (a struct field or scope variable) whose keys the codegen backend cannot

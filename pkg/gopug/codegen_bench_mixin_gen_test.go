@@ -11,7 +11,8 @@ func RenderBenchMixin(w io.Writer, d BenchMixinData) error {
 		__marg0_0 := item.Title
 		__marg0_1 := item.Kind
 		if err := pugMixin_card(w, __marg0_0, __marg0_1, func(w io.Writer) error {
-			io.WriteString(w, "<p>Standard item footer</p>")
+			sw := gopug.StringWriter(w)
+			sw.WriteString("<p>Standard item footer</p>")
 			return nil
 		}); err != nil {
 			return err
@@ -21,16 +22,17 @@ func RenderBenchMixin(w io.Writer, d BenchMixinData) error {
 }
 
 func pugMixin_card(w io.Writer, arg1 string, arg2 string, pugBlock func(io.Writer) error) error {
-	io.WriteString(w, "<div class=\"card\" data-kind=\"")
-	io.WriteString(w, gopug.EscapeAttr(arg2))
-	io.WriteString(w, "\"><h3>")
-	io.WriteString(w, gopug.EscapeHTML(arg1))
-	io.WriteString(w, "</h3>")
+	sw := gopug.StringWriter(w)
+	sw.WriteString("<div class=\"card\" data-kind=\"")
+	sw.WriteString(gopug.EscapeAttr(arg2))
+	sw.WriteString("\"><h3>")
+	sw.WriteString(gopug.EscapeHTML(arg1))
+	sw.WriteString("</h3>")
 	if pugBlock != nil {
 		if err := pugBlock(w); err != nil {
 			return err
 		}
 	}
-	io.WriteString(w, "</div>")
+	sw.WriteString("</div>")
 	return nil
 }

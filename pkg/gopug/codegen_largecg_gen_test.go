@@ -7,33 +7,34 @@ import (
 )
 
 func RenderLargeCG(w io.Writer, d LargeCGData) error {
-	io.WriteString(w, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>")
-	io.WriteString(w, gopug.EscapeHTML(d.PageTitle))
-	io.WriteString(w, "</title></head><body><header><nav><a href=\"/\">Home</a><a href=\"/about\">About</a></nav></header><main><h1>")
-	io.WriteString(w, gopug.EscapeHTML(d.Heading))
-	io.WriteString(w, "</h1><p>")
-	io.WriteString(w, gopug.EscapeHTML(d.Intro))
-	io.WriteString(w, "</p><ul class=\"items\">")
+	sw := gopug.StringWriter(w)
+	sw.WriteString("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>")
+	sw.WriteString(gopug.EscapeHTML(d.PageTitle))
+	sw.WriteString("</title></head><body><header><nav><a href=\"/\">Home</a><a href=\"/about\">About</a></nav></header><main><h1>")
+	sw.WriteString(gopug.EscapeHTML(d.Heading))
+	sw.WriteString("</h1><p>")
+	sw.WriteString(gopug.EscapeHTML(d.Intro))
+	sw.WriteString("</p><ul class=\"items\">")
 	for _, product := range d.Products {
 		_ = product
-		io.WriteString(w, "<li class=\"item\" data-id=\"")
-		io.WriteString(w, gopug.EscapeAttr(strconv.Itoa(product.ID)))
-		io.WriteString(w, "\"><span class=\"name\">")
-		io.WriteString(w, gopug.EscapeHTML(product.Name))
-		io.WriteString(w, "</span><span class=\"price\">")
-		io.WriteString(w, gopug.EscapeHTML(product.Price))
-		io.WriteString(w, "</span>")
+		sw.WriteString("<li class=\"item\" data-id=\"")
+		sw.WriteString(gopug.EscapeAttr(strconv.Itoa(product.ID)))
+		sw.WriteString("\"><span class=\"name\">")
+		sw.WriteString(gopug.EscapeHTML(product.Name))
+		sw.WriteString("</span><span class=\"price\">")
+		sw.WriteString(gopug.EscapeHTML(product.Price))
+		sw.WriteString("</span>")
 		if product.OnSale {
-			io.WriteString(w, "<span class=\"badge\">Sale</span>")
+			sw.WriteString("<span class=\"badge\">Sale</span>")
 		}
-		io.WriteString(w, "</li>")
+		sw.WriteString("</li>")
 	}
-	io.WriteString(w, "</ul>")
+	sw.WriteString("</ul>")
 	if d.ShowFootnote {
-		io.WriteString(w, "<p class=\"footnote\">")
-		io.WriteString(w, gopug.EscapeHTML(d.Footnote))
-		io.WriteString(w, "</p>")
+		sw.WriteString("<p class=\"footnote\">")
+		sw.WriteString(gopug.EscapeHTML(d.Footnote))
+		sw.WriteString("</p>")
 	}
-	io.WriteString(w, "</main><footer><p>Go-Pug</p></footer></body></html>")
+	sw.WriteString("</main><footer><p>Go-Pug</p></footer></body></html>")
 	return nil
 }

@@ -6,20 +6,21 @@ import (
 )
 
 func RenderMedium(w io.Writer, d MediumData) error {
-	io.WriteString(w, "<div id=\"")
-	io.WriteString(w, gopug.EscapeAttr(d.CardId))
-	io.WriteString(w, "\" class=\"card\"><h2>")
-	io.WriteString(w, gopug.EscapeHTML(d.Title))
-	io.WriteString(w, "</h2><p>")
-	io.WriteString(w, gopug.EscapeHTML(d.Description))
-	io.WriteString(w, "</p>")
+	sw := gopug.StringWriter(w)
+	sw.WriteString("<div id=\"")
+	sw.WriteString(gopug.EscapeAttr(d.CardId))
+	sw.WriteString("\" class=\"card\"><h2>")
+	sw.WriteString(gopug.EscapeHTML(d.Title))
+	sw.WriteString("</h2><p>")
+	sw.WriteString(gopug.EscapeHTML(d.Description))
+	sw.WriteString("</p>")
 	if gopug.Truthy(d.Badge) {
-		io.WriteString(w, "<span class=\"badge\">")
-		io.WriteString(w, gopug.EscapeHTML(d.Badge))
-		io.WriteString(w, "</span>")
+		sw.WriteString("<span class=\"badge\">")
+		sw.WriteString(gopug.EscapeHTML(d.Badge))
+		sw.WriteString("</span>")
 	}
-	io.WriteString(w, "<a href=\"")
-	io.WriteString(w, gopug.EscapeAttr(d.Url))
-	io.WriteString(w, "\">Read more</a></div>")
+	sw.WriteString("<a href=\"")
+	sw.WriteString(gopug.EscapeAttr(d.Url))
+	sw.WriteString("\">Read more</a></div>")
 	return nil
 }

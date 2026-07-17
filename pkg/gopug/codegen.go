@@ -233,12 +233,16 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 		}
 	}
 
+	g.usesSW = false
 	for _, child := range ast.Children {
 		if err := g.genNode(child); err != nil {
 			return nil, err
 		}
 	}
 	g.flushStatic()
+
+	topBody := g.body.String()
+	topSWPrefix := g.swPrefix()
 
 	var src strings.Builder
 	fmt.Fprintf(&src, "package %s\n\n", cfg.PackageName)
@@ -264,7 +268,8 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 	}
 	src.WriteString(")\n\n")
 	fmt.Fprintf(&src, "func %s(w io.Writer, d %s) error {\n", cfg.FuncName, cfg.DataType)
-	src.WriteString(g.body.String())
+	src.WriteString(topSWPrefix)
+	src.WriteString(topBody)
 	src.WriteString("\treturn nil\n}\n")
 
 	for _, fnSrc := range mixinFuncsSrc {
@@ -282,7 +287,7 @@ func GenerateGo(ast *DocumentNode, cfg Config) ([]byte, error) {
 // generator walks a *DocumentNode's children and accumulates the Go source
 // of a render function's body. Static output (literal HTML the template
 // contributes regardless of data) is buffered in static and flushed into a
-// single io.WriteString call whenever a dynamic construct (an interpolation,
+// single sw.WriteString call whenever a dynamic construct (an interpolation,
 // each, or if) needs to emit code in between, so adjacent literal chunks
 // don't turn into a write call per AST node.
 type generator struct {
@@ -439,6 +444,26 @@ type generator struct {
 	// (no HTML-entity escaping) instead of through the normal escaped path.
 	// Consumed only by genBlockText this slice.
 	inRawTextElement bool
+	// usesSW is true once the CURRENT function/closure scope being generated
+	// has emitted at least one direct sw.WriteString call into g.body (see
+	// flushStatic, writeExprWrite, and the boolean-attribute write sites in
+	// genAttributes, the only places that ever do) — the signal swPrefix
+	// consults to decide whether that scope's assembled body needs its own
+	// `sw := gopug.StringWriter(w)` declaration prepended. It is deliberately
+	// NOT read by scanning the assembled body text for "sw.WriteString(":
+	// genMixinCall embeds a whole closure literal's SOURCE TEXT — including
+	// that closure's own already-resolved sw declaration and writes — inline
+	// into the ENCLOSING scope's body, so a text scan of the enclosing body
+	// would see the closure's writes too and wrongly conclude the enclosing
+	// function needs its own sw, which Go then rejects as an unused variable
+	// the moment the enclosing function has no direct write of its own.
+	// GenerateGo, genMixinFunc, and genMixinBlockClosure each save this field,
+	// reset it to false before generating their own scope's body, read it
+	// once that body is fully assembled, and restore the saved value — the
+	// same save/reset/restore discipline g.body itself follows in
+	// genMixinBlockClosure — so a nested closure's writes are correctly
+	// invisible to the scope that embeds it.
+	usesSW bool
 }
 
 // nextTmp returns a fresh, monotonically increasing index for naming a
@@ -895,25 +920,47 @@ func (g *generator) writeStatic(s string) {
 	g.static.WriteString(s)
 }
 
+// swPrefix returns the `sw := gopug.StringWriter(w)\n` declaration to
+// prepend to a generated function/closure body, or "" when that scope
+// performed no direct write of its own — decided by g.usesSW (see its own
+// doc comment for why this must be a flag the generator sets as it goes,
+// not a scan of the assembled body text). A function whose body only
+// delegates to a mixin call, a spread-attrs call, or a block closure (each of
+// those take `w`, never `sw`, and derive their own `sw` at their own entry)
+// leaves g.usesSW false, so it correctly gets no declaration — this matters
+// because Go rejects an unused local variable as a compile error: declaring
+// `sw` in a write-less function would fail to build. The declaration also
+// pulls in the "gopug" import (gopug.StringWriter lives in this package), so
+// this flags g.needsGopug whenever it returns a non-empty prefix.
+func (g *generator) swPrefix() string {
+	if !g.usesSW {
+		return ""
+	}
+	g.needsGopug = true
+	return "sw := gopug.StringWriter(w)\n"
+}
+
 // flushStatic emits the pending static chunk (if any) as a single
-// io.WriteString call and resets the buffer.
+// sw.WriteString call and resets the buffer.
 func (g *generator) flushStatic() {
 	if g.static.Len() == 0 {
 		return
 	}
-	g.body.WriteString("io.WriteString(w, ")
+	g.body.WriteString("sw.WriteString(")
 	g.body.WriteString(strconv.Quote(g.static.String()))
 	g.body.WriteString(")\n")
 	g.static.Reset()
+	g.usesSW = true
 }
 
 // writeExprWrite flushes any pending static text, then emits a write of a
 // dynamic Go expression (already valid Go source, e.g. "gopug.EscapeHTML(d.Name)").
 func (g *generator) writeExprWrite(goExpr string) {
 	g.flushStatic()
-	g.body.WriteString("io.WriteString(w, ")
+	g.body.WriteString("sw.WriteString(")
 	g.body.WriteString(goExpr)
 	g.body.WriteString(")\n")
+	g.usesSW = true
 }
 
 // writeRaw flushes any pending static text, then appends a raw line of Go
@@ -1306,11 +1353,12 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 				tmp := fmt.Sprintf("__v%d", n)
 				g.writeRaw(tmp + " := " + valExpr + "\n")
 				g.writeRaw(fmt.Sprintf("if %s != %q {\n", tmp, "false"))
-				g.body.WriteString("io.WriteString(w, " + strconv.Quote(" "+name+`="`) + ")\n")
+				g.body.WriteString("sw.WriteString(" + strconv.Quote(" "+name+`="`) + ")\n")
 				g.needsGopug = true
-				g.body.WriteString("io.WriteString(w, gopug.EscapeAttr(" + tmp + "))\n")
-				g.body.WriteString("io.WriteString(w, " + strconv.Quote(`"`) + ")\n")
+				g.body.WriteString("sw.WriteString(gopug.EscapeAttr(" + tmp + "))\n")
+				g.body.WriteString("sw.WriteString(" + strconv.Quote(`"`) + ")\n")
 				g.body.WriteString("}\n")
+				g.usesSW = true
 				continue
 			}
 
@@ -1332,8 +1380,9 @@ func (g *generator) genAttributes(attrs map[string]*AttributeValue) error {
 				boolExpr = convertExpr(goExpr, typ, reflectTypeBool, "bool")
 			}
 			g.writeRaw(fmt.Sprintf("if %s {\n", boolExpr))
-			g.body.WriteString("io.WriteString(w, " + strconv.Quote(" "+name+`="true"`) + ")\n")
+			g.body.WriteString("sw.WriteString(" + strconv.Quote(" "+name+`="true"`) + ")\n")
 			g.body.WriteString("}\n")
+			g.usesSW = true
 			continue
 		}
 
@@ -5698,10 +5747,12 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 	savedParamOnly := g.paramOnlyScope
 	savedInsideMixinBody := g.insideMixinBody
 	savedBlockParamName := g.blockParamName
+	savedUsesSW := g.usesSW
 
 	g.scope = nil
 	g.paramOnlyScope = true
 	g.insideMixinBody = true
+	g.usesSW = false
 	if hasSlot {
 		g.blockParamName = blockParamGoName
 	} else {
@@ -5729,6 +5780,7 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 		g.flushStatic()
 	}
 	fnBody := g.body.String()
+	fnSWPrefix := g.swPrefix()
 	g.body.Reset()
 	g.static.Reset()
 
@@ -5736,6 +5788,7 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 	g.paramOnlyScope = savedParamOnly
 	g.insideMixinBody = savedInsideMixinBody
 	g.blockParamName = savedBlockParamName
+	g.usesSW = savedUsesSW
 
 	if bodyErr != nil {
 		return "", bodyErr
@@ -5753,6 +5806,7 @@ func (g *generator) genMixinFunc(fnName string, decl *MixinDeclNode) (string, er
 		fmt.Fprintf(&sig, ", %s func(io.Writer) error", blockParamGoName)
 	}
 	sig.WriteString(") error {\n")
+	sig.WriteString(fnSWPrefix)
 	sig.WriteString(fnBody)
 	sig.WriteString("return nil\n}\n")
 	return sig.String(), nil
@@ -6257,6 +6311,7 @@ func (g *generator) genMixinBlockClosure(content []Node, mixinName string, param
 	savedInsideMixinBody := g.insideMixinBody
 	savedInsideBlockClosure := g.insideBlockClosure
 	savedBlockParamName := g.blockParamName
+	savedUsesSW := g.usesSW
 
 	g.body = strings.Builder{}
 	g.static = strings.Builder{}
@@ -6268,6 +6323,7 @@ func (g *generator) genMixinBlockClosure(content []Node, mixinName string, param
 	g.insideMixinBody = false
 	g.insideBlockClosure = true
 	g.blockParamName = ""
+	g.usesSW = false
 
 	var bodyErr error
 	for _, child := range content {
@@ -6280,6 +6336,7 @@ func (g *generator) genMixinBlockClosure(content []Node, mixinName string, param
 		g.flushStatic()
 	}
 	closureBody := g.body.String()
+	closureSWPrefix := g.swPrefix()
 
 	g.body = savedBody
 	g.static = savedStatic
@@ -6288,10 +6345,11 @@ func (g *generator) genMixinBlockClosure(content []Node, mixinName string, param
 	g.insideMixinBody = savedInsideMixinBody
 	g.insideBlockClosure = savedInsideBlockClosure
 	g.blockParamName = savedBlockParamName
+	g.usesSW = savedUsesSW
 
 	if bodyErr != nil {
 		return "", fmt.Errorf("mixin %q: block content: %w", mixinName, bodyErr)
 	}
 
-	return "func(w io.Writer) error {\n" + closureBody + "return nil\n}", nil
+	return "func(w io.Writer) error {\n" + closureSWPrefix + closureBody + "return nil\n}", nil
 }
