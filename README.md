@@ -106,18 +106,18 @@ Renders per second per template (higher is better); see [`benchmark/README.md`](
 
 | Template          | pug.js     | go-pug interpreter | go-pug codegen |
 | ----------------- | ---------- | ------------------- | --------------- |
-| mixin_data_args   | 13,020,824 | 888,052              | 33,981,319      |
-| mixin_default     | 7,909,264  | 647,673              | 18,258,104      |
-| mixin_attrs       | 2,550,978  | 444,272              | 54,546,942      |
-| nil_pointer_path  | 22,057,607 | 1,934,334            | 64,423,719      |
-| card_list         | 507,346    | 36,790               | 779,864         |
-| table             | 210,139    | 36,222               | 453,648         |
-| form              | 563,017    | 106,813              | 1,028,879       |
-| blog              | 1,134,629  | 134,599              | 1,656,499       |
-| page_extends      | 755,910    | 10,719               | 1,861,581       |
-| page_include      | 1,607,847  | 32,474               | 2,728,510       |
+| mixin_data_args   | 10,899,369 | 892,758              | 33,143,568      |
+| mixin_default     | 6,677,912  | 613,919              | 17,139,400      |
+| mixin_attrs       | 2,347,055  | 423,203              | 51,724,227      |
+| nil_pointer_path  | 19,452,912 | 2,526,282            | 58,823,645      |
+| card_list         | 424,969    | 37,097               | 704,030         |
+| table             | 199,068    | 34,952               | 433,258         |
+| form              | 548,832    | 112,876              | 1,012,830       |
+| blog              | 1,127,626  | 154,527              | 1,681,881       |
+| page_extends      | 781,869    | 10,691               | 1,840,970       |
+| page_include      | 1,469,074  | 31,901               | 2,675,853       |
 
-Codegen is the fastest engine on all 10 templates in the corpus, typically 1.5–3x pug.js's throughput; the narrowest margin is `blog` at roughly 1.5x, and the widest is `mixin_attrs` at roughly 21x (an outlier — its spread-attrs code path is unusually well-optimized at generate time). The go-pug interpreter, the tree-walking default path, is slower than pug.js on every template. It is closest on the smaller, less-iterative templates (`mixin_attrs`, `form`: roughly 5–6x slower) and furthest on the two template-inheritance/include templates (`page_extends`, `page_include`: roughly 70x and 50x slower) — this cycle added compile-once caching of parsed `extends`/`include` ASTs, which made the interpreter's own throughput on those two templates dramatically faster than before (`page_include` ~12x, `page_extends` ~3x, by no longer re-reading and re-parsing the layout/partial file on every render), but pug.js's own composition handling is evidently cheaper still, so the *relative* gap to pug.js on these two templates remains the widest in the corpus even after that win.
+Codegen is the fastest engine on all 10 templates in the corpus, typically 1.5–3x pug.js's throughput; the narrowest margin is `blog` at roughly 1.5x, and the widest is `mixin_attrs` at roughly 22x (an outlier — its spread-attrs code path is unusually well-optimized at generate time). The go-pug interpreter, the tree-walking default path, is slower than pug.js on every template in the corpus. It is closest on `form` (roughly 4.9x slower) and `mixin_attrs` (roughly 5.5x slower), and furthest on the two template-inheritance/include templates, `page_extends`/`page_include` (roughly 73x/46x slower) — composition remains the interpreter's weakest relative spot even though its own absolute throughput on those two is much better than before caching landed (see [`CHANGELOG.md`](CHANGELOG.md)). This release's render-performance work (a pre-sized, pooled output buffer and recycled loop/mixin scope maps) cuts the interpreter's allocations dramatically in controlled microbenchmarks — see `BenchmarkRenderLarge` and friends in `pkg/gopug`, and the CHANGELOG's Performance notes — but on this wall-clock renders/sec corpus the per-template deltas are modest and mostly within this benchmark's own run-to-run noise band (some templates render a few percent faster than last release, a few a few percent slower), so the interpreter's standing *relative to pug.js* on this corpus is essentially unchanged this release: it remains slower than pug.js on every template here, non-composition included.
 
 A separate cross-library comparison against [Joker/jade](https://github.com/Joker/jade), a mature independent Pug/Jade engine for Go, lives in [`benchmark/vs-joker/`](benchmark/vs-joker/) (its own isolated module, not part of the corpus above).
 

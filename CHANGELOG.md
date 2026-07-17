@@ -3,6 +3,64 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.2
+
+### Fixed
+
+- **Mixin call arguments are now type-preserved.** A slice, map, or struct
+  passed as a mixin argument previously reached the mixin body as a
+  stringified value, so iterating it with `each` inside the mixin rendered
+  one blob of text instead of per-element output — e.g. `+list(items)`
+  where `items` is a `[]string` rendered `each x in items` as a single line
+  rather than one `<li>` per element. Mixin arguments are now evaluated
+  through the same type-preserving path `each`'s own collection expression
+  already used, so the mixin body receives the real Go value. String and
+  number arguments render exactly as before.
+
+### Performance
+
+Rendering allocates far less and is meaningfully faster, with byte-identical
+output throughout — measured with `go test -bench -benchmem -count=3`
+against this release and against the previous tagged release on the same
+machine:
+
+- A large-template render (`BenchmarkRenderLarge`) now allocates **15
+  times/op instead of 133** (~89% fewer) and **3,866 B/op instead of
+  24,448** (~84% fewer bytes), rendering in ~19.2µs instead of ~24.5µs
+  (~22% faster).
+- A small render (`BenchmarkRenderSmall`) allocates **5 times/op instead of
+  7** and **292 B/op instead of 1,348** (~78% fewer bytes), in ~379ns
+  instead of ~572ns (~34% faster).
+- A medium render (`BenchmarkRenderMedium`) allocates **3 times/op instead
+  of 5** and **376 B/op instead of 1,432** (~74% fewer bytes), in ~980ns
+  instead of ~1,181ns (~17% faster).
+- A mixin-heavy render (`BenchmarkInterpretBenchMixin`) allocates **14
+  times/op instead of 313** (~96% fewer) and **6,981 B/op instead of
+  56,872** (~88% fewer bytes), in ~39.6µs instead of ~81.6µs (~51% faster).
+- The full compile+render pipeline for a large template
+  (`BenchmarkE2ELarge`) allocates **222 times/op instead of 343** (~35%
+  fewer) and **20,598 B/op instead of 41,208** (~50% fewer bytes), in
+  ~36.0µs instead of ~52.4µs (~31% faster).
+
+The gains come from three mechanisms, all transparent to rendered output:
+the output buffer is now pre-sized from the previous render's byte length
+(an adaptive per-`Template` hint) instead of always starting from a small
+fixed capacity; output buffers are pooled and reused across `Template.Render`
+calls instead of allocating a fresh one every render; and `each`-loop and
+mixin-call scope frames (the `map[string]any` holding loop/argument
+variables) are recycled from a per-render free-list instead of being
+freshly allocated on every iteration/call. None of this changes what gets
+rendered: every template in the render-throughput benchmark corpus (see
+[`benchmark/`](benchmark/)) is verified byte-identical across pug.js, the
+interpreter, and codegen before being timed, on every run of this cycle.
+
+### Added
+
+- A separate, isolated go-pug vs [Joker/jade](https://github.com/Joker/jade)
+  render-throughput comparison lives in `benchmark/vs-joker/`, with its own
+  chart — a benchmark-only addition in its own Go module, so the root
+  go-pug module stays dependency-free.
+
 ## v0.4.1
 
 ### Fixed

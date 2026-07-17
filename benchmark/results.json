@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-16T19:54:35Z",
+  "generatedAt": "2026-07-17T12:29:24Z",
   "methodology": {
     "description": "Every engine is pre-compiled/pre-generated exactly once, outside the timed loop: pug.js via pug.compileFile, the interpreter via gopug.Compile, codegen via GenerateGo + `go build`. Only the render call itself is timed, rendering the same fixture data every iteration to a discarded sink (io.Discard for codegen; the interpreter's returned string is discarded after a length checksum; pug.js accumulates a length checksum so V8 cannot treat the calls as dead code).",
     "metric": "renders per second (higher is better)",
@@ -29,72 +29,72 @@
     {
       "name": "mixin_data_args",
       "description": "mixin called with struct-typed data (positional string args)",
-      "pugjsRendersPerSec": 13020824.390553437,
-      "interpreterRendersPerSec": 888051.8835432441,
-      "codegenRendersPerSec": 33981319.33605033
+      "pugjsRendersPerSec": 10899369.177903995,
+      "interpreterRendersPerSec": 892757.5578771749,
+      "codegenRendersPerSec": 33143567.993477345
     },
     {
       "name": "mixin_default",
       "description": "mixin with a default parameter, called twice (data-free)",
-      "pugjsRendersPerSec": 7909263.564805738,
-      "interpreterRendersPerSec": 647672.9381197083,
-      "codegenRendersPerSec": 18258103.859397992
+      "pugjsRendersPerSec": 6677912.163950422,
+      "interpreterRendersPerSec": 613918.5275679808,
+      "codegenRendersPerSec": 17139399.881052565
     },
     {
       "name": "mixin_attrs",
       "description": "mixin with \u0026attributes spreading a caller-supplied attribute block",
-      "pugjsRendersPerSec": 2550978.317947625,
-      "interpreterRendersPerSec": 444272.38355723594,
-      "codegenRendersPerSec": 54546942.18933244
+      "pugjsRendersPerSec": 2347054.6446642005,
+      "interpreterRendersPerSec": 423202.5002803717,
+      "codegenRendersPerSec": 51724227.1107364
     },
     {
       "name": "nil_pointer_path",
       "description": "nil-safe dot-path through a non-nil pointer intermediate",
-      "pugjsRendersPerSec": 22057606.587752655,
-      "interpreterRendersPerSec": 1934333.8782781723,
-      "codegenRendersPerSec": 64423719.09540508
+      "pugjsRendersPerSec": 19452912.18820146,
+      "interpreterRendersPerSec": 2526281.5384145104,
+      "codegenRendersPerSec": 58823644.752244614
     },
     {
       "name": "card_list",
       "description": "product grid: each-loop, paren-ternary dynamic class, if/else badge",
-      "pugjsRendersPerSec": 507346.19757939473,
-      "interpreterRendersPerSec": 36790.2291670314,
-      "codegenRendersPerSec": 779864.1367492804
+      "pugjsRendersPerSec": 424968.50140817236,
+      "interpreterRendersPerSec": 37097.22476712855,
+      "codegenRendersPerSec": 704029.9259653863
     },
     {
       "name": "table",
       "description": "data table: each-loop over rows, class-object zebra highlight",
-      "pugjsRendersPerSec": 210138.923915723,
-      "interpreterRendersPerSec": 36222.274019359626,
-      "codegenRendersPerSec": 453647.82983270695
+      "pugjsRendersPerSec": 199068.48497609314,
+      "interpreterRendersPerSec": 34951.576418985314,
+      "codegenRendersPerSec": 433258.3993675698
     },
     {
       "name": "form",
       "description": "settings form: each-loop text fields + each-loop select options",
-      "pugjsRendersPerSec": 563017.2995396208,
-      "interpreterRendersPerSec": 106813.28217540118,
-      "codegenRendersPerSec": 1028879.4456809099
+      "pugjsRendersPerSec": 548832.3704997434,
+      "interpreterRendersPerSec": 112876.04300991117,
+      "codegenRendersPerSec": 1012830.0927215564
     },
     {
       "name": "blog",
       "description": "blog index: each-loop with a nested case/when tag classifier",
-      "pugjsRendersPerSec": 1134628.595129159,
-      "interpreterRendersPerSec": 134599.17516458934,
-      "codegenRendersPerSec": 1656498.6482938833
+      "pugjsRendersPerSec": 1127625.6793194949,
+      "interpreterRendersPerSec": 154527.11442463947,
+      "codegenRendersPerSec": 1681881.2273550725
     },
     {
       "name": "page_extends",
       "description": "extends+block: layout override plus block prepend/append on nav and footer, each-loop item list",
-      "pugjsRendersPerSec": 755909.5133160409,
-      "interpreterRendersPerSec": 10719.179442508226,
-      "codegenRendersPerSec": 1861581.141388763
+      "pugjsRendersPerSec": 781869.4394832478,
+      "interpreterRendersPerSec": 10690.818798949733,
+      "codegenRendersPerSec": 1840969.6755475043
     },
     {
       "name": "page_include",
       "description": "include _card.pug inside an each loop — one partial re-included per item",
-      "pugjsRendersPerSec": 1607846.549623766,
-      "interpreterRendersPerSec": 32473.83785743137,
-      "codegenRendersPerSec": 2728510.4788444936
+      "pugjsRendersPerSec": 1469073.8267397413,
+      "interpreterRendersPerSec": 31900.96038303514,
+      "codegenRendersPerSec": 2675853.0485726194
     }
   ]
 }
