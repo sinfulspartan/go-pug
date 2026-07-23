@@ -3,6 +3,50 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.3
+
+### Fixed
+
+- **A literal `?` inside a backtick attribute value was misread as a
+  ternary.** `findTernary` and `findBinaryOp` scanned an expression's raw
+  source for top-level operators before `evaluateExpr` reached its
+  backtick template-literal branch, but tracked only single/double-quote
+  state — so a literal operator character in the non-interpolated portion
+  of a backtick attribute value was misread as a real operator. For
+  example, `` a(href=`/x?y=${a}`) `` had its `?` treated as a ternary, the
+  operands failed to parse, and the whole raw expression was emitted
+  verbatim instead of interpolating. Other operators inside a backtick
+  literal (`&&`, `||`, `==`, `<`, `>`) were similarly misread, some
+  silently coercing the value to `"true"`/`"false"`. Both scanners now
+  track backtick state alongside the existing quote state (c4c863c).
+- **Backtick class values containing a space were truncated at the first
+  space.** `` div(class=`a b-${x}`) `` rendered `class="a"` instead of
+  `class="a b-1"` because the class tokenizer split on whitespace before
+  recognizing the backtick as one literal. The expression scanners'
+  hand-rolled quote tracking has been consolidated into a single
+  `skipStringLiteral` helper that recognizes `""`, `''`, and backtick
+  literals uniformly, and the class-attribute splitting paths now route
+  through it (b370397).
+
+### Performance
+
+- A template's top-level mixin set is now computed once when the template
+  is compiled, instead of being rebuilt into a fresh map on every render —
+  the set is a constant property of the template's immutable AST, so it's
+  now shared read-only across renders (8a20e06). `RenderLarge` dropped
+  from 15 to 13 allocs/op, and a mixin-heavy render from 14 to 12.
+- The codegen `&attributes(...)` spread merge — the one codegen path that
+  still allocated heavily — now stores merged attributes as inline map
+  values instead of heap-allocated `*AttributeValue`s, and writes each
+  attribute's pieces directly to the output instead of concatenating a
+  temporary string per attribute (1074c0c). The spread-attribute codegen
+  benchmark dropped from 450 to 150 allocs/op and 11.6 to 5.6 KB/op.
+- Generated render functions asserted `w.(io.StringWriter)` on every
+  single write; the assertion is now done once per generated function via
+  an exported `gopug.StringWriter` helper, with the result reused for
+  every write inside that function (ee0413c). Write-heavy benchmarks
+  dropped roughly 15-20% in ns/op, with allocations unchanged.
+
 ## v0.4.2
 
 ### Fixed
