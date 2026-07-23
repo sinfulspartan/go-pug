@@ -4,7 +4,7 @@ A full-featured [Pug](https://pugjs.org) template engine for Go. Write clean, in
 
 [![CI](https://github.com/sinfulspartan/go-pug/actions/workflows/ci.yml/badge.svg)](https://github.com/sinfulspartan/go-pug/actions/workflows/ci.yml)
 [![Release](https://github.com/sinfulspartan/go-pug/actions/workflows/release.yml/badge.svg)](https://github.com/sinfulspartan/go-pug/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/sinfulspartan/go-pug)](https://github.com/sinfulspartan/go-pug/releases/latest)
+[![Latest release](https://badgen.net/github/release/sinfulspartan/go-pug/stable)](https://github.com/sinfulspartan/go-pug/releases/latest)
 
 ---
 
