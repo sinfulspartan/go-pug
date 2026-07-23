@@ -5766,6 +5766,78 @@ func TestTemplateLiteralNoInterpolation(t *testing.T) {
 	assertContains(t, out, `class="active"`)
 }
 
+// === Operator-like characters in the literal portion of a backtick
+// attribute value must not be mistaken for a real operator ===
+
+// TestBacktickAttrLiteralQuestionMark checks a literal `?` in the
+// non-interpolated part of a backtick attribute value: it must not be
+// scanned as a ternary `?` at the top level, which would emit the whole
+// expression as raw, uninterpolated source instead of having its `${a}`
+// substituted.
+func TestBacktickAttrLiteralQuestionMark(t *testing.T) {
+	out := renderTest(t, "a(href=`/x?y=${a}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `href="/x?y=1"`)
+}
+
+// TestBacktickAttrLiteralAmpersands checks a literal `&&` in the
+// non-interpolated part of a backtick attribute value: it must not be
+// mistaken for a top-level `&&` operator, and the resulting text (after
+// interpolation) must still be HTML-escaped as attribute content normally is.
+func TestBacktickAttrLiteralAmpersands(t *testing.T) {
+	out := renderTest(t, "a(href=`/s?q=a&&b-${a}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `href="/s?q=a&amp;&amp;b-1"`)
+}
+
+// TestBacktickAttrLiteralGreaterThan checks a literal `>` in the
+// non-interpolated part of a backtick attribute value: it must not be
+// mistaken for a top-level `>` comparison operator, which would coerce the
+// whole value to the string "true"/"false".
+func TestBacktickAttrLiteralGreaterThan(t *testing.T) {
+	out := renderTest(t, "a(data-v=`a>b-${a}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `data-v="a&gt;b-1"`)
+}
+
+// TestBacktickAttrLiteralEquality checks a literal `==` in the
+// non-interpolated part of a backtick attribute value: it must not be
+// mistaken for a top-level `==` comparison operator.
+func TestBacktickAttrLiteralEquality(t *testing.T) {
+	out := renderTest(t, "a(data-v=`a==b-${a}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `data-v="a==b-1"`)
+}
+
+// TestBacktickAttrLiteralLogicalOr checks a literal `||` in the
+// non-interpolated part of a backtick attribute value: it must not be
+// mistaken for a top-level `||` operator, which would short-circuit the
+// value down to just its left operand.
+func TestBacktickAttrLiteralLogicalOr(t *testing.T) {
+	out := renderTest(t, "a(data-v=`x||y-${a}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `data-v="x||y-1"`)
+}
+
+// TestBacktickAttrGenuineTernaryStillDetected ensures a real top-level
+// ternary whose branches happen to be backtick literals is still detected as
+// a ternary rather than being swallowed by the new backtick-tracking state.
+func TestBacktickAttrGenuineTernaryStillDetected(t *testing.T) {
+	out := renderTest(t, "a(data-v=c ? `x` : `y`) Link", map[string]any{"c": true})
+	assertContains(t, out, `data-v="x"`)
+}
+
+// TestBacktickAttrOperatorsInsideInterpolationStillWork ensures `?` and `>`
+// inside a `${...}` interpolation (i.e. genuinely nested code, not literal
+// text) still evaluate normally now that the scanner tracks backtick state.
+func TestBacktickAttrOperatorsInsideInterpolationStillWork(t *testing.T) {
+	out := renderTest(t, "a(data-v=`${a > 0 ? 'p' : 'q'}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `data-v="p"`)
+}
+
+// TestBacktickAttrNoQueryStringUnchanged is a guard for the plain,
+// no-special-char case, confirming existing backtick-attribute behavior is
+// unaffected.
+func TestBacktickAttrNoQueryStringUnchanged(t *testing.T) {
+	out := renderTest(t, "a(href=`/no-query-${a}`) Link", map[string]any{"a": 1})
+	assertContains(t, out, `href="/no-query-1"`)
+}
+
 // TestMapBracketAccessWithVariableKey tests issue #11: map bracket access with
 // a variable key followed by dot access on the result.
 func TestMapBracketAccessWithVariableKey(t *testing.T) {

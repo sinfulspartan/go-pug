@@ -4338,21 +4338,26 @@ func findTernary(expr string) int {
 	depth := 0
 	inDouble := false
 	inSingle := false
+	inBacktick := false
 	for i := 0; i < len(expr); i++ {
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
+		if ch == '\\' && (inDouble || inSingle || inBacktick) {
 			i++
 			continue
 		}
-		if ch == '"' && !inSingle {
+		if ch == '"' && !inSingle && !inBacktick {
 			inDouble = !inDouble
 			continue
 		}
-		if ch == '\'' && !inDouble {
+		if ch == '\'' && !inDouble && !inBacktick {
 			inSingle = !inSingle
 			continue
 		}
-		if inDouble || inSingle {
+		if ch == '`' && !inDouble && !inSingle {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inDouble || inSingle || inBacktick {
 			continue
 		}
 		if ch == '(' || ch == '[' || ch == '{' {
@@ -4453,21 +4458,26 @@ func findBinaryOp(expr, op string) int {
 	depth := 0
 	inDouble := false
 	inSingle := false
+	inBacktick := false
 	for i := 0; i < len(expr); i++ {
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
+		if ch == '\\' && (inDouble || inSingle || inBacktick) {
 			i++
 			continue
 		}
-		if ch == '"' && !inSingle {
+		if ch == '"' && !inSingle && !inBacktick {
 			inDouble = !inDouble
 			continue
 		}
-		if ch == '\'' && !inDouble {
+		if ch == '\'' && !inDouble && !inBacktick {
 			inSingle = !inSingle
 			continue
 		}
-		if inDouble || inSingle {
+		if ch == '`' && !inDouble && !inSingle {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inDouble || inSingle || inBacktick {
 			continue
 		}
 		if ch == '(' || ch == '[' || ch == '{' {
