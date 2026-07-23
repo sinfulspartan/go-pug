@@ -814,7 +814,6 @@ func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
 		inner = inner[1 : len(inner)-1]
 		wasQuoted = true
 	}
-	words := strings.Fields(inner)
 
 	if wasQuoted {
 		// staticClassLiteralValue already handled len(words) > 0 above; this
@@ -822,6 +821,12 @@ func (r *Runtime) resolveClassTokenList(rawValExpr string) string {
 		evaluated, _ := r.evaluateExpr(rawValExpr)
 		return evaluated
 	}
+
+	// splitClassTokensTopLevel (rather than strings.Fields) so a bare
+	// backtick or quoted literal that itself contains whitespace — e.g.
+	// class=`a b-${x}` — survives as one token instead of being shattered on
+	// its interior spaces before evaluation.
+	words := splitClassTokensTopLevel(inner)
 
 	var resolved []string
 	for _, word := range words {
@@ -860,8 +865,6 @@ func splitClassTokensTopLevel(s string) []string {
 	var tokens []string
 	var cur strings.Builder
 	depth := 0
-	inDouble := false
-	inSingle := false
 
 	flush := func() {
 		if cur.Len() > 0 {
@@ -871,29 +874,12 @@ func splitClassTokensTopLevel(s string) []string {
 	}
 
 	for i := 0; i < len(s); i++ {
+		if j, ok := skipStringLiteral(s, i); ok {
+			cur.WriteString(s[i:j])
+			i = j - 1
+			continue
+		}
 		ch := s[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			cur.WriteByte(ch)
-			if i+1 < len(s) {
-				i++
-				cur.WriteByte(s[i])
-			}
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			cur.WriteByte(ch)
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			cur.WriteByte(ch)
-			continue
-		}
-		if inDouble || inSingle {
-			cur.WriteByte(ch)
-			continue
-		}
 		switch ch {
 		case '(', '[', '{':
 			depth++
@@ -4121,25 +4107,12 @@ func (r *Runtime) lookupAndStringify(expr string) string {
 // a whole rather than split on spaces.
 func isOperatorExpr(expr string) bool {
 	depth := 0
-	inDouble := false
-	inSingle := false
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if inDouble || inSingle {
-			continue
-		}
 		switch ch {
 		case '(', '[', '{':
 			depth++
@@ -4179,47 +4152,23 @@ func isOperatorExpr(expr string) bool {
 // This is used for the class attribute where static class names may be followed
 // by a parenthesised ternary/logical expression.
 func containsParenExpr(expr string) bool {
-	inDouble := false
-	inSingle := false
 	depth := 0
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if inDouble || inSingle {
-			continue
-		}
 		if ch == '(' {
 			depth++
 			if depth == 1 {
 				// Scan ahead inside this paren group for operators.
 				for j := i + 1; j < len(expr); j++ {
+					if k, ok := skipStringLiteral(expr, j); ok {
+						j = k - 1
+						continue
+					}
 					c2 := expr[j]
-					if c2 == '\\' && (inDouble || inSingle) {
-						j++
-						continue
-					}
-					if c2 == '"' && !inSingle {
-						inDouble = !inDouble
-						continue
-					}
-					if c2 == '\'' && !inDouble {
-						inSingle = !inSingle
-						continue
-					}
-					if inDouble || inSingle {
-						continue
-					}
 					if c2 == '?' || c2 == '+' {
 						return true
 					}
@@ -4247,26 +4196,13 @@ func containsParenExpr(expr string) bool {
 // A '-' is unary when preceded by another operator character (+,-,*,/,%,(,[,,).
 func findSubtraction(expr string) int {
 	depth := 0
-	inDouble := false
-	inSingle := false
 	result := -1
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if inDouble || inSingle {
-			continue
-		}
 		if ch == '(' || ch == '[' || ch == '{' {
 			depth++
 			continue
@@ -4299,26 +4235,13 @@ func findSubtraction(expr string) int {
 // operator (*, /, %) outside quotes and brackets.
 func findRightmostOp(expr string, op byte) int {
 	depth := 0
-	inDouble := false
-	inSingle := false
 	result := -1
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if inDouble || inSingle {
-			continue
-		}
 		if ch == '(' || ch == '[' || ch == '{' {
 			depth++
 			continue
@@ -4334,32 +4257,39 @@ func findRightmostOp(expr string, op byte) int {
 	return result
 }
 
+// skipStringLiteral reports whether the byte at expr[i] opens a string
+// literal ("...", '...', or `...`) and, if so, returns the index just past
+// the closing delimiter (or len(expr) if the literal is unterminated).
+// Backslash escapes inside the literal are honored — an escaped delimiter
+// does not close it. If expr[i] is not a string-opening delimiter, it
+// returns (i, false) and the caller should process expr[i] normally.
+func skipStringLiteral(expr string, i int) (end int, ok bool) {
+	if i >= len(expr) {
+		return i, false
+	}
+	quote := expr[i]
+	if quote != '"' && quote != '\'' && quote != '`' {
+		return i, false
+	}
+	for j := i + 1; j < len(expr); j++ {
+		switch expr[j] {
+		case '\\':
+			j++
+		case quote:
+			return j + 1, true
+		}
+	}
+	return len(expr), true
+}
+
 func findTernary(expr string) int {
 	depth := 0
-	inDouble := false
-	inSingle := false
-	inBacktick := false
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle || inBacktick) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle && !inBacktick {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble && !inBacktick {
-			inSingle = !inSingle
-			continue
-		}
-		if ch == '`' && !inDouble && !inSingle {
-			inBacktick = !inBacktick
-			continue
-		}
-		if inDouble || inSingle || inBacktick {
-			continue
-		}
 		if ch == '(' || ch == '[' || ch == '{' {
 			depth++
 		} else if ch == ')' || ch == ']' || ch == '}' {
@@ -4408,26 +4338,18 @@ func findMatchingCloseBracket(expr string) int {
 		return -1
 	}
 	depth := 0
-	inDouble := false
-	inSingle := false
 	for i := 0; i < len(expr); i++ {
-		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			i++ // skip next char
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
 			continue
 		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-		} else if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-		} else if !inDouble && !inSingle {
-			if ch == '[' {
-				depth++
-			} else if ch == ']' {
-				depth--
-				if depth == 0 {
-					return i
-				}
+		ch := expr[i]
+		if ch == '[' {
+			depth++
+		} else if ch == ']' {
+			depth--
+			if depth == 0 {
+				return i
 			}
 		}
 	}
@@ -4456,30 +4378,12 @@ func (r *Runtime) indexValue(obj any, key string) any {
 // quotes and balanced brackets), or -1 if not found.
 func findBinaryOp(expr, op string) int {
 	depth := 0
-	inDouble := false
-	inSingle := false
-	inBacktick := false
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle || inBacktick) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle && !inBacktick {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble && !inBacktick {
-			inSingle = !inSingle
-			continue
-		}
-		if ch == '`' && !inDouble && !inSingle {
-			inBacktick = !inBacktick
-			continue
-		}
-		if inDouble || inSingle || inBacktick {
-			continue
-		}
 		if ch == '(' || ch == '[' || ch == '{' {
 			depth++
 			continue
@@ -4500,26 +4404,13 @@ func findBinaryOp(expr, op string) int {
 // literals (e.g. 3.14) are skipped. Returns -1 if not found.
 func findTopLevelDot(expr string) int {
 	depth := 0
-	inDouble := false
-	inSingle := false
 	result := -1
 	for i := 0; i < len(expr); i++ {
+		if j, ok := skipStringLiteral(expr, i); ok {
+			i = j - 1
+			continue
+		}
 		ch := expr[i]
-		if ch == '\\' && (inDouble || inSingle) {
-			i++
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if inDouble || inSingle {
-			continue
-		}
 		if ch == '(' || ch == '[' || ch == '{' {
 			depth++
 			continue
@@ -4949,23 +4840,22 @@ func (r *Runtime) toSlice(val any) []any {
 func splitTopLevel(s string, sep rune) []string {
 	var parts []string
 	depth := 0
-	inDouble := false
-	inSingle := false
 	start := 0
-	for i, ch := range s {
-		switch {
-		case ch == '\\' && (inDouble || inSingle):
-		case ch == '"' && !inSingle:
-			inDouble = !inDouble
-		case ch == '\'' && !inDouble:
-			inSingle = !inSingle
-		case (ch == '(' || ch == '[' || ch == '{') && !inDouble && !inSingle:
+	for i := 0; i < len(s); i++ {
+		if j, ok := skipStringLiteral(s, i); ok {
+			i = j - 1
+			continue
+		}
+		switch s[i] {
+		case '(', '[', '{':
 			depth++
-		case (ch == ')' || ch == ']' || ch == '}') && !inDouble && !inSingle:
+		case ')', ']', '}':
 			depth--
-		case ch == sep && depth == 0 && !inDouble && !inSingle:
-			parts = append(parts, s[start:i])
-			start = i + 1
+		default:
+			if depth == 0 && rune(s[i]) == sep {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
 		}
 	}
 	parts = append(parts, s[start:])
